@@ -1,6 +1,6 @@
 # Code signing policy
 
-**Status:** an application to SignPath Foundation is pending. Every release up to and including Eclipse 1.3.2 is **unsigned**. Until signing is approved, check each download against its published SHA-256.
+**Status:** signing through SignPath Foundation is being set up. Every release up to and including Eclipse 1.3.4 is **unsigned**. Until signing is approved, check each download against its published SHA-256.
 
 Once approved: free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
