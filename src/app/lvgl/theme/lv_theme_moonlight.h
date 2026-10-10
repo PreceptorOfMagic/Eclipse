@@ -13,3 +13,7 @@ const lv_font_t *lv_theme_moonlight_get_iconfont_large(lv_obj_t *obj);
 const lv_font_t *lv_theme_moonlight_get_iconfont_normal(lv_obj_t *obj);
 
 const lv_font_t *lv_theme_moonlight_get_iconfont_small(lv_obj_t *obj);
+
+/** The app's scrollbar, for a container whose theme styles were removed with
+ *  lv_obj_remove_style_all() -- which takes the bar's style with them. */
+void lv_theme_moonlight_add_scrollbar(lv_obj_t *obj);

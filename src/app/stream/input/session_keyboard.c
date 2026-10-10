@@ -1,5 +1,7 @@
 #include "app.h"
 #include "logging.h"
+#include "stream/input/coop_input.h"
+#include "stream/input/coop_pointer.h"
 #include "stream/input/session_input.h"
 #include "stream/session.h"
 
@@ -19,8 +21,16 @@ enum KeyCombo {
     KeyComboToggleMouseMode,
     KeyComboToggleCursorHide,
     KeyComboToggleMinimize,
+    KeyComboToggleMouseLock,
+    KeyComboPasteText,
     KeyComboMax
 };
+
+#if defined(TARGET_WEBOS)
+#define DESKTOP_COMBO false
+#else
+#define DESKTOP_COMBO true
+#endif
 
 struct SpecialKeyCombo {
     enum KeyCombo keyCombo;
@@ -37,12 +47,17 @@ static struct SpecialKeyCombo m_SpecialKeyCombos[KeyComboMax] = {
         {KeyComboToggleMouseMode,    SDLK_m, SDL_SCANCODE_M, true},
         {KeyComboToggleCursorHide,   SDLK_c, SDL_SCANCODE_C, true},
         {KeyComboToggleMinimize,     SDLK_d, SDL_SCANCODE_D, true},
+        /* The rest of moonlight-qt's set. Desktop only: on the TV these keys still reach the host. */
+        {KeyComboToggleMouseLock,    SDLK_l, SDL_SCANCODE_L, DESKTOP_COMBO},
+        {KeyComboPasteText,          SDLK_v, SDL_SCANCODE_V, DESKTOP_COMBO},
 };
 
 enum KeyCombo _pending_key_combo = KeyComboMax;
 
 struct KeysDown {
     short keyCode;
+    /** Went to the co-op PEER's host: its release must follow, wherever the pointer is by then. */
+    bool peer;
     struct KeysDown *prev;
     struct KeysDown *next;
 };
@@ -57,6 +72,19 @@ static struct KeysDown *_pressed_keys;
 #define LINKEDLIST_DOUBLE 1
 
 #include "linked_list.h"
+
+/* KEYS FOLLOW THE POINTER'S PANE in co-op, as the mouse already does (coop_pointer.c): the user
+ * wants keyboard and mouse "active on whichever pc the mouse is hovered over". A press goes to
+ * the pane under the pointer; its release goes where the press went. Outside co-op, or with no
+ * peer attached, every key goes to this process's host exactly as before. A key for THIS PC as
+ * a local host is still dropped by LiSetLocalInputBlocked -- that needs the focus hand-off. */
+static void send_key(short key_code, char action, char modifiers, bool to_peer) {
+    if (to_peer) {
+        coop_input_send_keyboard(key_code, action, modifiers);
+    } else {
+        LiSendKeyboardEvent(key_code, action, modifiers);
+    }
+}
 
 #undef LINKEDLIST_TYPE
 #undef LINKEDLIST_PREFIX
@@ -116,15 +144,71 @@ static bool stream_input_handle_remote_ok_long_press(stream_input_t *input, cons
         return true;
     }
     if (heldMs >= REMOTE_OK_RIGHT_CLICK_HOLD_MS) {
-        LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_RIGHT);
-        LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
+        /* Fires wherever the cursor is, so in co-op it must land on the PC the pointer
+         * is currently over -- not always the primary. */
+        coop_pointer_button(BUTTON_ACTION_PRESS, BUTTON_RIGHT);
+        coop_pointer_button(BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
     } else {
-        LiSendKeyboardEvent(0x8000 | VK_RETURN, KEY_ACTION_DOWN, downModifiers);
-        LiSendKeyboardEvent(0x8000 | VK_RETURN, KEY_ACTION_UP, downModifiers);
+        const bool to_peer = coop_pointer_keys_to_peer();
+        send_key(0x8000 | VK_RETURN, KEY_ACTION_DOWN, downModifiers, to_peer);
+        send_key(0x8000 | VK_RETURN, KEY_ACTION_UP, downModifiers, to_peer);
     }
     return true;
 }
 
+#endif
+
+#if !defined(TARGET_WEBOS)
+/* Longest clipboard paste typed on the host; the rest is dropped (and logged) rather than flooding it. */
+#define PASTE_MAX_BYTES 8192
+
+/* Ctrl+Alt+Shift+V (moonlight-qt): type the client's clipboard on the host. One character per text event --
+ * LiSendUtf8TextEvent refuses more than UTF8_TEXT_EVENT_MAX_COUNT (32) bytes -- and line breaks and tabs as
+ * the keys themselves. The co-op input channel carries no text, so while the keyboard is on the PEER's pane
+ * the paste is refused rather than typed into the wrong PC. */
+static void paste_clipboard(stream_input_t *input) {
+    if (input->view_only) {
+        return;
+    }
+    if (coop_pointer_active() && coop_pointer_keys_to_peer()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Paste ignored: the keyboard is on the co-op peer's pane, which has no text channel");
+        return;
+    }
+    char *text = SDL_HasClipboardText() ? SDL_GetClipboardText() : NULL;
+    if (text == NULL) {
+        return;
+    }
+    size_t len = strlen(text), typed = 0;
+    if (len > PASTE_MAX_BYTES) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Paste truncated from %u to %u bytes",
+                    (unsigned) len, (unsigned) PASTE_MAX_BYTES);
+        len = PASTE_MAX_BYTES;
+    }
+    for (size_t i = 0; i < len;) {
+        const unsigned char c = (unsigned char) text[i];
+        const size_t n = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+        if (n == 0 || i + n > len) {
+            i++;    /* a stray continuation byte, or a character cut off by the limit */
+            continue;
+        }
+        if (c == '\r' || c == '\n' || c == '\t') {
+            if (c == '\r' && i + 1 < len && text[i + 1] == '\n') {
+                i++;    /* CRLF is one Enter */
+            }
+            const short vk = c == '\t' ? VK_TAB : VK_RETURN;
+            send_key(0x8000 | vk, KEY_ACTION_DOWN, 0, false);
+            send_key(0x8000 | vk, KEY_ACTION_UP, 0, false);
+            typed++;
+        } else if (c >= 0x20) {
+            LiSendUtf8TextEvent(&text[i], (unsigned int) n);
+            typed++;
+        }
+        i += n;
+    }
+    SDL_free(text);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Pasted %u characters", (unsigned) typed);
+}
 #endif
 
 void performPendingSpecialKeyCombo(stream_input_t *input) {
@@ -141,11 +225,29 @@ void performPendingSpecialKeyCombo(stream_input_t *input) {
         case KeyComboUngrabInput:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Detected mouse capture toggle combo");
+#if !defined(TARGET_WEBOS)
+            if (coop_pointer_active()) {
+                /* Co-op has its own capture model: the pointer follows the pane it is over, and when this PC
+                 * is a host the same combo is the global hotkey that brings the mouse back (local_input_win.c). */
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Mouse capture toggle ignored during co-op");
+                break;
+            }
+            app_input_set_capture(input->input, input->input->capture_released);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Mouse %s",
+                        input->input->capture_released ? "released to the desktop" : "captured by the stream");
+#endif
             break;
 
         case KeyComboToggleFullScreen:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Detected full-screen toggle combo");
+#if !defined(TARGET_WEBOS)
+            /* This stream only: app_set_fullscreen() leaves the saved "Fullscreen" setting alone unless the
+             * switch fails. The video letterboxes into the new size and the pointer follows it
+             * (app_event_filter, SIZE_CHANGED -> streaming_display_size). */
+            app_set_fullscreen(global, (SDL_GetWindowFlags(global->ui.window) &
+                                        (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP)) == 0);
+#endif
             break;
 
         case KeyComboToggleStatsOverlay:
@@ -157,14 +259,54 @@ void performPendingSpecialKeyCombo(stream_input_t *input) {
         case KeyComboToggleMouseMode:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Detected mouse mode toggle combo");
+#if !defined(TARGET_WEBOS)
+            if (coop_pointer_active()) {
+                /* Relative motion goes to the primary host only (stream_input_handle_mmotion): in co-op the
+                 * absolute position is what says which PC the pointer is over. */
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Mouse mode toggle ignored during co-op");
+                break;
+            }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Mouse mode now %s",
+                        app_input_toggle_mouse_mode(input->input) ? "relative (games)" : "absolute (remote desktop)");
+#endif
             break;
         case KeyComboToggleCursorHide:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Detected show mouse combo");
+#if !defined(TARGET_WEBOS)
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Local cursor %s",
+                        app_input_toggle_local_cursor(input->input) ? "shown" : "hidden");
+#endif
             break;
         case KeyComboToggleMinimize:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Detected minimize combo");
+#if !defined(TARGET_WEBOS)
+            /* The stream keeps running, as in moonlight-qt: losing focus only releases the mouse
+             * (app_event_filter, FOCUS_LOST). */
+            SDL_MinimizeWindow(global->ui.window);
+#endif
+            break;
+        case KeyComboToggleMouseLock:
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Detected mouse lock toggle combo");
+#if !defined(TARGET_WEBOS)
+            if (coop_pointer_active()) {
+                /* When this PC is a co-op host the real cursor leaves the window for its pane
+                 * (local_input_win.c); confining it to the window would strand the mouse. */
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Mouse lock toggle ignored during co-op");
+                break;
+            }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Mouse %s",
+                        app_input_toggle_pointer_lock(input->input) ? "locked to the window" : "free to leave the window");
+#endif
+            break;
+        case KeyComboPasteText:
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Detected paste text combo");
+#if !defined(TARGET_WEBOS)
+            paste_clipboard(input);
+#endif
             break;
         default:
             break;
@@ -466,13 +608,16 @@ void stream_input_handle_key(stream_input_t *input, const SDL_KeyboardEvent *eve
     }
 
     // Track the key state, so we always know which keys are down
+    bool to_peer = false;
     if (event->state == SDL_PRESSED) {
         struct KeysDown *node = keys_new();
         node->keyCode = keyCode;
+        node->peer = to_peer = coop_pointer_keys_to_peer();
         _pressed_keys = keys_append(_pressed_keys, node);
     } else {
         struct KeysDown *node = keys_find_by(_pressed_keys, &keyCode, &keys_code_comparator);
         if (node) {
+            to_peer = node->peer;
             _pressed_keys = keys_remove(_pressed_keys, node);
             free(node);
         }
@@ -484,9 +629,8 @@ void stream_input_handle_key(stream_input_t *input, const SDL_KeyboardEvent *eve
         } else if (event->state == SDL_RELEASED) {
             keydown_count--;
         }
-        LiSendKeyboardEvent(0x8000 | keyCode,
-                            event->state == SDL_PRESSED ? KEY_ACTION_DOWN : KEY_ACTION_UP,
-                            modifiers);
+        send_key(0x8000 | keyCode, event->state == SDL_PRESSED ? KEY_ACTION_DOWN : KEY_ACTION_UP,
+                 modifiers, to_peer);
     }
 
     if (_pending_key_combo != KeyComboMax && keys_len(_pressed_keys) == 0) {
@@ -521,22 +665,23 @@ void stream_input_send_key_event(stream_input_t *input, short keyCode, bool keyD
     if (input->view_only) {
         return;
     }
+    bool to_peer = false;
     if (keyDown) {
         struct KeysDown *node = keys_new();
         node->keyCode = keyCode;
+        node->peer = to_peer = coop_pointer_keys_to_peer();
         _pressed_keys = keys_append(_pressed_keys, node);
         keydown_count++;
     } else {
         struct KeysDown *node = keys_find_by(_pressed_keys, &keyCode, &keys_code_comparator);
         if (node) {
+            to_peer = node->peer;
             _pressed_keys = keys_remove(_pressed_keys, node);
             free(node);
             keydown_count--;
         }
     }
-    LiSendKeyboardEvent(0x8000 | keyCode,
-                       keyDown ? KEY_ACTION_DOWN : KEY_ACTION_UP,
-                       modifiers);
+    send_key(0x8000 | keyCode, keyDown ? KEY_ACTION_DOWN : KEY_ACTION_UP, modifiers, to_peer);
 }
 
 void stream_input_flush_pressed_keys(stream_input_t *input) {
@@ -546,7 +691,7 @@ void stream_input_flush_pressed_keys(stream_input_t *input) {
     while (_pressed_keys) {
         struct KeysDown *n = _pressed_keys;
         short kc = n->keyCode;
-        LiSendKeyboardEvent(0x8000 | kc, KEY_ACTION_UP, 0);
+        send_key(0x8000 | kc, KEY_ACTION_UP, 0, n->peer);
         _pressed_keys = keys_remove(_pressed_keys, n);
         free(n);
     }

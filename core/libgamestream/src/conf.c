@@ -6,8 +6,10 @@
 #include "mkcert.h"
 #include "http.h"
 #include "logging.h"
+#include "file_compat.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -21,23 +23,7 @@
 
 #endif
 
-#if __WIN32
-
-#include <windows.h>
-
-#define PATH_SEPARATOR '\\'
-#define MKDIR(path) mkdir(path)
-#else
-
-#include <sys/stat.h>
-
-#define MKDIR(path) mkdir(path, 0775)
-#define PATH_SEPARATOR '/'
-#endif
-
-static int mbed_parse_key(mbedtls_pk_context *ctx, const char *path);
-
-static int mkdirtree(const char *directory);
+static int mbed_parse_key(mbedtls_pk_context *ctx, const unsigned char *data, size_t length);
 
 static int load_unique_id(struct GS_CLIENT_T *hnd, const char *keydir);
 
@@ -61,7 +47,7 @@ int gs_conf_load(GS_CLIENT hnd, const char *keydir) {
 
 int gs_conf_init(const char *keydir) {
     commons_log_info("GameStream", "Initializing configuration");
-    if (mkdirtree(keydir) != 0) {
+    if (gs_mkdirs_utf8(keydir) != 0) {
         return gs_set_error(GS_IO_ERROR, "Failed to create config directory %s: %s", keydir, strerror(errno));
     }
     int ret;
@@ -75,26 +61,32 @@ int gs_conf_init(const char *keydir) {
     return ret;
 }
 
-int mbed_parse_key(mbedtls_pk_context *ctx, const char *path) {
+static int mbed_parse_key(mbedtls_pk_context *ctx, const unsigned char *data, size_t length) {
 #if MBEDTLS_VERSION_NUMBER >= 0x03020100
     mbedtls_ctr_drbg_context ctr_drbg;
     mbedtls_ctr_drbg_init(&ctr_drbg);
-    int ret = mbedtls_pk_parse_keyfile(ctx, path, NULL, mbedtls_ctr_drbg_random, &ctr_drbg);
+    int ret = mbedtls_pk_parse_key(ctx, data, length, NULL, 0,
+                                   mbedtls_ctr_drbg_random, &ctr_drbg);
     mbedtls_ctr_drbg_free(&ctr_drbg);
     return ret;
 #else
-    return mbedtls_pk_parse_keyfile(ctx, path, NULL);
+    return mbedtls_pk_parse_key(ctx, data, length, NULL, 0);
 #endif
 }
 
 int load_unique_id(struct GS_CLIENT_T *hnd, const char *keydir) {
-    char id_path[PATH_MAX];
-    snprintf(id_path, PATH_MAX, "%s%c%s", keydir, PATH_SEPARATOR, UNIQUE_FILE_NAME);
-
-    FILE *fd = fopen(id_path, "r");
-    if (fd == NULL) {
-        return gs_set_error(GS_BAD_CONF, "Failed to open unique ID file %s: %s", id_path, strerror(errno));
+    char *id_path = gs_path_join(keydir, UNIQUE_FILE_NAME);
+    if (id_path == NULL) {
+        return gs_set_error(GS_IO_ERROR, "Failed to allocate unique ID path");
     }
+
+    FILE *fd = gs_fopen_utf8(id_path, "rb");
+    if (fd == NULL) {
+        int ret = gs_set_error(GS_BAD_CONF, "Failed to open unique ID file %s: %s", id_path, strerror(errno));
+        free(id_path);
+        return ret;
+    }
+    free(id_path);
     if (fread(hnd->unique_id, 1, UNIQUEID_CHARS, fd) != UNIQUEID_CHARS) {
         fclose(fd);
         return gs_set_error(GS_BAD_CONF, "Bad unique ID file");
@@ -106,12 +98,17 @@ int load_unique_id(struct GS_CLIENT_T *hnd, const char *keydir) {
 
 int init_unique_id(const char *keydir) {
     commons_log_info("GameStream", "Generating device unique ID");
-    char id_path[PATH_MAX];
-    snprintf(id_path, PATH_MAX, "%s%c%s", keydir, PATH_SEPARATOR, UNIQUE_FILE_NAME);
-    FILE *fd = fopen(id_path, "w");
-    if (fd == NULL) {
-        return gs_set_error(GS_BAD_CONF, "Failed to create unique ID file %s: %s", id_path, strerror(errno));
+    char *id_path = gs_path_join(keydir, UNIQUE_FILE_NAME);
+    if (id_path == NULL) {
+        return gs_set_error(GS_IO_ERROR, "Failed to allocate unique ID path");
     }
+    FILE *fd = gs_fopen_utf8(id_path, "wb");
+    if (fd == NULL) {
+        int ret = gs_set_error(GS_BAD_CONF, "Failed to create unique ID file %s: %s", id_path, strerror(errno));
+        free(id_path);
+        return ret;
+    }
+    free(id_path);
     if (fwrite(UNIQUE_ID_DEFAULT, 1, UNIQUEID_CHARS, fd) != UNIQUEID_CHARS) {
         int ret = gs_set_error(GS_BAD_CONF, "Failed to write unique ID file: %s", strerror(errno));
         fclose(fd);
@@ -122,37 +119,61 @@ int init_unique_id(const char *keydir) {
 }
 
 int load_cert(struct GS_CLIENT_T *hnd, const char *keydir) {
-    char cert_path[PATH_MAX];
-    snprintf(cert_path, PATH_MAX, "%s%c%s", keydir, PATH_SEPARATOR, CERTIFICATE_FILE_NAME);
-
-    char key_path[PATH_MAX];
-    snprintf(key_path, PATH_MAX, "%s%c%s", keydir, PATH_SEPARATOR, KEY_FILE_NAME);
+    char *cert_path = gs_path_join(keydir, CERTIFICATE_FILE_NAME);
+    char *key_path = gs_path_join(keydir, KEY_FILE_NAME);
+    unsigned char *cert_data = NULL;
+    unsigned char *key_data = NULL;
+    size_t cert_size = 0;
+    size_t key_size = 0;
+    if (cert_path == NULL || key_path == NULL) {
+        free(cert_path);
+        free(key_path);
+        return gs_set_error(GS_IO_ERROR, "Failed to allocate certificate paths");
+    }
+    if (gs_read_file_utf8(cert_path, &cert_data, &cert_size) != 0) {
+        int error = gs_set_error(GS_IO_ERROR, "Failed to open certFile %s for reading: %s",
+                                 cert_path, strerror(errno));
+        free(cert_path);
+        free(key_path);
+        return error;
+    }
+    if (gs_read_private_file_utf8(key_path, &key_data, &key_size) != 0) {
+        int error = gs_set_error(GS_IO_ERROR, "Cannot safely read private key %s: %s (requires an owned regular file, no links)",
+                                 key_path, strerror(errno));
+        free(cert_data);
+        free(cert_path);
+        free(key_path);
+        return error;
+    }
+    free(cert_path);
+    free(key_path);
 
     int ret;
     mbedtls_x509_crt_init(&hnd->cert);
-    if ((ret = mbedtls_x509_crt_parse_file(&hnd->cert, cert_path)) != 0) {
+    if ((ret = mbedtls_x509_crt_parse(&hnd->cert, cert_data, cert_size + 1)) != 0) {
         char buf[512];
         mbedtls_strerror(ret, buf, 512);
         mbedtls_x509_crt_free(&hnd->cert);
+        free(cert_data);
+        free(key_data);
         return gs_set_error(GS_FAILED, "Failed to parse certificate: %s", buf);
     }
-    FILE *f = fopen(cert_path, "r");
-    if (f == NULL) {
+    if (cert_size > (sizeof(hnd->cert_hex) - 1) / 2) {
         mbedtls_x509_crt_free(&hnd->cert);
-        return gs_set_error(GS_IO_ERROR, "Failed to open certFile %s for reading", cert_path);
+        free(cert_data);
+        free(key_data);
+        return gs_set_error(GS_BAD_CONF, "Certificate file is too large");
     }
-    int c;
-    int length = 0;
-    while ((c = fgetc(f)) != EOF) {
-        sprintf(&hnd->cert_hex[length], "%02x", c);
-        length += 2;
+    for (size_t i = 0; i < cert_size; ++i) {
+        snprintf(&hnd->cert_hex[i * 2], 3, "%02x", cert_data[i]);
     }
-    hnd->cert_hex[length] = 0;
-
-    fclose(f);
+    hnd->cert_hex[cert_size * 2] = 0;
+    free(cert_data);
 
     mbedtls_pk_init(&hnd->pk);
-    if ((ret = mbed_parse_key(&hnd->pk, key_path)) != 0) {
+    ret = mbed_parse_key(&hnd->pk, key_data, key_size + 1);
+    free(key_data);
+    if (ret != 0) {
         char buf[512];
         mbedtls_strerror(ret, buf, 512);
         mbedtls_x509_crt_free(&hnd->cert);
@@ -165,39 +186,15 @@ int load_cert(struct GS_CLIENT_T *hnd, const char *keydir) {
 
 static int init_cert(const char *keydir) {
     commons_log_info("GameStream", "Generating device cert/key pair");
-    char cert_path[PATH_MAX];
-    snprintf(cert_path, PATH_MAX, "%s%c%s", keydir, PATH_SEPARATOR, CERTIFICATE_FILE_NAME);
-
-    char key_path[PATH_MAX];
-    snprintf(key_path, PATH_MAX, "%s%c%s", keydir, PATH_SEPARATOR, KEY_FILE_NAME);
-    return mkcert_generate(cert_path, key_path);
-}
-
-int mkdirtree(const char *directory) {
-    char buffer[PATH_MAX];
-    char *p = buffer;
-
-    // The passed in string could be a string literal
-    // so we must copy it first
-    strncpy(p, directory, PATH_MAX - 1);
-    buffer[PATH_MAX - 1] = '\0';
-
-    while (*p != 0) {
-        // Find the end of the path element
-        do {
-            p++;
-        } while (*p != 0 && *p != '/');
-
-        char oldChar = *p;
-        *p = 0;
-
-        // Create the directory if it doesn't exist already
-        if (MKDIR(buffer) == -1 && errno != EEXIST) {
-            return -1;
-        }
-
-        *p = oldChar;
+    char *cert_path = gs_path_join(keydir, CERTIFICATE_FILE_NAME);
+    char *key_path = gs_path_join(keydir, KEY_FILE_NAME);
+    if (cert_path == NULL || key_path == NULL) {
+        free(cert_path);
+        free(key_path);
+        return gs_set_error(GS_IO_ERROR, "Failed to allocate certificate paths");
     }
-
-    return 0;
+    const int result = mkcert_generate(cert_path, key_path);
+    free(cert_path);
+    free(key_path);
+    return result;
 }

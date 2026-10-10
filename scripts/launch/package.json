@@ -1,0 +1,12 @@
+{
+  "name": "eclipse-umbra-launch-tools",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "render-social-card": "node render_social_card.cjs",
+    "render-webos-artwork": "node render_webos_artwork.cjs"
+  },
+  "dependencies": {
+    "sharp": "0.35.4"
+  }
+}

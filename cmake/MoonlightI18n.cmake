@@ -15,6 +15,12 @@ foreach (LANG ${I18N_LOCALES})
             COMMAND ${CMAKE_COMMAND} -E make_directory ${_MODIR}
             COMMAND ${MSGFMT_COMMAND} --output-file=${_MOFILE} ${_POFILE})
     list(APPEND MOFILES ${_MOFILE})
+    if (OS_WINDOWS)
+        # The portable package has no system gettext catalog directory. Keep
+        # the standard layout under the executable's share directory instead.
+        install(FILES ${_MOFILE}
+                DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/locale/${_MOLANG}/LC_MESSAGES)
+    endif ()
 endforeach ()
 add_custom_target(moonlight-i18n ALL DEPENDS ${MOFILES})
 add_dependencies(moonlight moonlight-i18n)

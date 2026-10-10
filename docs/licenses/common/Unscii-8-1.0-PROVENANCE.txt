@@ -1,0 +1,53 @@
+Unscii-8 1.0 provenance and upstream licence statement
+=======================================================
+
+Asset
+-----
+Unscii-8 by Ville-Matias "Viznut" Heikkilä.
+
+Upstream project:
+https://github.com/viznut/unscii
+
+Pinned upstream README:
+https://github.com/viznut/unscii/blob/257b4dfeb50651510fe8b9cf4f151a148a4490e4/README.md
+
+Pinned README SHA-256:
+687095d7e32c466192a81c9b52ddeeaf99036fa2bc9ae4f818f1cb8b96096b3c
+
+Licence statement
+-----------------
+The pinned upstream README says the Unscii material may be considered public
+domain or CC0, except for unifont.hex, hex2bdf.pl and unscii-16-full.* because
+those files derive from or contain parts of Roman Czyborra's Unifont project
+and fall under the GPL. The embedded Unscii-8 asset identified below is not one
+of those named exceptions.
+
+Material redistributed by this project
+--------------------------------------
+LVGL first imported the built-in Unscii-8 glyph array in commit
+5168b5c44f284e647c20a6694010b218fc323950 (26 June 2019). That source identifies
+the font as Unscii and links the historical project page at
+http://pelulamu.net/unscii/ . LVGL later added the TTF used by its font-generation
+script in commit 4f70bbf182421b2a4879e02fbf732df181489315 (8 March 2021).
+
+Import history:
+https://github.com/lvgl/lvgl/commit/5168b5c44f284e647c20a6694010b218fc323950
+https://github.com/lvgl/lvgl/commit/4f70bbf182421b2a4879e02fbf732df181489315
+
+LVGL v8.3.0 source font:
+third_party/lvgl/scripts/built_in_font/unscii-8.ttf
+SHA-256: 1be7ca5552beb67f6bf1bed4a0db92a53835f1c07cb0f643063d82ffb0dccba0
+
+Generated LVGL glyph data linked into the client:
+third_party/lvgl/src/font/lv_font_unscii_8.c
+SHA-256: 0f5a9b6131ffed26f42099ced657cc3f619ea66e2f958ca54673f97e0e71cf0e
+
+Both hashes match the corresponding files published in the official LVGL
+v8.3.0 tag:
+https://github.com/lvgl/lvgl/tree/v8.3.0/scripts/built_in_font
+https://github.com/lvgl/lvgl/blob/v8.3.0/src/font/lv_font_unscii_8.c
+
+The LVGL v8.3.0 TTF is not byte-identical to the TTF currently published in
+the pinned Unscii repository. This record therefore claims exact bytes only
+against LVGL v8.3.0 and records the earlier LVGL import trail separately; it
+does not claim a current upstream-TTF hash match.

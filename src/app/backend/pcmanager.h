@@ -58,6 +58,33 @@ void pcmanager_favorite_app(pcmanager_t *manager, const uuidstr_t *uuid, int app
 
 void pcmanager_set_app_hidden(pcmanager_t *manager, const uuidstr_t *uuid, int appid, bool hidden);
 
+/**
+ * Set (or clear) the per-host Windows login PIN used for Wake-on-LAN auto-entry.
+ * Pass NULL or "" to clear. Persists to hosts.ini immediately.
+ */
+/**
+ * Set (or clear, with NULL/empty) the host's Wake-on-LAN login credential.
+ * @param is_password false = a PIN (digits, typed on a number pad and usually
+ *        auto-submitted by Windows Hello); true = a password (full character set,
+ *        always needs Enter).
+ */
+void pcmanager_set_host_pin(pcmanager_t *manager, const uuidstr_t *uuid, const char *pin,
+                            bool is_password);
+
+/**
+ * CO-OP DEFAULT CONTROLLERS, per host. A host may claim any number of them, and a
+ * controller may default to more than one host -- one pad driving both machines is a
+ * real case (menus during setup, or one person on both panes). Persists to hosts.ini
+ * immediately, like the PIN: a controller layout is set up once and must survive a kill.
+ */
+bool pcmanager_node_has_pad(const pclist_t *node, const char *name);
+
+void pcmanager_set_host_pad(pcmanager_t *manager, const uuidstr_t *uuid, const char *name, bool assigned);
+
+/** Record what the user said this host's GPU is (coop_gpu_vendor_t). Persisted to hosts.ini
+ *  at once. A host that reports its own encoder overrules this -- see types.h. */
+void pcmanager_set_host_gpu(pcmanager_t *manager, const uuidstr_t *uuid, int vendor);
+
 bool pcmanager_select(pcmanager_t *manager, const uuidstr_t *uuid);
 
 bool pcmanager_forget(pcmanager_t *manager, const uuidstr_t *uuid);

@@ -2,8 +2,10 @@
 
 #include <locale.h>
 #include <libintl.h>
+#include <stdlib.h>
 
 #include "util/i18n.h"
+#include "util/path.h"
 #include "app_launch.h"
 
 #define USE_OPENURL SDL_VERSION_ATLEAST(2, 0, 14)
@@ -31,10 +33,27 @@ void app_open_url(const char *url) {
 
 void app_init_locale() {
     const char *textdomaindir = getenv("TEXTDOMAINDIR");
+#ifdef OS_WINDOWS
+    /* A downloaded portable build has no machine-wide gettext prefix. Resolve
+     * the installed catalogs from the executable, not the launcher's working
+     * directory. Keep TEXTDOMAINDIR as an explicit developer/user override. */
+    char *portable_textdomaindir = NULL;
+    if (textdomaindir == NULL) {
+        char *base = path_assets();
+        char *share = base != NULL ? path_join(base, "share") : NULL;
+        portable_textdomaindir = share != NULL ? path_join(share, "locale") : NULL;
+        free(base);
+        free(share);
+        textdomaindir = portable_textdomaindir;
+    }
+#endif
     if (textdomaindir) {
         bindtextdomain("moonlight-tv", textdomaindir);
         bind_textdomain_codeset("moonlight-tv", "UTF-8");
     }
+#ifdef OS_WINDOWS
+    free(portable_textdomaindir);
+#endif
     textdomain("moonlight-tv");
     i18n_setlocale("");
 }

@@ -38,8 +38,8 @@ msgid "OK"
 msgstr "OK"
 
 #: src/app/app.c:278
-msgid "Quit Aurora?"
-msgstr "Sair do Aurora?"
+msgid "Quit Eclipse?"
+msgstr "Sair do Eclipse?"
 
 #: src/app/app_settings.c:33
 msgid "Stereo"
@@ -319,7 +319,7 @@ msgid "Sound Channels (Experimental)"
 msgstr "Canais de Som (Experimental)"
 
 #: src/app/ui/settings/panes/av_pane.c:29
-msgid "Aurora uses moonlight-embedded to select a suitable decoder automatically."
+msgid "Eclipse uses moonlight-embedded to select a suitable decoder automatically."
 msgstr "O Moonlight embedded escolherá o decodificador adequado automaticamente"
 
 #: src/app/ui/settings/panes/av_pane.c:50
@@ -639,8 +639,8 @@ msgid "HID Devices"
 msgstr "Dispositivos HID"
 
 #: src/app/ui/streaming/hid_passthrough_panel.c
-msgid "No HID gamepads visible to Aurora"
-msgstr "Nenhum gamepad HID visível para o Aurora"
+msgid "No HID gamepads visible to Eclipse"
+msgstr "Nenhum gamepad HID visível para o Eclipse"
 
 #: src/app/ui/streaming/hid_passthrough_panel.c
 msgid "Bridged"
@@ -849,11 +849,6 @@ msgid "AV1 can improve efficiency; requires host and decoder support."
 msgstr "O AV1 pode melhorar a eficiência; requer suporte no host e no decoder."
 
 #: src/app/ui/settings/panes/video.pane.c
-#, c-format
-msgid "%s decoder doesn't support AV1 codec."
-msgstr "O decoder %s não suporta o codec AV1."
-
-#: src/app/ui/settings/panes/video.pane.c
 msgid "Enable H265 and/or AV1 (if supported) to stream HDR10 from the host."
 msgstr "Ative H265 e/ou AV1 (se suportados) para HDR10 a partir do host."
 
@@ -868,10 +863,6 @@ msgstr ""
 #: src/app/ui/settings/panes/basic.pane.c
 msgid "Client refresh rate (Hz)"
 msgstr "Taxa de atualização do cliente (Hz)"
-
-#: src/app/ui/settings/panes/basic.pane.c
-msgid "Auto"
-msgstr "Automático"
 
 #: src/app/ui/settings/panes/basic.pane.c
 msgid ""

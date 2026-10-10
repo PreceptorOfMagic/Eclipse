@@ -1,30 +1,31 @@
-# Aurora no webOS Homebrew (Homebrew Channel)
+# webOS Homebrew publication
 
-O catálogo oficial é o repositório **[webosbrew/apps-repo](https://github.com/webosbrew/apps-repo)** (site: [repo.webosbrew.org](https://repo.webosbrew.org/)). Guia oficial de submissão: [Submit Application](https://repo.webosbrew.org/submit).
+> [!WARNING]
+> **Publication is blocked.** Do not submit the current catalog YAML or publish a release merely to test this guide. The inherited metadata still points to the previous Aurora repository, artwork, release manifest and recipient; the current IPK also needs complete release-specific licence, notice and corresponding-source material.
 
-## O que precisas
+The official catalog is [webosbrew/apps-repo](https://github.com/webosbrew/apps-repo), with submission guidance at [repo.webosbrew.org](https://repo.webosbrew.org/submit). This project will use that normal review path only after the public-launch checklist is complete.
 
-1. **Release no GitHub** com estes ficheiros (o CI de *Release* já os gera quando `webosbrew-gen-manifest` está instalado):
-   - `com.aurora.gamestream_*_arm.ipk`
-   - `com.aurora.gamestream.manifest.json`  
-   URL usada pelo catálogo (sempre a última release):  
-   `https://github.com/GuiDev1994/moonlight-tv/releases/latest/download/com.aurora.gamestream.manifest.json`
+## Gates before submission
 
-2. **Ícones** em `deploy/webos/` no branch `main` do teu repo (`icon.png`, `icon_large.png`, etc.), para o `iconUri` do YAML e do `AresPackage.cmake` funcionarem.
+1. Apply and verify the chosen **Eclipse** public identity across the generated package and catalog metadata, and register/verify every packaging-identity parameter. Keep the installed application ID and compatibility paths unchanged unless a separately measured migration is approved.
+2. Publish the final source repository and a reviewed release containing the webOS package, manifest, checksums, licence/notice bundle and exact corresponding-source reference.
+3. Replace every inherited repository, icon, badge, manifest and maintainer/funding reference in `deploy/webosbrew/` and `cmake/AresPackage.cmake` with final project-owned values.
+4. Test both a fresh install and the first stream of the live and beta application identities on the current webOS release. The first launch matters because the media plugin state is rebuilt per application identity.
+5. Verify the package on the real TV display, not only from counters or install success.
+6. Confirm rollback from a retained known-good package and record the tested source commit.
+7. Check credits, media rights, support disclosures and every link while signed out of GitHub.
 
-3. **Ficheiro YAML** já preparado neste projeto:  
-   [`deploy/webosbrew/com.aurora.gamestream.yml`](../deploy/webosbrew/com.aurora.gamestream.yml)
+## Submission procedure after the gates clear
 
-## Passos para submeter
+1. Generate a fresh catalog entry from the final public repository and release rather than editing the inherited file piecemeal.
+2. Confirm the icon and detail-icon URLs return the final approved artwork from the public default branch.
+3. Confirm the manifest URL returns the exact reviewed release manifest in a signed-out browser.
+4. Install through the same manifest/catalog path a consumer would use and run the fresh-install/first-stream test again.
+5. Fork `webosbrew/apps-repo`, add the reviewed package metadata under its `packages/` directory, and open a pull request following the current upstream submission guide.
+6. Keep the catalog description factual: co-op first, clear engineering-preview status, tested platforms only, direct lineage credit, and no unsupported performance or compatibility promises.
 
-1. Faz **fork** de [webosbrew/apps-repo](https://github.com/webosbrew/apps-repo).
-2. Copia `com.aurora.gamestream.yml` para a pasta **`packages/`** do fork (mesmo nome de ficheiro).
-3. Confirma que o link **manifestUrl** abre o JSON da tua última release (navegador ou `curl`).
-4. Abre um **Pull Request** para `webosbrew/apps-repo` com um título claro, por exemplo: *Add Aurora (com.aurora.gamestream)*.
-5. Aguarda revisão da equipa webOS Homebrew.
+## Maintenance
 
-## Manutenção
+Treat each public package as a release artifact, not as a pointer to a moving internal build. Before updating the catalog, re-run the artifact notices/source audit, link checks, fresh-install test and on-screen verification. If an application identity or manifest filename ever changes, plan and document migration rather than silently replacing it.
 
-Cada nova **tag/release** que publiques com `.ipk` + `.manifest.json` atualiza o que os utilizadores obtêm via `releases/latest/download/…` — não é preciso alterar o YAML no apps-repo **enquanto** o nome do ficheiro `com.aurora.gamestream.manifest.json` se mantiver.
-
-Se mudares o **app id** ou o nome do manifest, atualiza o YAML no apps-repo noutro PR.
+The current gated metadata remains at [`deploy/webosbrew/com.aurora.gamestream.yml`](../deploy/webosbrew/com.aurora.gamestream.yml) only as a historical input for the later regeneration pass.

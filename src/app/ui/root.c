@@ -9,10 +9,11 @@
 
 #include "stream/session.h"
 #include "stream/input/session_input.h"
-#include "hid_passthrough/hid_passthrough_manager.h"
 
+#include "ui_hover.h"
 #include "streaming/streaming.controller.h"
 #include "launcher/launcher.controller.h"
+#include "launcher/apps.controller.h"
 
 #include "logging.h"
 #include "util/bus.h"
@@ -21,8 +22,14 @@
 
 #include <SDL.h>
 #include <SDL_image.h>
+#include <stdint.h>
+
+#include "ss4s/hostrender.h"
 
 #include "logging_ext_lvgl.h"
+#ifdef _WIN32
+#include "local_host_win.h"
+#endif
 #include "fatal_error.h"
 #include "app_error.h"
 #include "util/i18n.h"
@@ -51,40 +58,11 @@ static void session_error();
 
 static void session_error_dialog_cb(lv_event_t *event);
 
-#if defined(TARGET_WEBOS)
-/* Drives HID-passthrough auto-plug for the whole stream: rescans attached
- * devices on a cadence and bridges any recognized controller that is not yet
- * plugged. This is what makes a DualSense connected at stream start — or paired
- * over Bluetooth mid-game — get passed through without opening the HID overlay.
- * Lives on the LVGL/main thread (lv_timer), the same thread as the panel and all
- * plug operations, so the device model needs no locking. */
-#define HID_AUTOPLUG_POLL_MS 1000
-static lv_timer_t *hid_autoplug_timer = NULL;
 
-static void hid_autoplug_timer_cb(lv_timer_t *timer) {
-    app_t *app = timer->user_data;
-    if (app == NULL || app->session == NULL) {
-        return;
-    }
-    hid_passthrough_manager_t *mgr = session_get_hid_passthrough(app->session);
-    if (mgr != NULL) {
-        hid_passthrough_manager_poll(mgr);
-    }
-}
-
-static void hid_autoplug_timer_stop(void) {
-    if (hid_autoplug_timer != NULL) {
-        lv_timer_del(hid_autoplug_timer);
-        hid_autoplug_timer = NULL;
-    }
-}
-
-static void hid_autoplug_timer_start(app_t *app) {
-    hid_autoplug_timer_stop();
-    hid_passthrough_manager_t *mgr = session_get_hid_passthrough(app->session);
-    if (mgr != NULL && hid_passthrough_manager_active(mgr)) {
-        hid_autoplug_timer = lv_timer_create(hid_autoplug_timer_cb, HID_AUTOPLUG_POLL_MS, app);
-    }
+#ifdef _WIN32
+static void local_host_window_timer_cb(lv_timer_t *timer) {
+    app_ui_t *ui = timer->user_data;
+    local_host_window_tick(ui->window);
 }
 #endif
 
@@ -97,13 +75,38 @@ void app_ui_init(app_ui_t *ui, app_t *app) {
     app_font_init(&ui->fonts, ui->dpi);
     lv_memset_00(&ui->theme, sizeof(lv_theme_t));
     lv_theme_moonlight_init(&ui->theme, &ui->fonts, app);
+#ifdef _WIN32
+    /* Co-op with this PC as a host changes the display layout under the window; keep the
+     * window on its own monitor (local_host_win.c). Always running: home is learned while
+     * nothing is happening. */
+    lv_timer_create(local_host_window_timer_cb, LOCAL_HOST_WINDOW_POLL_MS, ui);
+#endif
+}
+
+/* A MAXIMIZED window's position and size are the maximized client area. Saved as the normal
+ * rectangle, they recreated a NORMAL window exactly filling the screen with its frame off the
+ * edges -- no reachable title bar, and Windows shrank it at the first display change, which
+ * letterboxed a local-host co-op stream (issue #6, run W1 2026-09-27). Save the flag instead
+ * and keep the last normal rectangle. */
+static void app_ui_save_window_state(SDL_Window *window) {
+    window_state_t *state = &app_configuration->window_state;
+    const Uint32 flags = SDL_GetWindowFlags(window);
+    /* Minimized (closed from the taskbar) or in desktop fullscreen, the window's flags and
+     * position describe neither the normal nor the maximized state: keep what was saved. */
+    if (flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_FULLSCREEN)) {
+        return;
+    }
+    state->maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0;
+    if (!state->maximized) {
+        SDL_GetWindowPosition(window, &state->x, &state->y);
+        SDL_GetWindowSize(window, &state->w, &state->h);
+    }
 }
 
 void app_ui_deinit(app_ui_t *ui) {
-    if (!app_configuration->fullscreen) {
-        SDL_GetWindowPosition(ui->window, &app_configuration->window_state.x, &app_configuration->window_state.y);
-        SDL_GetWindowSize(ui->window, &app_configuration->window_state.w, &app_configuration->window_state.h);
-    }
+    /* The window state is saved in app_ui_close, while the window still exists: app_deinit
+     * closes (and destroys the window) BEFORE this runs, so a save here read a NULL window --
+     * SDL returns nothing for one, and the exit save never recorded anything (2026-09-27). */
     lv_theme_moonlight_deinit(&ui->theme);
     app_font_deinit(&ui->fonts);
     lv_img_decoder_delete(ui->img_decoder);
@@ -143,6 +146,9 @@ void app_ui_open(app_ui_t *ui, bool open_launcher, const app_launch_params_t *pa
     lv_group_set_editing(group, 0);
     lv_group_set_default(group);
     app_ui_input_init(&ui->input, ui);
+    /* LVGL never sets LV_STATE_HOVERED itself, so nothing in this app lit up
+     * under the magic remote's cursor. See ui_hover.c. */
+    ui_hover_init(&ui->input);
 
     ui->container = lv_scr_act();
     lv_obj_clear_flag(ui->container, LV_OBJ_FLAG_SCROLLABLE);
@@ -165,11 +171,15 @@ void app_ui_close(app_ui_t *ui) {
         return;
     }
 
+    if (!app_configuration->fullscreen && ui->window != NULL) {
+        app_ui_save_window_state(ui->window);
+    }
     lv_fragment_manager_del(ui->fm);
 
     ui->fm = NULL;
     ui->container = NULL;
 
+    ui_hover_deinit();
     app_ui_input_deinit(&ui->input);
     lv_theme_set_parent(&ui->theme, NULL);
     lv_disp_drv_t *driver = ui->disp->driver;
@@ -177,6 +187,9 @@ void app_ui_close(app_ui_t *ui) {
     lv_disp_remove(ui->disp);
     lv_app_disp_drv_deinit(driver);
     ui->disp = NULL;
+    /* Withdraw it before it is destroyed: the video module reads this to find something to
+     * draw into, and a stale pointer here is a crash rather than a clean failure. */
+    SDL_SetHintWithPriority(SS4S_HINT_HOST_WINDOW, "", SDL_HINT_OVERRIDE);
     SDL_DestroyWindow(ui->window);
     ui->window = NULL;
 }
@@ -185,16 +198,38 @@ bool app_ui_is_opened(const app_ui_t *ui) {
     return ui->disp != NULL;
 }
 
-bool ui_has_stream_renderer() {
-//    return ui_stream_render != NULL && ui_stream_render->renderDraw;
-    return false;
+/* The desktop video module renders into THIS window's renderer, and SDL_Renderer is not
+ * thread safe, so it may only do so from this thread. It publishes its draw hook through
+ * an SDL hint while a video instance is open; see third_party/ss4s/include/ss4s/hostrender.h
+ * for why the handoff looks like this. On webOS there is never a hint: starfish owns a
+ * hardware plane under the UI and nothing here draws video. */
+static SS4S_HostRender *ui_host_render(void) {
+    const char *hint = SDL_GetHint(SS4S_HINT_HOST_RENDER);
+    if (hint == NULL || hint[0] == '\0') {
+        return NULL;
+    }
+    SS4S_HostRender *render = NULL;
+    if (sscanf(hint, "%p", (void **) &render) != 1) {
+        return NULL;
+    }
+    return render;
 }
 
+bool ui_has_stream_renderer() {
+    return ui_host_render() != NULL;
+}
+
+bool ui_stream_frame_pending() {
+    const SS4S_HostRender *render = ui_host_render();
+    return render != NULL && render->pending != NULL && render->pending(render->context);
+}
+
+/* Called from lv_app_redraw_now() with the window as the render target, before the UI
+ * texture is alpha-blended on top: video underneath, UI over it, one present. Returning
+ * true tells that function not to clear -- the module already filled the frame. */
 bool ui_render_background() {
-//    if (streaming_status == STREAMING_STREAMING && ui_stream_render && ui_stream_render->renderDraw) {
-//        return ui_stream_render->renderDraw();
-//    }
-    return false;
+    const SS4S_HostRender *render = ui_host_render();
+    return render != NULL && render->draw != NULL && render->draw(render->context);
 }
 
 bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
@@ -226,23 +261,16 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
 //                    ui_stream_render->renderSetup((PSTREAM_CONFIGURATION) data1, &ui_stream_render_host_context);
 //                }
                 }
+                app_input_reset_stream_overrides(&app->input);
                 if (session_start_input(app->session)) {
                     app_set_mouse_grab(&app->input, true);
                 }
-#if defined(TARGET_WEBOS)
-                /* Begin auto-plugging connected/hotplugged controllers for the
-                 * duration of this stream (no-op unless hid_passthrough is on). */
-                hid_autoplug_timer_start(app);
-#endif
                 app_set_keep_awake(app, true);
                 streaming_enter_fullscreen(app->session);
                 last_pts = 0;
                 return true;
             }
             case USER_STREAM_CLOSE: {
-#if defined(TARGET_WEBOS)
-                hid_autoplug_timer_stop();
-#endif
                 if (app->ss4s.video_cap.transform & SS4S_VIDEO_CAP_TRANSFORM_UI_EXCLUSIVE) {
                     SDL_ShowCursor(SDL_TRUE);
                 } else {
@@ -253,6 +281,7 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
 //                    ui_stream_render->renderCleanup();
 //                }
                 app_set_keep_awake(app, false);
+                app_input_reset_stream_overrides(&app->input);
                 if (session_has_input(app->session)) {
                     app_set_mouse_grab(&app->input, false);
                     session_stop_input(app->session);
@@ -263,13 +292,13 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
                 return true;
             }
             case USER_STREAM_FINISHED: {
-#if defined(TARGET_WEBOS)
-                /* Terminal event for every teardown (posted just before the session
-                 * is destroyed) — make sure the poll timer never outlives it. */
-                hid_autoplug_timer_stop();
-#endif
                 if (streaming_errno != 0) {
-                    session_error();
+                    /* A PIN HDR-reconnect launch that will be retried (e.g. Apollo's
+                     * transient 503 during display/encoder reinit) — stay silent and
+                     * let the retry run; only surface the dialog once we give up. */
+                    if (!apps_controller_hdr_relaunch_will_retry()) {
+                        session_error();
+                    }
                     break;
                 }
                 return true;
@@ -289,11 +318,7 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
 }
 
 bool ui_should_block_input() {
-#if defined(TARGET_WEBOS)
-    return streaming_overlay_shown() || streaming_soft_keyboard_shown() || streaming_hid_panel_shown();
-#else
     return streaming_overlay_shown() || streaming_soft_keyboard_shown();
-#endif
 }
 
 void ui_display_size(app_ui_t *ui, int width, int height) {
@@ -315,6 +340,10 @@ bool ui_set_input_mode(app_ui_input_t *input, app_ui_input_mode_t mode) {
         return false;
     }
     input->mode = mode;
+    /* Whoever is driving owns the highlight -- see ui_hover.c. Done here, on the
+     * transition, because this is called from the input driver's read callback, before
+     * the press that caused it becomes an event. */
+    ui_hover_input_mode_changed();
     return true;
 }
 
@@ -364,15 +393,150 @@ void ui_cb_destroy_fragment(lv_event_t *e) {
     lv_fragment_del(fragment);
 }
 
+static bool app_ui_display_usable_bounds(int display, SDL_Rect *bounds) {
+    return SDL_GetDisplayUsableBounds(display, bounds) == 0 ||
+           SDL_GetDisplayBounds(display, bounds) == 0;
+}
+
+static int64_t app_ui_rect_overlap_area(const window_state_t *state, const SDL_Rect *bounds) {
+    const int64_t left = state->x > bounds->x ? state->x : bounds->x;
+    const int64_t top = state->y > bounds->y ? state->y : bounds->y;
+    const int64_t state_right = (int64_t) state->x + state->w;
+    const int64_t state_bottom = (int64_t) state->y + state->h;
+    const int64_t bounds_right = (int64_t) bounds->x + bounds->w;
+    const int64_t bounds_bottom = (int64_t) bounds->y + bounds->h;
+    const int64_t right = state_right < bounds_right ? state_right : bounds_right;
+    const int64_t bottom = state_bottom < bounds_bottom ? state_bottom : bounds_bottom;
+    return right > left && bottom > top ? (right - left) * (bottom - top) : 0;
+}
+
+static void app_ui_normalize_window_state(window_state_t *state, int fallback_display) {
+    if (state == NULL) {
+        return;
+    }
+    if (state->w < 640 || state->h < 480) {
+        state->w = 1280;
+        state->h = 720;
+    }
+    const int displays = SDL_GetNumVideoDisplays();
+    if (displays <= 0) {
+        return;
+    }
+    if (fallback_display < 0 || fallback_display >= displays) {
+        fallback_display = 0;
+    }
+
+    const bool symbolic_position = SDL_WINDOWPOS_ISUNDEFINED(state->x) ||
+                                   SDL_WINDOWPOS_ISCENTERED(state->x) ||
+                                   SDL_WINDOWPOS_ISUNDEFINED(state->y) ||
+                                   SDL_WINDOWPOS_ISCENTERED(state->y);
+    int display = fallback_display;
+    int64_t best_overlap = 0;
+    if (!symbolic_position) {
+        for (int i = 0; i < displays; ++i) {
+            SDL_Rect candidate;
+            if (!app_ui_display_usable_bounds(i, &candidate)) {
+                continue;
+            }
+            const int64_t overlap = app_ui_rect_overlap_area(state, &candidate);
+            if (overlap > best_overlap) {
+                best_overlap = overlap;
+                display = i;
+            }
+        }
+    }
+
+    SDL_Rect usable;
+    if (!app_ui_display_usable_bounds(display, &usable) || usable.w <= 0 || usable.h <= 0) {
+        state->x = SDL_WINDOWPOS_CENTERED_DISPLAY(display);
+        state->y = SDL_WINDOWPOS_CENTERED_DISPLAY(display);
+        return;
+    }
+
+    /* A saved 4K/maximized rectangle restored onto a smaller or differently
+     * scaled monitor must not leave its title bar and controls off-screen. */
+    if (state->w > usable.w) {
+        state->w = usable.w;
+    }
+    if (state->h > usable.h) {
+        state->h = usable.h;
+    }
+
+    if (symbolic_position || best_overlap == 0) {
+        state->x = SDL_WINDOWPOS_CENTERED_DISPLAY(display);
+        state->y = SDL_WINDOWPOS_CENTERED_DISPLAY(display);
+        return;
+    }
+
+    const int max_x = usable.x + usable.w - state->w;
+    const int max_y = usable.y + usable.h - state->h;
+    if (state->x < usable.x) {
+        state->x = usable.x;
+    } else if (state->x > max_x) {
+        state->x = max_x;
+    }
+    if (state->y < usable.y) {
+        state->y = usable.y;
+    } else if (state->y > max_y) {
+        state->y = max_y;
+    }
+}
+
+/* A config saved before `maximized` existed holds the maximized client area as the normal
+ * rectangle. Exactly one monitor's usable area is that signature: take it as maximized and give
+ * the window a normal rectangle it can actually be restored to. */
+static void app_ui_adopt_legacy_maximized(window_state_t *state) {
+    if (state->maximized) {
+        return;
+    }
+    const int displays = SDL_GetNumVideoDisplays();
+    for (int i = 0; i < displays; ++i) {
+        SDL_Rect usable;
+        if (SDL_GetDisplayUsableBounds(i, &usable) == 0 && state->x == usable.x && state->y == usable.y &&
+            state->w == usable.w && state->h == usable.h) {
+            state->maximized = true;
+            state->w = 1280;
+            state->h = 720;
+            /* Real coordinates on display i: a symbolic "centred" position would be resolved
+             * against display 0 by app_ui_normalize_window_state. */
+            state->x = usable.x + (usable.w - state->w) / 2;
+            state->y = usable.y + (usable.h - state->h) / 2;
+            return;
+        }
+    }
+}
+
 SDL_Window *app_ui_create_window(app_ui_t *ui) {
     Uint32 win_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
     int win_x = SDL_WINDOWPOS_UNDEFINED, win_y = SDL_WINDOWPOS_UNDEFINED,
         win_width = 1920, win_height = 1080;
+    app_ui_adopt_legacy_maximized(&app_configuration->window_state);
+    app_ui_normalize_window_state(&app_configuration->window_state, 0);
     if (app_configuration->fullscreen) {
         win_flags |= APP_FULLSCREEN_FLAG;
+        int display = 0;
+        const int saved_x = app_configuration->window_state.x;
+        const int saved_y = app_configuration->window_state.y;
+        if (!SDL_WINDOWPOS_ISUNDEFINED(saved_x) && !SDL_WINDOWPOS_ISCENTERED(saved_x) &&
+            !SDL_WINDOWPOS_ISUNDEFINED(saved_y) && !SDL_WINDOWPOS_ISCENTERED(saved_y)) {
+            SDL_Point saved_center = {
+                    saved_x + app_configuration->window_state.w / 2,
+                    saved_y + app_configuration->window_state.h / 2,
+            };
+            const int displays = SDL_GetNumVideoDisplays();
+            for (int i = 0; i < displays; ++i) {
+                SDL_Rect bounds;
+                if (SDL_GetDisplayBounds(i, &bounds) == 0 &&
+                    SDL_PointInRect(&saved_center, &bounds)) {
+                    display = i;
+                    break;
+                }
+            }
+        }
+        win_x = SDL_WINDOWPOS_CENTERED_DISPLAY(display);
+        win_y = SDL_WINDOWPOS_CENTERED_DISPLAY(display);
         SDL_DisplayMode mode;
-        SDL_GetDisplayMode(0, 0, &mode);
-        if (mode.w > 0 && mode.h > 0) {
+        if (SDL_GetDesktopDisplayMode(display, &mode) == 0 && mode.w > 0 && mode.h > 0) {
             win_width = mode.w;
             win_height = mode.h;
         }
@@ -381,8 +545,11 @@ SDL_Window *app_ui_create_window(app_ui_t *ui) {
         win_y = app_configuration->window_state.y;
         win_width = app_configuration->window_state.w;
         win_height = app_configuration->window_state.h;
+        if (app_configuration->window_state.maximized) {
+            win_flags |= SDL_WINDOW_MAXIMIZED;
+        }
     }
-    SDL_Window *win = SDL_CreateWindow("Aurora", win_x, win_y, win_width, win_height, win_flags);
+    SDL_Window *win = SDL_CreateWindow("Eclipse", win_x, win_y, win_width, win_height, win_flags);
     if (win == NULL) {
 #ifdef TARGET_WEBOS
         // For webOS 24 (9.0), unpopulated jailer config could cause graphics driver initialization failure
@@ -399,20 +566,64 @@ SDL_Window *app_ui_create_window(app_ui_t *ui) {
                                                           (int) lv_sdl_img_data_logo_96.data_len), SDL_TRUE);
     SDL_SetWindowIcon(win, winicon);
     SDL_FreeSurface(winicon);
-    if (app_configuration->fullscreen) {
-        SDL_SetWindowMinimumSize(win, win_width, win_height);
-    } else {
-        SDL_SetWindowMinimumSize(win, 640, 480);
-    }
+    SDL_SetWindowMinimumSize(win, 640, 480);
     int w = 0, h = 0;
     SDL_GetWindowSize(win, &w, &h);
     SDL_assert_release(w > 0 && h > 0);
     ui_display_size(ui, w, h);
+    /* Publish the window for the video module, which must not create one of its own: a
+     * second window takes focus, and app_event_filter() interrupts the session on
+     * SDL_WINDOWEVENT_FOCUS_LOST. Published here rather than at either call site because
+     * there are two -- app_ui_init() at startup and app_ui_open() after a close -- and
+     * only the second one was covered, so the module found no window at all. */
+    char window_hint[32];
+    snprintf(window_hint, sizeof(window_hint), "%p", (void *) win);
+    SDL_SetHintWithPriority(SS4S_HINT_HOST_WINDOW, window_hint, SDL_HINT_OVERRIDE);
     return win;
 }
 
-void app_set_fullscreen(app_t *app, bool fullscreen) {
-    SDL_SetWindowFullscreen(app->ui.window, fullscreen ? APP_FULLSCREEN_FLAG : 0);
+bool app_set_fullscreen(app_t *app, bool fullscreen) {
+    if (app == NULL || app->ui.window == NULL) {
+        return false;
+    }
+    /* A check box emits VALUE_CHANGED before its generic preference binding writes
+     * the new value, then emits it again afterwards.  Treat the stale first event as
+     * a no-op before it can overwrite the saved windowed rectangle with fullscreen
+     * dimensions.  Keeping this at the surface boundary also makes every caller
+     * idempotent without adding a Windows-specific restore path. */
+    const bool active =
+            (SDL_GetWindowFlags(app->ui.window) & APP_FULLSCREEN_FLAG) != 0;
+    if (active == fullscreen) {
+        return true;
+    }
+    if (fullscreen) {
+        app_ui_save_window_state(app->ui.window);
+    }
+    SDL_SetWindowMinimumSize(app->ui.window, 640, 480);
+    if (SDL_SetWindowFullscreen(app->ui.window, fullscreen ? APP_FULLSCREEN_FLAG : 0) != 0) {
+        app_configuration->fullscreen = !fullscreen;
+        commons_log_warn("UI", "Could not %s fullscreen: %s",
+                         fullscreen ? "enter" : "leave", SDL_GetError());
+        return false;
+    } else if (!fullscreen) {
+        /* SDL's implicit restore rectangle is not reliable when the window was
+         * CREATED fullscreen: on a fresh install it commonly restores to the
+         * desktop-sized creation bounds.  Apply the configuration's explicit
+         * windowed rectangle instead.  The defaults are always valid (1280x720,
+         * centred), and loaded values were validated in app_ui_create_window(). */
+        int display = SDL_GetWindowDisplayIndex(app->ui.window);
+        app_ui_normalize_window_state(&app_configuration->window_state, display);
+        SDL_RestoreWindow(app->ui.window);
+        SDL_SetWindowSize(app->ui.window, app_configuration->window_state.w,
+                          app_configuration->window_state.h);
+        SDL_SetWindowPosition(app->ui.window,
+                              app_configuration->window_state.x,
+                              app_configuration->window_state.y);
+        if (app_configuration->window_state.maximized) {
+            SDL_MaximizeWindow(app->ui.window);   /* the rect above is where it restores to */
+        }
+    }
+    return true;
 }
 
 static SDL_AssertState app_assertion_handler_ui(const SDL_AssertData *data, void *userdata) {

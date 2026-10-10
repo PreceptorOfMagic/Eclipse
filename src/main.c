@@ -2,6 +2,8 @@
 #include "app_launch.h"
 #include "util/path.h"
 #include "logging.h"
+#include "stream/video/coop_secondary.h"
+#include "stream/video/coop_coord.h"
 
 #if defined(TARGET_WEBOS) && !defined(DEBUG)
 
@@ -25,6 +27,23 @@ int main(int argc, char *argv[]) {
     setrlimit(RLIMIT_CORE, &rlim);
 #endif
 #endif
+    /* Co-op split-screen: `--coop-secondary <socket>` makes this process the
+     * SECOND session. It connects to the coordinator first, so a missing or
+     * dead coordinator aborts before a pointless stream is started. */
+    coop_secondary_parse_args(argc, argv);
+    const char *coop_sock = coop_secondary_mode();
+    if (coop_sock == NULL) {
+        /* A crashed coordinator can leave a child that app-manager close cannot
+         * reach. Reap it even when reopening only the launcher, before any new
+         * connection or media initialization. The reaper checks executable,
+         * socket and PPid=1; a child of a live coordinator is left alone. */
+        coop_coord_reap_orphan_secondaries(COOP_COORD_SOCKET);
+    }
+    if (coop_sock != NULL && !coop_secondary_init(coop_sock)) {
+        fprintf(stderr, "coop: cannot reach coordinator at %s\n", coop_sock);
+        return 1;
+    }
+
     app_t app;
     int ret = app_init(&app, settings_load, argc, argv);
     if (ret != 0) {
@@ -32,6 +51,21 @@ int main(int argc, char *argv[]) {
     }
 
     app_launch_params_t *params = app_handle_launch(&app, argc, argv);
+
+    if (coop_sock != NULL) {
+        /* HEADLESS. The secondary must never call app_ui_open: creating a window
+         * would put it in the foreground, and webOS grants one foreground app --
+         * taking it would suspend the coordinator's stream, which is exactly how
+         * Multi-View ejected Eclipse when it tried to render. This process is
+         * network plus socket only.
+         *
+         * It still needs app_init above for settings, certificates and host data.
+         */
+        const int secondary_result = coop_secondary_run_headless(&app);
+        coop_secondary_shutdown();
+        app_deinit(&app);
+        return secondary_result;
+    }
 
     app_ui_open(&app.ui, true, params);
 
@@ -48,7 +82,12 @@ int main(int argc, char *argv[]) {
 
 static int settings_load(app_settings_t *settings) {
     bool persistent = true;
-    settings_initialize(settings, path_pref(&persistent));
+    char *conf_dir = path_pref(&persistent);
+    if (conf_dir == NULL) {
+        commons_log_error("Settings", "Could not create the per-user configuration directory");
+        return -1;
+    }
+    settings_initialize(settings, conf_dir);
     settings->conf_persistent = persistent;
     if (!settings_read(settings)) {
         commons_log_warn("Settings", "Failed to read settings %s", settings->ini_path);

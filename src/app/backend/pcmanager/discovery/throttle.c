@@ -99,15 +99,24 @@ static int throttle_hosts_find_addr(discovery_throttle_host_t *node, const void 
 
 void throttle_hosts_evict(discovery_throttle_host_t **head) {
     Uint32 now = SDL_GetTicks();
+    // The list is sorted oldest-first, so everything before the first live node has expired.
     discovery_throttle_host_t *find = throttle_hosts_find_by(*head, &now, throttle_hosts_find_not_expired);
-    if (find != NULL) {
-        if (find->prev != NULL) {
-            find->prev->next = NULL;
-        }
-        find->prev = NULL;
+    if (find == *head) {
+        // Nothing has expired yet (or the list is empty, where find is also NULL).
         return;
     }
-    throttle_hosts_free(*head, NULL);
+    if (find != NULL) {
+        // Detach the expired prefix. find is not the head, so find->prev is never NULL here.
+        find->prev->next = NULL;
+        find->prev = NULL;
+    }
+    // throttle_host_free, NOT NULL: the list's free() falls back to plain free(node) when no
+    // callback is given, which leaks the sockaddr_clone() every node owns. This runs every
+    // ~10s for the lifetime of the app.
+    throttle_hosts_free(*head, throttle_host_free);
+    // ...and *head has to move to the surviving tail. Leaving it on the expired prefix dropped
+    // every still-live node out of the list, so the next announcement from that host was treated
+    // as brand new and re-fired the status update instead of being throttled.
     *head = find;
 }
 

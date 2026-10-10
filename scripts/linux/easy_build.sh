@@ -20,10 +20,8 @@ if [ -z "${CMAKE_BINARY_DIR}" ]; then
   CMAKE_BINARY_DIR=build/linux-easy_build
 fi
 
-if [ -z "$CI" ]; then
-  echo "Update submodules"
-  git submodule update --init --recursive
-fi
+echo "Prepare client dependencies"
+./scripts/bootstrap_client_deps.sh || exit 1
 
 echo "Install dependencies. You may be prompted to enter password"
 case $os in

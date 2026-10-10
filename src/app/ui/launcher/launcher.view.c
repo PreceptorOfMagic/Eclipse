@@ -28,6 +28,14 @@ lv_obj_t *launcher_win_create(lv_fragment_t *self, lv_obj_t *parent) {
     /* Root window: header is hidden (we provide our own top bar inside the content area
      * so the bar's height is exactly what we control via TOPBAR_HEIGHT). */
     lv_obj_t *win = lv_win_create(parent, 0);
+    /* Relative, NOT the pixel size of the display. LVGL resizes a screen's direct children
+     * by marking them dirty on LV_EVENT_SIZE_CHANGED (lv_obj.c:878), which only re-measures
+     * what is expressed relative to the parent. A pixel width here pinned the whole subtree
+     * to whatever the window happened to be at startup, and the fragments below could not
+     * recover it: lv_fragment_manager_send_event() dispatches USER_SIZE_CHANGED to CHILD
+     * fragments before their parent (lv_fragment_manager.c:195), so the app grid re-measured
+     * its container while this window was still the old size. */
+    lv_obj_set_size(win, LV_PCT(100), LV_PCT(100));
 
     lv_obj_t *header = lv_win_get_header(win);
     lv_obj_add_flag(header, LV_OBJ_FLAG_HIDDEN);
@@ -86,11 +94,11 @@ lv_obj_t *launcher_win_create(lv_fragment_t *self, lv_obj_t *parent) {
     lv_img_set_src(title_logo, ui_logo_src());
     lv_obj_set_size(title_logo, LV_DPX(NAV_LOGO_SIZE), LV_DPX(NAV_LOGO_SIZE));
 
-    /* Aurora title (left, next to logo). */
+    /* Eclipse title (left, next to logo). */
     lv_obj_t *title_label = lv_label_create(topbar);
     lv_obj_set_style_text_font(title_label, lv_theme_get_font_large(topbar), 0);
     lv_obj_set_style_text_color(title_label, ml_color_hex(ML_COLOR_TEXT), 0);
-    lv_label_set_text_static(title_label, "Aurora");
+    lv_label_set_text_static(title_label, "Eclipse");
 
     /* Spacer that grows to push the action buttons to the right edge. */
     lv_obj_t *spacer = lv_obj_create(topbar);

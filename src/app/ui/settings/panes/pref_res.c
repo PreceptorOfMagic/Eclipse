@@ -31,6 +31,7 @@ typedef struct {
     bool cus_value_set;
 
     bool change_ev_received;
+    bool dialog_committed;
 
     bool input_reached_start, input_reached_end;
 } pref_resolution_ctx_t;
@@ -39,7 +40,7 @@ static const resolution_pair_t built_in_resolutions[] = {
     {1280, 720, true, NULL},
     {1920, 1080, false, NULL},
     {2560, 1440, false, NULL},
-    /* ~90% of 4K; stable on recent LG panels without full-4K input delay */
+    /* 3584x2016 preset; 87.1% of the 3840x2160 pixel count. */
     {3584, 2016, false, "3.6K"},
     {3840, 2160, false, NULL},
 };
@@ -58,7 +59,15 @@ static void res_input_key_cb(lv_event_t *e);
 
 static void cus_res_dialog_cb(lv_event_t *e);
 
+static void cus_res_dialog_deleted_cb(lv_event_t *e);
+
 static void populate_dialog_btn(pref_resolution_ctx_t *ctx);
+
+static void res_show_custom_value(pref_resolution_ctx_t *ctx) {
+    snprintf(ctx->custom_res_text, sizeof(ctx->custom_res_text), locstr("%d * %d (Custom)"), *ctx->w_ref,
+             *ctx->h_ref);
+    lv_dropdown_set_text(ctx->dropdown, ctx->custom_res_text);
+}
 
 static bool should_write_resolution(lv_obj_t *dropdown, int w, int h) {
     (void) w;
@@ -141,8 +150,7 @@ lv_obj_t *pref_dropdown_res(lv_obj_t *parent, int native_w, int native_h, int ma
     ctx->dropdown = dropdown;
     ctx->selected_index = lv_dropdown_get_selected(dropdown);
     if (using_custom) {
-        snprintf(ctx->custom_res_text, sizeof(ctx->custom_res_text), locstr("%d * %d (Custom)"), *w_value, *h_value);
-        lv_dropdown_set_text(dropdown, ctx->custom_res_text);
+        res_show_custom_value(ctx);
     }
 
     lv_obj_add_event_cb(dropdown, dropdown_value_changed_cb, LV_EVENT_VALUE_CHANGED, ctx);
@@ -155,9 +163,8 @@ static void dropdown_value_changed_cb(lv_event_t *e) {
     pref_resolution_ctx_t *ctx = lv_event_get_user_data(e);
     uint16_t index = lv_dropdown_get_selected(lv_event_get_current_target(e));
     if (ctx->cus_value_set) {
-        snprintf(ctx->custom_res_text, sizeof(ctx->custom_res_text), locstr("%d * %d (Custom)"), *ctx->w_ref,
-                 *ctx->h_ref);
-        lv_dropdown_set_text(ctx->dropdown, ctx->custom_res_text);
+        res_show_custom_value(ctx);
+        ctx->selected_index = index;
         ctx->cus_value_set = false;
         return;
     }
@@ -175,6 +182,9 @@ static void dropdown_value_changed_cb(lv_event_t *e) {
     const static char *btn_texts[] = {translatable("Cancel"), translatable("OK"), ""};
     lv_obj_t *msgbox = lv_msgbox_create_i18n(NULL, locstr("Custom Resolution"), NULL, btn_texts, false);
     ctx->dialog = msgbox;
+    ctx->dialog_committed = false;
+    ctx->editing_w = *ctx->w_ref;
+    ctx->editing_h = *ctx->h_ref;
     lv_obj_set_user_data(msgbox, ctx);
     lv_obj_t *content = lv_msgbox_get_content(msgbox);
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
@@ -220,6 +230,7 @@ static void dropdown_value_changed_cb(lv_event_t *e) {
     lv_obj_add_event_cb(input_h, res_input_key_cb, LV_EVENT_KEY, ctx);
 
     lv_obj_add_event_cb(msgbox, cus_res_dialog_cb, LV_EVENT_VALUE_CHANGED, ctx);
+    lv_obj_add_event_cb(msgbox, cus_res_dialog_deleted_cb, LV_EVENT_DELETE, ctx);
 
     lv_group_focus_obj(input_w);
 
@@ -257,6 +268,11 @@ static void dropdown_key_rel_cb(lv_event_t *e) {
 
 static void dropdown_delete_cb(lv_event_t *e) {
     pref_resolution_ctx_t *ctx = lv_event_get_user_data(e);
+    if (ctx->dialog != NULL && lv_obj_is_valid(ctx->dialog)) {
+        lv_obj_remove_event_cb(ctx->dialog, cus_res_dialog_deleted_cb);
+        lv_msgbox_close(ctx->dialog);
+        ctx->dialog = NULL;
+    }
     for (int i = 0; i < ctx->num_entries; i++) {
         // The name strings are copied with strdup. We need to free them.
         free((void *) ctx->entries[i].name);
@@ -330,16 +346,31 @@ static void cus_res_dialog_cb(lv_event_t *e) {
     pref_resolution_ctx_t *ctx = (pref_resolution_ctx_t *) lv_obj_get_user_data(mbox);
     ctx->change_ev_received = false;
     if (lv_msgbox_get_active_btn(mbox) != 1) {
-        lv_dropdown_set_selected(ctx->dropdown, ctx->selected_index);
         lv_msgbox_close_async(mbox);
         return;
     }
 
     *ctx->w_ref = ctx->editing_w;
     *ctx->h_ref = ctx->editing_h;
+    ctx->dialog_committed = true;
     ctx->cus_value_set = true;
     lv_event_send(ctx->dropdown, LV_EVENT_VALUE_CHANGED, NULL);
     lv_msgbox_close_async(mbox);
+}
+
+static void cus_res_dialog_deleted_cb(lv_event_t *e) {
+    pref_resolution_ctx_t *ctx = lv_event_get_user_data(e);
+    ctx->dialog = NULL;
+    ctx->change_ev_received = false;
+    if (ctx->dialog_committed || !lv_obj_is_valid(ctx->dropdown)) {
+        return;
+    }
+    lv_dropdown_set_selected(ctx->dropdown, ctx->selected_index);
+    if (ctx->selected_index == ctx->num_entries - 1) {
+        res_show_custom_value(ctx);
+    } else {
+        lv_dropdown_set_text(ctx->dropdown, NULL);
+    }
 }
 
 static void populate_dialog_btn(pref_resolution_ctx_t *ctx) {
@@ -358,4 +389,3 @@ static void populate_dialog_btn(pref_resolution_ctx_t *ctx) {
         lv_btnmatrix_set_btn_ctrl(dialog_btns, 1, LV_BTNMATRIX_CTRL_DISABLED);
     }
 }
-

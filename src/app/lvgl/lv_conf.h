@@ -280,7 +280,12 @@ e.g. "stm32f769xx.h" or "stm32f429xx.h"*/
 #define LV_FONT_MONTSERRAT_16    0
 #define LV_FONT_MONTSERRAT_18    0
 #define LV_FONT_MONTSERRAT_20    0
-#define LV_FONT_MONTSERRAT_22    0
+/* ENABLED FOR THE ON-SCREEN KEYBOARD'S CONTROL KEYS. Backspace/OK/close/arrows are
+ * LV_SYMBOL_* glyphs, which live in the FontAwesome range the built-in Montserrat
+ * fonts carry (see the -r list at the top of lv_font_montserrat_22.c). Eclipse's own
+ * text font has no such range and its icon font is an 18-glyph Material subset, so
+ * those keys drew as tofu boxes. This is the only font in the build that has them. */
+#define LV_FONT_MONTSERRAT_22    1
 #define LV_FONT_MONTSERRAT_24    0
 #define LV_FONT_MONTSERRAT_26    0
 #define LV_FONT_MONTSERRAT_28    0

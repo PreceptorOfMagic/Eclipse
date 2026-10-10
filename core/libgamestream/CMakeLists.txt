@@ -20,8 +20,16 @@ target_link_libraries(gamestream PRIVATE ${MBEDCRYPTO_LIBRARY} ${MBEDX509_LIBRAR
 target_link_libraries(gamestream PUBLIC commons-logging commons-uuidstr)
 target_include_directories(gamestream SYSTEM PRIVATE ${MBEDTLS_INCLUDE_DIRS})
 target_link_libraries(gamestream PRIVATE ${CURL_LIBRARIES} ${EXPAT_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
+
+if (WIN32)
+    # client.c calls htonl(); on Windows that is winsock's, so this library needs ws2_32
+    # of its own -- linking it into moonlight-lib does not satisfy a separate shared object.
+    target_link_libraries(gamestream PRIVATE ws2_32)
+endif ()
 if (BUILD_SHARED_LIBS)
-    install(TARGETS gamestream LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(TARGETS gamestream
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 if (H264BITSTREAM_FOUND)
@@ -33,7 +41,9 @@ if (H264BITSTREAM_FOUND)
     )
 
     target_link_libraries(gamestream-sps PRIVATE h264bitstream moonlight-common-c)
-    install(TARGETS gamestream-sps LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(TARGETS gamestream-sps
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 add_subdirectory(tests)

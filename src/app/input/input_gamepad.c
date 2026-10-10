@@ -9,15 +9,20 @@
 
 #include "logging.h"
 #include "app_input.h"
+#include "app.h"
+#include "app_settings.h"
 
 static int new_gamepad_state_index(app_input_t *input, SDL_GameController *controller);
 
-static short next_gamepad_gs_id(app_input_t *input);
+static short next_gamepad_gs_id(app_input_t *input, bool remote_like);
 
 static bool is_same_gamepad(const app_gamepad_state_t *state, SDL_GameController *controller);
 
-#ifdef TARGET_WEBOS
 static bool str_contains_ci(const char *haystack, const char *needle);
+
+static bool gamepad_is_remote_like(const char *name);
+
+#ifdef TARGET_WEBOS
 static bool webos_name_is_non_gamepad(const char *name);
 static bool webos_should_ignore_controller_like_device(const char *name, const char *guidstr, SDL_Joystick *joystick);
 #endif
@@ -46,6 +51,16 @@ bool app_input_init_gamepad(app_input_t *input, int device_index) {
         if (state == NULL) {
             SDL_GameControllerClose(controller);
             return false;
+        }
+        /* SEEN ONCE IS ENOUGH TO BE ASSIGNABLE. Co-op defaults are set per PC in the
+         * settings, which has to work with the pad switched off -- so the list of
+         * controllers to choose from is built here, as they turn up, rather than from
+         * whatever happens to be plugged in when the screen is opened. */
+        if (app_configuration != NULL) {
+            const char *pad_name = SDL_GameControllerName(controller);
+            if (settings_remember_pad(app_configuration, pad_name != NULL ? pad_name : name)) {
+                settings_save(app_configuration);
+            }
         }
         assert(state->gs_id >= 0);
         input->activeGamepadMask |= 1 << state->gs_id;
@@ -88,7 +103,7 @@ app_gamepad_state_t *app_input_gamepad_state_init(app_input_t *input, SDL_GameCo
     }
     app_gamepad_state_t *state = &input->gamepads[index];
     if (state->gs_id < 0) {
-        short gsId = next_gamepad_gs_id(input);
+        short gsId = next_gamepad_gs_id(input, gamepad_is_remote_like(SDL_GameControllerName(controller)));
         if (gsId < 0) {
             return NULL;
         }
@@ -118,8 +133,12 @@ app_gamepad_state_t *app_input_gamepad_state_init(app_input_t *input, SDL_GameCo
     state->haptic = haptic;
     state->haptic_effect_id = -1;
 #endif
-    commons_log_info("Input", "Controller #%d (%s) connected", state->gs_id,
-                     SDL_JoystickName(joystick));
+    commons_log_info("Input", "Controller #%d (%s) connected%s%s", state->gs_id,
+                     SDL_JoystickName(joystick),
+                     app_input_gamepad_is_nintendo(controller) ? " -- Nintendo pad, A/B X/Y " : "",
+                     app_input_gamepad_is_nintendo(controller)
+                     ? (app_input_gamepad_swaps_abxy(controller) ? "swapped (Xbox positions)" : "as printed")
+                     : "");
     return state;
 }
 
@@ -264,13 +283,60 @@ int new_gamepad_state_index(app_input_t *input, SDL_GameController *controller) 
     return index;
 }
 
-static short next_gamepad_gs_id(app_input_t *input) {
-    for (short i = 0, j = app_input_get_max_gamepads(input); i < j; i++) {
+/* A REMOTE NEVER TAKES PLAYER 1. Slots go to devices in the order they connect, and many games only
+ * listen to the first one (or the first four) -- so a TV/media remote that registers as a controller
+ * ahead of the real pad left the pad as player 2 and dead in those games. Remote-like devices are
+ * given slots from the TOP down; real controllers keep filling from slot 0. (webOS ignores remotes
+ * entirely, below; elsewhere a remote with a controller mapping can still be used, just last.) */
+static short next_gamepad_gs_id(app_input_t *input, bool remote_like) {
+    const short count = app_input_get_max_gamepads(input);
+    for (short n = 0; n < count; n++) {
+        const short i = remote_like ? (short) (count - 1 - n) : n;
         if ((input->activeGamepadMask & (1 << i)) == 0) {
             return i;
         }
     }
     return -1;
+}
+
+static bool gamepad_is_remote_like(const char *name) {
+    return str_contains_ci(name, "remote") || str_contains_ci(name, "rcu") ||
+           str_contains_ci(name, "air mouse") || str_contains_ci(name, "airmouse") ||
+           str_contains_ci(name, "media center") || str_contains_ci(name, "ir receiver");
+}
+
+bool app_input_gamepad_is_nintendo(SDL_GameController *controller) {
+    if (controller == NULL) {
+        return false;
+    }
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    switch (SDL_GameControllerGetType(controller)) {
+        case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO:
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+        case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+        case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+        case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+#endif
+            return true;
+        default:
+            break;
+    }
+#endif
+#if SDL_VERSION_ATLEAST(2, 0, 6)
+    return SDL_GameControllerGetVendor(controller) == 0x057e;   /* Nintendo */
+#else
+    return false;
+#endif
+}
+
+bool app_input_gamepad_swaps_abxy(SDL_GameController *controller) {
+    if (app_configuration == NULL) {
+        return false;
+    }
+    if (app_configuration->nintendo_layout != NINTENDO_LAYOUT_OFF && app_input_gamepad_is_nintendo(controller)) {
+        return app_configuration->nintendo_layout == NINTENDO_LAYOUT_XBOX;
+    }
+    return app_configuration->swap_abxy;
 }
 
 static bool is_same_gamepad(const app_gamepad_state_t *state, SDL_GameController *controller) {
@@ -290,8 +356,6 @@ static bool is_same_gamepad(const app_gamepad_state_t *state, SDL_GameController
 #endif
 }
 
-#ifdef TARGET_WEBOS
-
 static bool str_contains_ci(const char *haystack, const char *needle) {
     if (haystack == NULL || needle == NULL || *needle == '\0') {
         return false;
@@ -309,6 +373,8 @@ static bool str_contains_ci(const char *haystack, const char *needle) {
     }
     return false;
 }
+
+#ifdef TARGET_WEBOS
 
 static bool webos_name_is_non_gamepad(const char *name) {
     return str_contains_ci(name, "remote") ||

@@ -4,7 +4,10 @@
 
 #include "pref_obj.h"
 
+#include "util/font.h"
+#include "lvgl/theme/lv_theme_moonlight.h"
 #include "lvgl/theme/lv_theme_moonlight_colors.h"
+#include "lvgl/font/material_icons_regular_symbols.h"
 
 typedef union pref_attrs_t {
     struct {
@@ -197,10 +200,25 @@ lv_obj_t *pref_slider(lv_obj_t *parent, int *value, int min, int max, int step) 
     return slider;
 }
 
+/*
+ * THE THREE LEVELS HAVE TO LOOK LIKE THREE LEVELS.
+ *
+ * A settings pane is a long column of text, and until now a section header, the name of
+ * a setting and the paragraph explaining it were all the same size and the same
+ * brightness, separated by the same gap. Nothing grouped, so reading it meant reading
+ * ALL of it -- on a screen you are looking at from a sofa. The three functions below now
+ * differ in weight, colour and, most importantly, in the SPACE AROUND THEM: a heading
+ * pushes away from what came before and hugs what follows, a title sits close to its own
+ * control, and a description is quiet and indented under the thing it describes.
+ */
 lv_obj_t *pref_title_label(lv_obj_t *parent, const char *title) {
     lv_obj_t *label = lv_label_create(parent);
     lv_label_set_text(label, title);
     lv_obj_set_size(label, LV_PCT(100), LV_SIZE_CONTENT);
+    /* Space ABOVE only: the setting's own control follows immediately below, and a gap
+     * there would break the pair apart. */
+    lv_obj_set_style_pad_top(label, LV_DPX(8), 0);
+    lv_obj_set_style_text_color(label, ml_color_hex(ML_COLOR_TEXT), 0);
     return label;
 }
 
@@ -214,7 +232,12 @@ lv_obj_t *pref_desc_label(lv_obj_t *parent, const char *title, bool focusable) {
     }
     lv_obj_set_width(label, LV_PCT(100));
     lv_obj_add_flag(label, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
-    lv_obj_set_style_pad_left(label, LV_DPX(30), 0);
+    lv_obj_set_style_pad_left(label, LV_DPX(16), 0);
+    /* DIM AND INDENTED. Explanations outnumber the settings they explain several to one
+     * here, and at full brightness the page reads as a wall of prose with the controls
+     * lost inside it. Quiet enough to skip, legible enough to read when wanted. */
+    lv_obj_set_style_text_opa(label, LV_OPA_60, 0);
+    lv_obj_set_style_pad_bottom(label, LV_DPX(6), 0);
     lv_obj_set_style_text_font(label, lv_theme_get_font_small(parent), 0);
     lv_obj_set_style_outline_opa(label, LV_OPA_50, LV_STATE_FOCUS_KEY);
     lv_obj_set_style_outline_color(label, lv_theme_get_color_primary(label), LV_STATE_FOCUS_KEY);
@@ -232,12 +255,113 @@ lv_obj_t *pref_header(lv_obj_t *parent, const char *title) {
     lv_obj_t *header = lv_label_create(parent);
     lv_label_set_text(header, title);
     lv_obj_set_width(header, LV_PCT(100));
-    lv_obj_set_style_pad_bottom(header, LV_DPX(4), 0);
+    /* THE GAP ABOVE IS THE SECTION BREAK -- far more of it than below, so a heading
+     * visibly belongs to what follows rather than floating between two blocks. This was
+     * the single biggest reason the list did not scan: every gap on the page was the
+     * same size, so nothing looked like it started anywhere. */
+    lv_obj_set_style_pad_top(header, LV_DPX(22), 0);
+    lv_obj_set_style_pad_bottom(header, LV_DPX(5), 0);
+    lv_obj_set_style_text_font(header, lv_theme_get_font_large(header), 0);
+    lv_obj_set_style_text_color(header, ml_color_hex(ML_COLOR_PRIMARY), 0);
     lv_obj_set_style_border_side(header, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_set_style_border_opa(header, LV_OPA_30, 0);
+    lv_obj_set_style_border_opa(header, LV_OPA_40, 0);
     lv_obj_set_style_border_color(header, ml_color_hex(ML_COLOR_BORDER), 0);
     lv_obj_set_style_border_width(header, LV_DPX(1), 0);
     return header;
+}
+
+/**
+ * A COLLAPSIBLE SECTION.
+ *
+ * The header is a real button, not a styled label, for three reasons at once: the d-pad
+ * can focus it, the theme gives it the same focus ring as everything else, and the
+ * pointer highlight recognises it without being told (ui_hover.c only lights up things a
+ * click acts on).
+ *
+ * COLLAPSING HIDES THE CONTAINER, NOT THE CHILDREN. The settings screen adds every
+ * object created inside a pane to that tab's focus group, and LVGL's group skips objects
+ * whose PARENT is hidden (lv_group.c) -- so one flag on the container keeps the whole
+ * collapsed section out of the d-pad's path, with nothing to add or remove from groups.
+ *
+ * The arrow comes from the ICON font: the text font in this build is subsetted and a
+ * literal chevron would render as tofu.
+ */
+typedef struct pref_section_t {
+    lv_obj_t *content;
+    lv_obj_t *arrow;
+} pref_section_t;
+
+static void pref_section_free(lv_event_t *event) {
+    lv_mem_free(lv_event_get_user_data(event));
+}
+
+/**
+ * ONE ARROW, DIMMED WHEN OPEN -- not a second glyph.
+ *
+ * The icon font EMBEDDED in the app is a subset (src/app/res/iconfonts/*.list, 18
+ * glyphs) cut from the full 1857-glyph TTF by a gulp task that needs an npm install to
+ * run. `keyboard_arrow_up` is defined in the symbols header but is NOT in that subset,
+ * so it drew as nothing at all -- an expanded section simply lost its marker. Anything
+ * this file uses has to come from the list.
+ */
+static void pref_section_arrow_update(const pref_section_t *section) {
+    const bool expanded = !lv_obj_has_flag(section->content, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text_static(section->arrow, MAT_SYMBOL_ARROW_DROP_DOWN);
+    lv_obj_set_style_text_opa(section->arrow, expanded ? LV_OPA_40 : LV_OPA_COVER, 0);
+}
+
+static void pref_section_toggle(lv_event_t *event) {
+    pref_section_t *section = lv_event_get_user_data(event);
+    if (lv_obj_has_flag(section->content, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_clear_flag(section->content, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(section->content, LV_OBJ_FLAG_HIDDEN);
+    }
+    pref_section_arrow_update(section);
+}
+
+lv_obj_t *pref_section(lv_obj_t *parent, const char *title, bool expanded) {
+    pref_section_t *section = lv_mem_alloc(sizeof(pref_section_t));
+    if (section == NULL) {
+        return parent;
+    }
+    lv_obj_t *header = lv_btn_create(parent);
+    lv_obj_set_width(header, LV_PCT(100));
+    lv_obj_set_height(header, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(header, LV_DPX(6), 0);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(header, LV_DPX(6), 0);
+
+    section->arrow = lv_label_create(header);
+    lv_obj_set_style_text_font(section->arrow, lv_theme_moonlight_get_iconfont_normal(header), 0);
+    lv_obj_t *label = lv_label_create(header);
+    lv_label_set_text(label, title);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+    lv_obj_set_flex_grow(label, 1);
+
+    lv_obj_t *content = lv_obj_create(parent);
+    lv_obj_remove_style_all(content);
+    lv_obj_clear_flag(content, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_width(content, LV_PCT(100));
+    lv_obj_set_height(content, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    /* Indented so the section reads as belonging to its header rather than as more of
+     * the page, and padded on the right so a focus ring inside cannot be clipped. */
+    lv_obj_set_style_pad_left(content, LV_DPX(12), 0);
+    lv_obj_set_style_pad_right(content, LV_DPX(6), 0);
+    lv_obj_set_style_pad_bottom(content, LV_DPX(6), 0);
+    lv_obj_set_style_pad_row(content, LV_DPX(4), 0);
+
+    section->content = content;
+    if (!expanded) {
+        lv_obj_add_flag(content, LV_OBJ_FLAG_HIDDEN);
+    }
+    pref_section_arrow_update(section);
+    lv_obj_add_event_cb(header, pref_section_toggle, LV_EVENT_CLICKED, section);
+    lv_obj_add_event_cb(header, pref_section_free, LV_EVENT_DELETE, section);
+    return content;
 }
 
 static void pref_attrs_free(lv_event_t *event) {
@@ -295,6 +419,7 @@ static void pref_dropdown_string_change_cb(lv_event_t *event) {
     int index = lv_dropdown_get_selected(lv_event_get_current_target(event));
     pref_dropdown_string_entry_t entry = attrs->dropdown_string.entries[index];
     char *new_value = entry.value ? strdup(entry.value) : NULL;
+    free(*attrs->dropdown_string.ref);
     *attrs->dropdown_string.ref = new_value;
 }
 

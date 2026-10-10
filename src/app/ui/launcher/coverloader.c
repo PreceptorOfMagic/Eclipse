@@ -36,6 +36,8 @@ typedef struct img_loader_req_t {
     int id;
     lv_obj_t *target;
     lv_coord_t target_width, target_height;
+    /** The tile's corner radius, read on the main thread: the canvas is built on a worker. */
+    lv_coord_t target_radius;
     memcache_item_t *src;
     bool finished;
     SDL_Surface *cached;
@@ -79,7 +81,7 @@ static void coverloader_filecache_put(coverloader_req_t *req);
 
 static bool coverloader_fetch(coverloader_req_t *req);
 
-static void coverloader_run_on_main(img_loader_t *loader, img_loader_run_on_main_fn fn, void *args);
+static bool coverloader_run_on_main(img_loader_t *loader, img_loader_run_on_main_fn fn, void *args);
 
 static void img_loader_start_cb(coverloader_req_t *req);
 
@@ -113,6 +115,10 @@ static void memcache_item_ref_obj(memcache_item_t *item, lv_obj_t *obj);
 static void memcache_item_unref_obj(memcache_item_t *item, const lv_obj_t *obj);
 
 static void purge_img_cache(lv_draw_sdl_ctx_t *ctx, const memcache_item_t *item);
+
+static void purge_src_cache(lv_draw_sdl_ctx_t *ctx, const lv_img_dsc_t *src);
+
+static SDL_Surface *cover_canvas_new(SDL_Surface *decoded, int disp_w, int disp_h, int radius, bool stretch);
 
 static void purge_corners_cache(lv_draw_sdl_ctx_t *ctx, const memcache_item_t *item);
 
@@ -189,6 +195,7 @@ void coverloader_display(coverloader_t *loader, const uuidstr_t *uuid, int id, l
     req->target = target;
     req->target_width = target_width;
     req->target_height = target_height;
+    req->target_radius = lv_obj_get_style_radius(target, LV_PART_MAIN);
     req->finished = false;
     lv_obj_add_event_cb(target, target_deleted_cb, LV_EVENT_DELETE, req);
     loader->reqlist = reqlist_append(loader->reqlist, req);
@@ -283,6 +290,132 @@ static void coverloader_memcache_put(coverloader_req_t *req) {
     SDL_FreeSurface(cached);
 }
 
+/*
+ * ROUNDED CORNERS LIVE IN THE PIXELS. The tile's corner mask cannot round an image on the SDL
+ * backend this app builds: with LV_GPU_SDL_CUSTOM_BLEND_MODE 0 (lv_conf.h) lv_draw_sdl_composite.c
+ * reduces the mask to a rectangle, and LVGL's rounded-image path (lv_draw_sdl_img.c
+ * draw_img_rounded) builds its corner pieces with an SDL_BLENDMODE_MOD render-target pass that came
+ * out EMPTY on the Windows client -- a black square in every corner (2026-09-27). So the canvas
+ * carries its own transparent, antialiased corners at the tile's radius, the tile does not clip,
+ * and LVGL only ever copies it -- the same on every renderer.
+ */
+static void canvas_round_corners(SDL_Surface *canvas, int radius) {
+    if (radius <= 0 || canvas->format->format != SDL_PIXELFORMAT_ARGB8888) {
+        return;
+    }
+    radius = SDL_min(radius, SDL_min(canvas->w, canvas->h) / 2);
+    if (SDL_LockSurface(canvas) != 0) {
+        return;
+    }
+    for (int y = 0; y < radius; ++y) {
+        for (int x = 0; x < radius; ++x) {
+            /* Coverage of this pixel by the corner circle, from its centre's distance. */
+            const float dx = (float) radius - ((float) x + 0.5f);
+            const float dy = (float) radius - ((float) y + 0.5f);
+            float cover = (float) radius + 0.5f - SDL_sqrtf(dx * dx + dy * dy);
+            if (cover >= 1.0f) {
+                continue;
+            }
+            if (cover < 0.0f) {
+                cover = 0.0f;
+            }
+            const int xs[2] = {x, canvas->w - 1 - x};
+            const int ys[2] = {y, canvas->h - 1 - y};
+            for (int i = 0; i < 2; ++i) {
+                Uint32 *row = (Uint32 *) ((Uint8 *) canvas->pixels + ys[i] * canvas->pitch);
+                for (int j = 0; j < 2; ++j) {
+                    Uint32 *px = &row[xs[j]];
+                    const Uint32 alpha = (*px >> 24) & 0xFFu;
+                    *px = (*px & 0x00FFFFFFu) | ((Uint32) ((float) alpha * cover + 0.5f) << 24);
+                }
+            }
+        }
+    }
+    SDL_UnlockSurface(canvas);
+}
+
+/** The tile's picture: @p decoded letterboxed (or, with @p stretch, stretched) onto a 2x canvas of
+ *  disp_w x disp_h with the tile's rounded corners in its alpha. Takes ownership of @p decoded;
+ *  NULL on failure. */
+static SDL_Surface *cover_canvas_new(SDL_Surface *decoded, int disp_w, int disp_h, int radius, bool stretch) {
+    const int sw = decoded->w, sh = decoded->h;
+    if (sw < 1 || sh < 1) {
+        SDL_FreeSurface(decoded);
+        return NULL;
+    }
+
+    /* 2× canvas for sharper downscale on 4K panels; LVGL maps it to disp_w × disp_h. */
+    int tex_w = disp_w * 2;
+    int tex_h = disp_h * 2;
+    if (tex_w < 1) {
+        tex_w = 1;
+    }
+    if (tex_h < 1) {
+        tex_h = 1;
+    }
+
+    const double scale_w = tex_w / (double) sw;
+    const double scale_h = tex_h / (double) sh;
+    const double scale = scale_w < scale_h ? scale_w : scale_h;
+    int fit_w = (int) (sw * scale + 0.5);
+    int fit_h = (int) (sh * scale + 0.5);
+    if (fit_w < 1) {
+        fit_w = 1;
+    }
+    if (fit_h < 1) {
+        fit_h = 1;
+    }
+    if (stretch) {
+        /* The placeholder always filled the tile (LVGL scaled it to the header size). */
+        fit_w = tex_w;
+        fit_h = tex_h;
+    }
+
+    const SDL_PixelFormat *format = decoded->format;
+    SDL_Surface *canvas = SDL_CreateRGBSurface(0, tex_w, tex_h, format->BitsPerPixel,
+                                               format->Rmask, format->Gmask, format->Bmask, format->Amask);
+    if (canvas == NULL) {
+        SDL_FreeSurface(decoded);
+        return NULL;
+    }
+    SDL_FillRect(canvas, NULL, SDL_MapRGBA(format, 0, 0, 0, 255));
+
+    SDL_Rect dst = {
+            .x = (tex_w - fit_w) / 2,
+            .y = (tex_h - fit_h) / 2,
+            .w = fit_w,
+            .h = fit_h,
+    };
+    if (SDL_BlitScaled(decoded, NULL, canvas, &dst) != 0) {
+        SDL_FreeSurface(canvas);
+        SDL_FreeSurface(decoded);
+        return NULL;
+    }
+    SDL_FreeSurface(decoded);
+
+    /* Exact (unscaled) conversion, so the corners can be given an alpha channel whatever the
+     * cover's own format was. */
+    SDL_Surface *argb = SDL_ConvertSurfaceFormat(canvas, SDL_PIXELFORMAT_ARGB8888, 0);
+    SDL_FreeSurface(canvas);
+    if (argb == NULL) {
+        return NULL;
+    }
+    canvas = argb;
+    canvas_round_corners(canvas, radius * tex_w / (disp_w > 0 ? disp_w : 1));
+
+    subimage_info_t *info = SDL_malloc(sizeof(subimage_info_t));
+    if (info == NULL) {
+        SDL_FreeSurface(canvas);
+        return NULL;
+    }
+    info->w = disp_w;
+    info->h = disp_h;
+    info->rect = (SDL_Rect) {0, 0, tex_w, tex_h};
+
+    canvas->userdata = info;
+    return canvas;
+}
+
 static bool coverloader_filecache_get(coverloader_req_t *req) {
 #if !DEBUG
     SDL_version ver;
@@ -318,68 +451,11 @@ static bool coverloader_filecache_get(coverloader_req_t *req) {
         }
         decoded = true_color;
     }
-    const int sw = decoded->w, sh = decoded->h;
-    if (sw < 1 || sh < 1) {
-        SDL_FreeSurface(decoded);
-        return false;
-    }
-
-    const int disp_w = req->target_width;
-    const int disp_h = req->target_height;
-    /* 2× canvas for sharper downscale on 4K panels; LVGL maps it to disp_w × disp_h. */
-    int tex_w = disp_w * 2;
-    int tex_h = disp_h * 2;
-    if (tex_w < 1) {
-        tex_w = 1;
-    }
-    if (tex_h < 1) {
-        tex_h = 1;
-    }
-
-    const double scale_w = tex_w / (double) sw;
-    const double scale_h = tex_h / (double) sh;
-    const double scale = scale_w < scale_h ? scale_w : scale_h;
-    int fit_w = (int) (sw * scale + 0.5);
-    int fit_h = (int) (sh * scale + 0.5);
-    if (fit_w < 1) {
-        fit_w = 1;
-    }
-    if (fit_h < 1) {
-        fit_h = 1;
-    }
-
-    const SDL_PixelFormat *format = decoded->format;
-    SDL_Surface *canvas = SDL_CreateRGBSurface(0, tex_w, tex_h, format->BitsPerPixel,
-                                               format->Rmask, format->Gmask, format->Bmask, format->Amask);
+    SDL_Surface *canvas = cover_canvas_new(decoded, req->target_width, req->target_height, req->target_radius,
+                                           false);
     if (canvas == NULL) {
-        SDL_FreeSurface(decoded);
         return false;
     }
-    SDL_FillRect(canvas, NULL, SDL_MapRGBA(format, 0, 0, 0, 255));
-
-    SDL_Rect dst = {
-            .x = (tex_w - fit_w) / 2,
-            .y = (tex_h - fit_h) / 2,
-            .w = fit_w,
-            .h = fit_h,
-    };
-    if (SDL_BlitScaled(decoded, NULL, canvas, &dst) != 0) {
-        SDL_FreeSurface(canvas);
-        SDL_FreeSurface(decoded);
-        return false;
-    }
-    SDL_FreeSurface(decoded);
-
-    subimage_info_t *info = SDL_malloc(sizeof(subimage_info_t));
-    if (info == NULL) {
-        SDL_FreeSurface(canvas);
-        return false;
-    }
-    info->w = disp_w;
-    info->h = disp_h;
-    info->rect = (SDL_Rect) {0, 0, tex_w, tex_h};
-
-    canvas->userdata = info;
     req->cached = canvas;
     return true;
 }
@@ -414,9 +490,10 @@ static bool coverloader_fetch(coverloader_req_t *req) {
     return coverloader_filecache_get(req);
 }
 
-static void coverloader_run_on_main(img_loader_t *loader, img_loader_run_on_main_fn fn, void *args) {
+static bool coverloader_run_on_main(img_loader_t *loader, img_loader_run_on_main_fn fn, void *args) {
     (void) loader;
-    app_bus_post(global, (bus_actionfunc) fn, args);
+    /* The result matters: false (the app is quitting) tells img_loader not to wait. */
+    return app_bus_post(global, (bus_actionfunc) fn, args);
 }
 
 static void img_loader_start_cb(coverloader_req_t *req) {
@@ -463,7 +540,11 @@ static void img_set_cover(lv_obj_t *obj, memcache_item_t *src) {
     /* If the old src is not default cover, assume it's memcache item and unref this obj from it */
     const void *old_src = lv_img_get_src(obj);
     bool skip_add_del_cb = false;
-    if (old_src != NULL && lv_img_src_get_type(old_src) == LV_IMG_SRC_VARIABLE) {
+    /* The placeholder is excluded BY ADDRESS: the shape test below was the only guard, and the
+     * built placeholder (coverloader_default_cover_build) is also a descriptor pointing at an
+     * lv_sdl_img_data_t -- read as a memcache item, it crashed at startup (2026-09-27). */
+    if (old_src != NULL && old_src != &holder->styles->defcover_src &&
+        lv_img_src_get_type(old_src) == LV_IMG_SRC_VARIABLE) {
         const memcache_item_t *old_img = old_src;
         /* for memcache item, src.data is pointer to data */
         if (old_img->src.data == (const void *) &old_img->data && old_img->src.data_size == sizeof(lv_sdl_img_data_t)) {
@@ -516,7 +597,7 @@ static void memcache_item_free(memcache_item_t *item) {
     free(item);
 }
 
-static void purge_img_cache(lv_draw_sdl_ctx_t *ctx, const memcache_item_t *item) {
+static void purge_src_cache(lv_draw_sdl_ctx_t *ctx, const lv_img_dsc_t *src) {
     struct __attribute__ ((__packed__)) {
         lv_draw_sdl_cache_key_head_img_t header;
         const void *src;
@@ -525,9 +606,66 @@ static void purge_img_cache(lv_draw_sdl_ctx_t *ctx, const memcache_item_t *item)
     key_to_remove.header.magic = LV_GPU_CACHE_KEY_MAGIC_IMG;
     key_to_remove.header.type = LV_IMG_SRC_VARIABLE;
     key_to_remove.header.frame_id = 0;
-    key_to_remove.src = &item->src;
+    key_to_remove.src = src;
 
     lv_lru_remove(ctx->internals->texture_cache, &key_to_remove, sizeof(key_to_remove));
+}
+
+static void purge_img_cache(lv_draw_sdl_ctx_t *ctx, const memcache_item_t *item) {
+    purge_src_cache(ctx, &item->src);
+}
+
+void coverloader_default_cover_free(lv_img_dsc_t *src, lv_sdl_img_data_t *data) {
+    lv_draw_sdl_ctx_t *ctx = (lv_draw_sdl_ctx_t *) lv_disp_get_default()->driver->draw_ctx;
+    /* LVGL caches a texture per descriptor ADDRESS, so its entry goes before the descriptor's
+     * content changes -- otherwise it keeps drawing the old texture, or a destroyed one. */
+    purge_src_cache(ctx, src);
+    if (data->type == LV_SDL_IMG_TYPE_TEXTURE && data->data.texture != NULL) {
+        SDL_DestroyTexture(data->data.texture);
+        data->data.texture = NULL;
+    }
+}
+
+bool coverloader_default_cover_build(lv_img_dsc_t *src, lv_sdl_img_data_t *data, lv_coord_t width,
+                                     lv_coord_t height, lv_coord_t radius) {
+    /* Same tile size as the texture was BUILT at (its 2x source rect -- set only by a successful
+     * build, unlike the header, which the fallback also writes): nothing to redo. The radius is
+     * fixed per fragment. */
+    if (data->type == LV_SDL_IMG_TYPE_TEXTURE && data->data.texture != NULL && data->rect.w == width * 2 &&
+        data->rect.h == height * 2) {
+        return true;
+    }
+    SDL_RWops *rw = SDL_RWFromConstMem(lv_sdl_img_data_defcover.data.constptr,
+                                       (int) lv_sdl_img_data_defcover.data_len);
+    SDL_Surface *decoded = rw != NULL ? IMG_Load_RW(rw, 1) : NULL;
+    if (decoded == NULL) {
+        commons_log_warn("CoverLoader", "Default cover did not decode: %s", IMG_GetError());
+        return false;
+    }
+    SDL_Surface *canvas = cover_canvas_new(decoded, width, height, radius, true);
+    if (canvas == NULL) {
+        commons_log_warn("CoverLoader", "Default cover canvas failed at %dx%d", width, height);
+        return false;
+    }
+    const lv_draw_sdl_drv_param_t *param = lv_disp_get_default()->driver->user_data;
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(param->renderer, canvas);
+    const SDL_Rect rect = ((const subimage_info_t *) canvas->userdata)->rect;
+    SDL_free(canvas->userdata);
+    SDL_FreeSurface(canvas);
+    if (texture == NULL) {
+        commons_log_warn("CoverLoader", "Default cover texture failed: %s", SDL_GetError());
+        return false;
+    }
+    coverloader_default_cover_free(src, data);
+    data->type = LV_SDL_IMG_TYPE_TEXTURE;
+    data->data.texture = texture;
+    data->rect = rect;
+    src->header.cf = LV_IMG_CF_TRUE_COLOR_ALPHA;
+    src->header.w = width;
+    src->header.h = height;
+    src->data_size = sizeof(lv_sdl_img_data_t);
+    src->data = (const uint8_t *) data;
+    return true;
 }
 
 static void purge_corners_cache(lv_draw_sdl_ctx_t *ctx, const memcache_item_t *item) {

@@ -4,6 +4,7 @@
 /temp
 /dist
 /node_modules
+/scripts/launch/node_modules/
 
 # Let third party libraries handle by themselves
 !/third_party/**
@@ -120,3 +121,39 @@ Temporary Items
 .apdisk
 
 .virtualenv
+# Windows helper scripts are SOURCE, not build output. The blanket *.cmd rule
+# above belongs to the kernel-module section and was silently swallowing the
+# Apollo session hooks and build scripts, so they could never be reproduced
+# from the repo.
+!xlink/host/*.cmd
+!xlink/dispwake/*.cmd
+!fork/host/*.cmd
+!fork/*.cmd
+
+# Assembled fork bundle payload (binaries; rebuild with fork/assemble.ps1)
+fork/dist/
+
+# Pulled TV runtime diagnostic log (an artifact, not source)
+aurora-diag.log
+
+# cross-compiled ARM test binary (build per tests/coop/ndl_pipeline_probe.c header)
+tests/coop/ndl_pipeline_probe
+
+# large reference capture kept out of git; regenerate with /tmp/coop-dump on the TV
+tests/coop/*.h265
+__pycache__/
+
+# Claude Code: share the agent roster + project settings, never the machine-local ones.
+# settings.local.json holds this rig's IPs, absolute Windows paths and the permission
+# allowlist. It was only ever protected by a GLOBAL ignore on this machine, which does
+# not travel with a clone -- so pin it here too.
+.claude/settings.local.json
+.claude/agent-memory-local/
+
+# Visual Studio workspace state (was tracked until 2026-09-19)
+.vs/
+
+# co-op audio analysis (2026-10-04..06): recordings, decoded copies and compiled tools stay local
+scratchpad/coop-audio-*/*.wav
+scratchpad/coop-audio-*/*.raw
+scratchpad/coop-audio-*/*.pkl

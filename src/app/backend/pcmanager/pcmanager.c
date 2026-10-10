@@ -6,6 +6,7 @@
 #include "app.h"
 #include "backend/pcmanager/worker/worker.h"
 #include "logging.h"
+#include "util/bus.h"
 
 pcmanager_t *pcmanager_new(app_t *app, executor_t *executor) {
     pcmanager_t *manager = SDL_calloc(1, sizeof(pcmanager_t));
@@ -20,6 +21,11 @@ pcmanager_t *pcmanager_new(app_t *app, executor_t *executor) {
 
 void pcmanager_destroy(pcmanager_t *manager) {
     pcmanager_auto_discovery_stop(manager);
+    /* A discovery result may have been queued just before stop joined its
+     * worker. Consume that manager-owned action while the manager/list still
+     * exist; otherwise a later bus drain would dereference freed state. */
+    SDL_assert_release(SDL_ThreadID() == manager->thread_id);
+    app_bus_drain();
     pcmanager_save_known_hosts(manager);
     pclist_free(manager);
     discovery_deinit(&manager->discovery);
@@ -80,6 +86,60 @@ void pcmanager_set_app_hidden(pcmanager_t *manager, const uuidstr_t *uuid, int a
     pclist_node_set_app_hidden(node, appid, hidden);
     unlock:
     pcmanager_unlock(manager);
+}
+
+void pcmanager_set_host_pin(pcmanager_t *manager, const uuidstr_t *uuid, const char *pin,
+                            bool is_password) {
+    pcmanager_lock(manager);
+    pclist_t *node = pclist_find_by_uuid(manager, uuid);
+    if (node) {
+        if (node->pin_code) {
+            SDL_free(node->pin_code);
+            node->pin_code = NULL;
+        }
+        if (pin != NULL && pin[0] != '\0') {
+            node->pin_code = SDL_strdup(pin);
+        }
+        /* Cleared with the credential: a kind left behind on an empty slot would
+         * decide how the NEXT one is typed. */
+        node->pin_is_password = node->pin_code != NULL && is_password;
+    }
+    pcmanager_unlock(manager);
+    /* Persist immediately: a provisioned PIN must survive a crash/kill, unlike
+     * favorites which are flushed only on clean shutdown. */
+    if (node) {
+        pcmanager_save_known_hosts(manager);
+    }
+}
+
+bool pcmanager_node_has_pad(const pclist_t *node, const char *name) {
+    return pclist_node_has_pad(node, name);
+}
+
+void pcmanager_set_host_pad(pcmanager_t *manager, const uuidstr_t *uuid, const char *name, bool assigned) {
+    pcmanager_lock(manager);
+    pclist_t *node = pclist_find_by_uuid(manager, uuid);
+    if (node != NULL) {
+        pclist_node_set_pad(node, name, assigned);
+    }
+    pcmanager_unlock(manager);
+    if (node != NULL) {
+        pcmanager_save_known_hosts(manager);
+    }
+}
+
+void pcmanager_set_host_gpu(pcmanager_t *manager, const uuidstr_t *uuid, int vendor) {
+    pcmanager_lock(manager);
+    pclist_t *node = pclist_find_by_uuid(manager, uuid);
+    if (node != NULL) {
+        node->gpu_vendor = vendor;
+    }
+    pcmanager_unlock(manager);
+    if (node != NULL) {
+        /* Saved IMMEDIATELY, like a pad assignment: the answer was given in a dialog the user
+         * is about to leave, and a co-op launch that crashes must not lose it and ask again. */
+        pcmanager_save_known_hosts(manager);
+    }
 }
 
 bool pcmanager_select(pcmanager_t *manager, const uuidstr_t *uuid) {

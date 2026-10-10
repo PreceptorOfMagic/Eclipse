@@ -42,10 +42,6 @@ bool stream_input_webos_intercept_remote_keys(stream_input_t *input, const SDL_K
                 bus_pushevent(USER_CLOSE_SOFT_KEYBOARD, NULL, NULL);
                 return true;
             }
-            if (streaming_hid_panel_shown()) {
-                bus_pushevent(USER_CLOSE_HID_PANEL, NULL, NULL);
-                return true;
-            }
             *keyCode = VK_ESCAPE /* SDL_SCANCODE_ESCAPE */;
             return false;
         case SDL_SCANCODE_WEBOS_CH_UP:

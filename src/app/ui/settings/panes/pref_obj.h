@@ -44,3 +44,9 @@ lv_obj_t *pref_title_label(lv_obj_t *parent, const char *title);
 lv_obj_t *pref_desc_label(lv_obj_t *parent, const char *title, bool focusable);
 
 lv_obj_t *pref_header(lv_obj_t *parent, const char *title);
+
+/**
+ * A collapsible section: a focusable header that shows or hides everything put into the
+ * container this returns. Add children to the RETURNED object, not to @p parent.
+ */
+lv_obj_t *pref_section(lv_obj_t *parent, const char *title, bool expanded);

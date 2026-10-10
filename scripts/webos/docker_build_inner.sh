@@ -13,8 +13,7 @@ which ares-package || { echo "Error: ares-package not installed"; exit 1; }
 cd /build
 # Windows bind mounts can leave stale git submodule lock files in .git/modules.
 find .git/modules -name "*.lock" -delete 2>/dev/null || true
-git submodule sync --recursive
-git submodule update --init --recursive
+./scripts/bootstrap_client_deps.sh
 
 # Download SDK
 cd /tmp

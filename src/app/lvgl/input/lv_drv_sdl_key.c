@@ -28,7 +28,7 @@ static void webos_key_input_mode(app_ui_input_t *input, const SDL_KeyboardEvent 
 static bool read_webos_channel_keys(const SDL_KeyboardEvent *event, lv_drv_sdl_key_t *state);
 
 static bool ui_modal_consumes_input(void) {
-    return streaming_soft_keyboard_shown() || streaming_hid_panel_shown();
+    return streaming_soft_keyboard_shown();
 }
 
 static bool read_keyboard(app_ui_input_t *input, const SDL_KeyboardEvent *event, lv_drv_sdl_key_t *state);
@@ -72,6 +72,18 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
             data->continue_reading = true;
         }
     } else if (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_KEYDOWN, SDL_KEYUP) > 0) {
+        if (e.type == SDL_KEYDOWN && e.key.repeat) {
+            /* SDL'S KEY REPEATS ARE DROPPED. LVGL repeats a held key itself (long-press repeat) and a stream ignores
+             * repeats anyway (stream_input_handle_key). On webOS they were harmful: the press that focuses a text
+             * field opens the system keyboard mid-press, the release goes to that keyboard, and SDL went on
+             * repeating the key forever -- a dialog's focus bounced in and out of the field about twice a second
+             * (the keyboard opening and closing each time) and the remote looked dead until Back (measured on the
+             * TV, 2026-09-30: one UP into the "Add computer" address field, 32 start/stop cycles). */
+            data->continue_reading = true;
+            data->key = state->key;
+            data->state = state->state;
+            return;
+        }
 #if TARGET_WEBOS
         webos_key_input_mode(input, &e.key);
 #endif
@@ -95,20 +107,6 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
                 SDL_Keycode sym = e.key.keysym.sym;
                 if (sym == SDLK_UP || sym == SDLK_DOWN || sym == SDLK_LEFT || sym == SDLK_RIGHT
                     || sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
-                    nav_to_lvgl = read_keyboard(input, &e.key, state);
-                }
-            }
-        } else if (streaming_hid_panel_shown()) {
-#if TARGET_WEBOS
-            if (e.key.keysym.scancode == SDL_SCANCODE_WEBOS_BACK) {
-                bus_pushevent(USER_CLOSE_HID_PANEL, NULL, NULL);
-                back_closes_kbd = true;
-            } else
-#endif
-            {
-                SDL_Keycode sym = e.key.keysym.sym;
-                if (sym == SDLK_UP || sym == SDLK_DOWN || sym == SDLK_LEFT || sym == SDLK_RIGHT
-                    || sym == SDLK_RETURN || sym == SDLK_KP_ENTER || sym == SDLK_ESCAPE) {
                     nav_to_lvgl = read_keyboard(input, &e.key, state);
                 }
             }
@@ -176,25 +174,6 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
                     case NAVKEY_CONFIRM:
                     case NAVKEY_CANCEL:
                         read_event(&e, state);
-                        handled_modal = true;
-                        break;
-                    default:
-                        break;
-                }
-            } else if (streaming_hid_panel_shown()) {
-                switch (navkey) {
-                    case NAVKEY_UP:
-                    case NAVKEY_DOWN:
-                    case NAVKEY_LEFT:
-                    case NAVKEY_RIGHT:
-                    case NAVKEY_CONFIRM:
-                        read_event(&e, state);
-                        handled_modal = true;
-                        break;
-                    case NAVKEY_CANCEL:
-                        if (pressed) {
-                            bus_pushevent(USER_CLOSE_HID_PANEL, NULL, NULL);
-                        }
                         handled_modal = true;
                         break;
                     default:
@@ -366,10 +345,6 @@ static bool read_webos_key(app_ui_input_t *input, const SDL_KeyboardEvent *event
         case SDL_SCANCODE_WEBOS_BACK:
             if (streaming_soft_keyboard_shown()) {
                 bus_pushevent(USER_CLOSE_SOFT_KEYBOARD, NULL, NULL);
-                return true;
-            }
-            if (streaming_hid_panel_shown()) {
-                bus_pushevent(USER_CLOSE_HID_PANEL, NULL, NULL);
                 return true;
             }
             state->key = LV_KEY_ESC;

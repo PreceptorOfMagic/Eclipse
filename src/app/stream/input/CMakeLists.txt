@@ -2,7 +2,7 @@ target_sources(moonlight-lib PRIVATE
         keyboard_input.c
         session_input.c
         session_keyboard.c
-        session_gamepad.c
+        session_gamepad.c coop_input.c coop_gamepad_map.c coop_assign.c coop_pi_pads.c coop_pointer.c
         session_mouse.c
         session_pointer_gesture.c
         session_touch.c

@@ -24,7 +24,6 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
 
       - name: Download ares-cli-rs
@@ -59,7 +58,112 @@ jobs:
         working-directory: dist
         run: for file in *.ipk ; do mv $file ${file//_arm/-${SHORT_SHA}_arm} ; done
 
-      - uses: actions/upload-artifact@v4
+      - name: Verify packaged legal bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t ipks < <(find dist -maxdepth 1 -type f -name '*.ipk' -print)
+          if [[ ${#ipks[@]} -ne 1 ]]; then
+            echo "Expected exactly one webOS IPK, found ${#ipks[@]}" >&2
+            exit 1
+          fi
+          ipk=${ipks[0]}
+          data_member=$(ar t "$ipk" | awk '/^data\.tar/{print; exit}')
+          if [[ -z "$data_member" ]]; then
+            echo "IPK has no data archive: $ipk" >&2
+            exit 1
+          fi
+          inspect_dir=$(mktemp -d)
+          mkdir -p "$inspect_dir/root"
+          ar p "$ipk" "$data_member" > "$inspect_dir/$data_member"
+          tar -xf "$inspect_dir/$data_member" -C "$inspect_dir/root"
+          app_root="$inspect_dir/root/usr/palm/applications/com.aurora.gamestream"
+          required=(
+            LICENSE.txt
+            COPYRIGHT
+            ACKNOWLEDGEMENTS.md
+            licenses/NOTICE.md
+            licenses/ENet-MIT.txt
+            licenses/commons-c-MIT.txt
+            licenses/LVGL-MIT.txt
+            licenses/SS4S-LGPL-3.0.txt
+            licenses/libmicrodns-LGPL-2.1.txt
+            licenses/libmicrodns-AUTHORS.txt
+            licenses/libmicrodns-compat-ISC-style.txt
+            licenses/Moonlight-Common-C-Reed-Solomon-BSD.txt
+            licenses/SDL2-THIRD-PARTY-NOTICES.txt
+            licenses/SDL2-zlib.txt
+            licenses/SDL_GameControllerDB-zlib.txt
+            licenses/LVGL-Embedded-Fonts-NOTICE.md
+            licenses/Montserrat-7.200-OFL-1.1.txt
+            licenses/Font-Awesome-Free-5.9.0-LICENSE.txt
+            licenses/SIL-OFL-1.1.txt
+            licenses/Unscii-8-1.0-PROVENANCE.txt
+          )
+          for relative in "${required[@]}"; do
+            if [[ ! -f "$app_root/$relative" ]]; then
+              echo "Missing packaged legal file: $relative" >&2
+              exit 1
+            fi
+          done
+          cmp LICENSE.txt "$app_root/LICENSE.txt"
+          cmp COPYRIGHT "$app_root/COPYRIGHT"
+          cmp ACKNOWLEDGEMENTS.md "$app_root/ACKNOWLEDGEMENTS.md"
+          cmp docs/licenses/webos/NOTICE.md "$app_root/licenses/NOTICE.md"
+          cmp core/moonlight-common-c/enet/LICENSE "$app_root/licenses/ENet-MIT.txt"
+          cmp third_party/commons/LICENSE "$app_root/licenses/commons-c-MIT.txt"
+          cmp third_party/lvgl/LICENCE.txt "$app_root/licenses/LVGL-MIT.txt"
+          cmp third_party/ss4s/LICENSE "$app_root/licenses/SS4S-LGPL-3.0.txt"
+          cmp third_party/libmicrodns/COPYING "$app_root/licenses/libmicrodns-LGPL-2.1.txt"
+          cmp third_party/libmicrodns/AUTHORS "$app_root/licenses/libmicrodns-AUTHORS.txt"
+          cmp docs/licenses/webos/libmicrodns-compat-ISC-style.txt "$app_root/licenses/libmicrodns-compat-ISC-style.txt"
+          cmp docs/licenses/webos/Moonlight-Common-C-Reed-Solomon-BSD.txt "$app_root/licenses/Moonlight-Common-C-Reed-Solomon-BSD.txt"
+          cmp docs/licenses/webos/SDL2-THIRD-PARTY-NOTICES.txt "$app_root/licenses/SDL2-THIRD-PARTY-NOTICES.txt"
+          cmp docs/licenses/common/LVGL-Embedded-Fonts-NOTICE.md "$app_root/licenses/LVGL-Embedded-Fonts-NOTICE.md"
+          cmp docs/licenses/common/Montserrat-7.200-OFL-1.1.txt "$app_root/licenses/Montserrat-7.200-OFL-1.1.txt"
+          cmp docs/licenses/common/Font-Awesome-Free-5.9.0-LICENSE.txt "$app_root/licenses/Font-Awesome-Free-5.9.0-LICENSE.txt"
+          cmp docs/licenses/common/SIL-OFL-1.1.txt "$app_root/licenses/SIL-OFL-1.1.txt"
+          cmp docs/licenses/common/Unscii-8-1.0-PROVENANCE.txt "$app_root/licenses/Unscii-8-1.0-PROVENANCE.txt"
+          expected_sdl_license=97f35b302b361680ec1e891e95d2d52097bb95abff361434916d99dc1305f127
+          for relative in licenses/SDL2-zlib.txt licenses/SDL_GameControllerDB-zlib.txt; do
+            actual=$(sha256sum "$app_root/$relative" | awk '{print $1}')
+            if [[ "$actual" != "$expected_sdl_license" ]]; then
+              echo "Unexpected packaged SDL/zlib licence bytes: $relative ($actual)" >&2
+              exit 1
+            fi
+          done
+          cmp "$app_root/licenses/SDL2-zlib.txt" "$app_root/licenses/SDL_GameControllerDB-zlib.txt"
+
+          # ENet remains linked into moonlight-common-c, but ENET_NO_INSTALL must
+          # prevent its standalone archive/headers leaking into the consumer IPK.
+          mapfile -t forbidden_enet < <(find "$app_root" \( -type f -name 'libenet.a' -o -path '*/include/enet/*' \) -print)
+          if [[ ${#forbidden_enet[@]} -ne 0 ]]; then
+            printf 'Forbidden standalone ENet payload remains:\n%s\n' "${forbidden_enet[*]}" >&2
+            exit 1
+          fi
+
+          # Fallback libraries carry notices only when their binaries are
+          # redistributed by this build rather than supplied by webOS.
+          if compgen -G "$app_root/lib/libinih.so*" >/dev/null && [[ ! -f "$app_root/licenses/inih-BSD-3-Clause.txt" ]]; then
+            echo "Packaged inih fallback is missing its notice" >&2
+            exit 1
+          fi
+          if compgen -G "$app_root/lib/libmbed*.so*" >/dev/null && [[ ! -f "$app_root/licenses/Mbed-TLS-Apache-2.0.txt" ]]; then
+            echo "Packaged Mbed TLS fallback is missing its notice" >&2
+            exit 1
+          fi
+          if compgen -G "$app_root/lib/libopus.so*" >/dev/null; then
+            [[ -f "$app_root/licenses/Opus-COPYING.txt" && -f "$app_root/licenses/Opus-AUTHORS.txt" ]] || {
+              echo "Packaged Opus fallback is missing its notice or authors file" >&2
+              exit 1
+            }
+          fi
+
+      # This snapshot is for private CI only. Public binaries require the
+      # release-specific notice, source and verification gates.
+      - name: Upload private webOS snapshot
+        if: ${{ github.event.repository.private }}
+        uses: actions/upload-artifact@v4
         with:
           name: webos-snapshot-${{ env.SHORT_SHA }}
           path: dist/*.ipk

@@ -1,10 +1,10 @@
-# Build Aurora for LG webOS - PowerShell launcher for WSL
+# Build Eclipse for LG webOS - PowerShell launcher for WSL
 # Run this script on Windows to compile via WSL
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
-Write-Host "=== Aurora - Build for LG webOS ===" -ForegroundColor Cyan
+Write-Host "=== Eclipse - Build for LG webOS ===" -ForegroundColor Cyan
 Write-Host ""
 
 # Verificar WSL

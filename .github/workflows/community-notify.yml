@@ -6,6 +6,9 @@ on:
 
 jobs:
   send-notify:
+    # PUBLIC-LAUNCH GATE: do not announce releases while source, artifacts,
+    # branding, media, and community-post approvals are incomplete.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - name: Manipulate Event

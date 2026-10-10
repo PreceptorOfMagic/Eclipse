@@ -10,6 +10,7 @@
 #include "stream/session.h"
 #include "stream/input/session_virt_mouse.h"
 #include "logging.h"
+#include "coop_input.h"
 
 #define QUIT_BUTTONS (PLAY_FLAG | BACK_FLAG | LB_FLAG | RB_FLAG)
 #define GAMEPAD_COMBO_VMOUSE (LB_FLAG | RS_CLK_FLAG)
@@ -32,12 +33,18 @@ static bool vmouse_intercepted(stream_input_t *input, const app_gamepad_state_t 
 
 static bool filter_deadzone_2axis(stream_input_t *input, short *x, short *y);
 
+static void send_primary_controller(stream_input_t *input, const app_gamepad_state_t *gamepad,
+                                    short buttons, unsigned char left_trigger,
+                                    unsigned char right_trigger, short lx, short ly,
+                                    short rx, short ry);
+
 static void stream_input_send_gamepad_remove(stream_input_t *input, app_gamepad_state_t *gamepad);
 
 static void stream_input_send_unannounced_gamepads(stream_input_t *input);
 
 static bool stream_input_moonlight_gamepad_enabled(const stream_input_t *input) {
-    return !input->hid_passthrough;
+    (void) input;
+    return true;
 }
 
 void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButtonEvent *event) {
@@ -46,18 +53,20 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
         return;
     }
     int button = 0;
+    /* Per controller: a detected Nintendo pad has its own layout setting (input_gamepad.c). */
+    const bool swap_abxy = app_input_gamepad_swaps_abxy(gamepad->controller);
     switch (event->button) {
         case SDL_CONTROLLER_BUTTON_A:
-            button = app_configuration->swap_abxy ? B_FLAG : A_FLAG;
+            button = swap_abxy ? B_FLAG : A_FLAG;
             break;
         case SDL_CONTROLLER_BUTTON_B:
-            button = app_configuration->swap_abxy ? A_FLAG : B_FLAG;
+            button = swap_abxy ? A_FLAG : B_FLAG;
             break;
         case SDL_CONTROLLER_BUTTON_Y:
-            button = app_configuration->swap_abxy ? X_FLAG : Y_FLAG;
+            button = swap_abxy ? X_FLAG : Y_FLAG;
             break;
         case SDL_CONTROLLER_BUTTON_X:
-            button = app_configuration->swap_abxy ? Y_FLAG : X_FLAG;
+            button = swap_abxy ? Y_FLAG : X_FLAG;
             break;
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
             button = UP_FLAG;
@@ -160,9 +169,16 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
     if (input->view_only || !stream_input_moonlight_gamepad_enabled(input)) {
         return;
     }
-    LiSendMultiControllerEvent(gamepad->gs_id, input->input->activeGamepadMask, gamepad->buttons, gamepad->leftTrigger,
-                               gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY, gamepad->rightStickX,
-                               gamepad->rightStickY);
+    send_primary_controller(input, gamepad, (short) gamepad->buttons,
+                            (unsigned char) gamepad->leftTrigger,
+                            (unsigned char) gamepad->rightTrigger,
+                            gamepad->leftStickX, gamepad->leftStickY,
+                            gamepad->rightStickX, gamepad->rightStickY);
+    coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
+                               (short) gamepad->buttons, (unsigned char) gamepad->leftTrigger,
+                               (unsigned char) gamepad->rightTrigger,
+                               gamepad->leftStickX, gamepad->leftStickY,
+                               gamepad->rightStickX, gamepad->rightStickY);
 }
 
 void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEvent *event) {
@@ -216,12 +232,21 @@ void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEv
     }
 
     if (vmouse_intercepted(input, gamepad)) {
-        LiSendMultiControllerEvent(gamepad->gs_id, input->input->activeGamepadMask, gamepad->buttons, 0, 0,
+        send_primary_controller(input, gamepad, (short) gamepad->buttons, 0, 0,
+                                gamepad->leftStickX, gamepad->leftStickY, 0, 0);
+        coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
+                                   (short) gamepad->buttons, 0, 0,
                                    gamepad->leftStickX, gamepad->leftStickY, 0, 0);
     } else {
-        LiSendMultiControllerEvent(gamepad->gs_id, input->input->activeGamepadMask, gamepad->buttons,
-                                   gamepad->leftTrigger,
-                                   gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY,
+        send_primary_controller(input, gamepad, (short) gamepad->buttons,
+                                (unsigned char) gamepad->leftTrigger,
+                                (unsigned char) gamepad->rightTrigger,
+                                gamepad->leftStickX, gamepad->leftStickY,
+                                gamepad->rightStickX, gamepad->rightStickY);
+        coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
+                                   (short) gamepad->buttons, (unsigned char) gamepad->leftTrigger,
+                                   (unsigned char) gamepad->rightTrigger,
+                                   gamepad->leftStickX, gamepad->leftStickY,
                                    gamepad->rightStickX, gamepad->rightStickY);
     }
 }
@@ -239,8 +264,14 @@ void stream_input_handle_csensor(stream_input_t *input, const SDL_ControllerSens
             if (sensor_state_needs_update(&gamepad->accelState, event->timestamp, event->data)) {
                 gamepad->accelState.lastTimestamp = event->timestamp;
                 memcpy(gamepad->accelState.data, event->data, sizeof(gamepad->accelState.data));
-                LiSendControllerMotionEvent(gamepad->gs_id, LI_MOTION_TYPE_ACCEL, event->data[0], event->data[1],
-                                            event->data[2]);
+                coop_input_send_sensor(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
+                                       LI_MOTION_TYPE_ACCEL, event->timestamp,
+                                       event->data[0], event->data[1], event->data[2]);
+                const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
+                if (primary_slot >= 0) {
+                    LiSendControllerMotionEvent((uint16_t) primary_slot, LI_MOTION_TYPE_ACCEL,
+                                                event->data[0], event->data[1], event->data[2]);
+                }
             }
             break;
         }
@@ -248,11 +279,17 @@ void stream_input_handle_csensor(stream_input_t *input, const SDL_ControllerSens
             if (sensor_state_needs_update(&gamepad->gyroState, event->timestamp, event->data)) {
                 gamepad->gyroState.lastTimestamp = event->timestamp;
                 memcpy(gamepad->gyroState.data, event->data, sizeof(gamepad->gyroState.data));
-                // Convert rad/s to deg/s
-                LiSendControllerMotionEvent(gamepad->gs_id, LI_MOTION_TYPE_GYRO,
-                                            event->data[0] * 57.2957795f,
-                                            event->data[1] * 57.2957795f,
-                                            event->data[2] * 57.2957795f);
+                /* SDL reports rad/s; both Limelight connections require deg/s. */
+                const float x = event->data[0] * 57.2957795f;
+                const float y = event->data[1] * 57.2957795f;
+                const float z = event->data[2] * 57.2957795f;
+                coop_input_send_sensor(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
+                                       LI_MOTION_TYPE_GYRO, event->timestamp, x, y, z);
+                const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
+                if (primary_slot >= 0) {
+                    LiSendControllerMotionEvent((uint16_t) primary_slot,
+                                                LI_MOTION_TYPE_GYRO, x, y, z);
+                }
             }
             break;
         }
@@ -291,7 +328,15 @@ void stream_input_handle_ctouchpad(stream_input_t *input, const SDL_ControllerTo
             return;
         }
     }
-    LiSendControllerTouchEvent(gamepad->gs_id, event_type, event->finger, event->x, event->y, event->pressure);
+    const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
+    if (primary_slot >= 0) {
+        LiSendControllerTouchEvent((uint16_t) primary_slot, event_type,
+                                   event->finger, event->x, event->y,
+                                   event->pressure);
+    }
+    coop_input_send_touchpad(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
+                             event_type, event->finger, event->x, event->y,
+                             event->pressure);
 }
 
 void stream_input_handle_cdevice(stream_input_t *input, const SDL_ControllerDeviceEvent *event) {
@@ -404,7 +449,14 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
         commons_log_info("Input", "  controller capability: RGB LED");
     }
 #endif
-    LiSendControllerArrivalEvent(gamepad->gs_id, input->input->activeGamepadMask, type, 0xFFFFFFFF, capabilities);
+    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask;
+    const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
+    if (primary_slot >= 0) {
+        LiSendControllerArrivalEvent((uint16_t) primary_slot,
+                                     coop_input_primary_mask(active_mask), type, 0xFFFFFFFF,
+                                     capabilities);
+    }
+    coop_input_send_arrive(gamepad->gs_id, active_mask, type, capabilities, 0xFFFFFFFF);
 }
 
 static void stream_input_send_gamepad_remove(stream_input_t *input, app_gamepad_state_t *gamepad) {
@@ -415,9 +467,16 @@ static void stream_input_send_gamepad_remove(stream_input_t *input, app_gamepad_
         return;
     }
     input->announcedGamepadMask &= ~(1 << gamepad->gs_id);
-    short activeGamepadMask = input->input->activeGamepadMask & ~(1 << gamepad->gs_id);
+    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask &
+                                 (uint16_t) ~(1u << gamepad->gs_id);
     commons_log_info("Input", "Controller %d removed", gamepad->gs_id);
-    LiSendMultiControllerEvent(gamepad->gs_id, activeGamepadMask, 0, 0, 0, 0, 0, 0, 0);
+    const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
+    if (primary_slot >= 0) {
+        LiSendMultiControllerEvent((uint16_t) primary_slot,
+                                   coop_input_primary_mask(active_mask),
+                                   0, 0, 0, 0, 0, 0, 0);
+    }
+    coop_input_send_remove(gamepad->gs_id, active_mask);
 }
 
 static void stream_input_send_unannounced_gamepads(stream_input_t *input) {
@@ -444,9 +503,23 @@ static void release_buttons(stream_input_t *input, app_gamepad_state_t *gamepad)
     if (!stream_input_moonlight_gamepad_enabled(input)) {
         return;
     }
-    LiSendMultiControllerEvent(gamepad->gs_id, input->input->activeGamepadMask, gamepad->buttons, gamepad->leftTrigger,
-                               gamepad->rightTrigger, gamepad->leftStickX, gamepad->leftStickY, gamepad->rightStickX,
-                               gamepad->rightStickY);
+    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask;
+    send_primary_controller(input, gamepad, 0, 0, 0, 0, 0, 0, 0);
+    coop_input_send_controller(gamepad->gs_id, active_mask, 0, 0, 0, 0, 0, 0, 0);
+}
+
+static void send_primary_controller(stream_input_t *input, const app_gamepad_state_t *gamepad,
+                                    short buttons, unsigned char left_trigger,
+                                    unsigned char right_trigger, short lx, short ly,
+                                    short rx, short ry) {
+    const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
+    if (primary_slot < 0) {
+        return;
+    }
+    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask;
+    LiSendMultiControllerEvent((uint16_t) primary_slot,
+                               coop_input_primary_mask(active_mask), buttons,
+                               left_trigger, right_trigger, lx, ly, rx, ry);
 }
 
 

@@ -1,0 +1,10 @@
+{
+  "id": "com.aurora.coopprobe",
+  "version": "1.0.0",
+  "vendor": "Aurora",
+  "type": "native",
+  "main": "ndl_pipeline_probe",
+  "title": "Coop NDL Probe",
+  "icon": "icon.png",
+  "requiredPermissions": ["media.operation", "time.query"]
+}

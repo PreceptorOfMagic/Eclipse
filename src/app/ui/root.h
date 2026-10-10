@@ -59,6 +59,9 @@ bool ui_has_stream_renderer();
 
 bool ui_render_background();
 
+/** True when the video module has a decoded frame the main loop has not presented yet. */
+bool ui_stream_frame_pending();
+
 bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2);
 
 /**

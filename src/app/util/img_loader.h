@@ -36,7 +36,9 @@ typedef struct img_loader_datasource_t {
 
     img_loader_get_fn fetch;
 
-    void (*run_on_main)(img_loader_t *loader, img_loader_run_on_main_fn fn, void *args);
+    /** Schedule @p fn on the main thread. Returns false if it was NOT scheduled -- the app has
+     *  stopped running -- and the loader then skips the callback instead of waiting for it. */
+    bool (*run_on_main)(img_loader_t *loader, img_loader_run_on_main_fn fn, void *args);
 } img_loader_impl_t;
 
 img_loader_t *img_loader_create(const img_loader_impl_t *impl, executor_t*executor);

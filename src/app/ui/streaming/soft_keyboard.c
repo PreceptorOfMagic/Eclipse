@@ -1,6 +1,6 @@
 /*
  * Soft keyboard overlay (Windows 11 / Xbox OSK layout) - sends keys to streaming host.
- * Layers: alphabetic (abc) and symbols (&123). F1-F12 row. Aurora theme colors.
+ * Layers: alphabetic (abc) and symbols (&123). F1-F12 row. Eclipse theme colors.
  */
 
 #include "soft_keyboard.h"

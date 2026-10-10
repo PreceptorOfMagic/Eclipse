@@ -20,8 +20,10 @@ bool bus_pushevent(int which, void *data1, void *data2) {
     ev.user.code = which;
     ev.user.data1 = data1;
     ev.user.data2 = data2;
-    SDL_PushEvent(&ev);
-    return true;
+    /* SDL_PushEvent() returns 1 only when the event was actually queued.  A
+     * caller that transfers heap ownership to the bus must be able to reclaim
+     * it if the queue is full or unavailable during shutdown. */
+    return SDL_PushEvent(&ev) == 1;
 }
 
 bool app_bus_post(app_t *app, bus_actionfunc action, void *data) {

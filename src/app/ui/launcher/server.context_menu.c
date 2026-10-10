@@ -2,6 +2,8 @@
 
 #include "launcher.controller.h"
 #include "server.context_menu.h"
+#include "pin.dialog.h"
+#include "ui/root.h"
 
 #include "backend/types.h"
 
@@ -32,6 +34,8 @@ static void context_menu_click_cb(lv_event_t *e);
 static void open_info(const pclist_t *node);
 
 static void show_hidden_apps(const pclist_t *node);
+
+static void set_login_pin(const pclist_t *node);
 
 static void forget_host(const pclist_t *node);
 
@@ -80,6 +84,10 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *parent) {
     lv_obj_add_flag(show_hidden_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_set_user_data(show_hidden_btn, show_hidden_apps);
 
+    lv_obj_t *set_pin_btn = lv_list_add_btn(content, NULL, locstr("Set login PIN"));
+    lv_obj_add_flag(set_pin_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_set_user_data(set_pin_btn, set_login_pin);
+
     lv_obj_t *forget_btn = lv_list_add_btn(content, NULL, locstr("Forget"));
     lv_obj_add_flag(forget_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_set_user_data(forget_btn, forget_host);
@@ -118,8 +126,10 @@ static void context_menu_click_cb(lv_event_t *e) {
         open_info(node);
     } else if (target_userdata == forget_host) {
         forget_host(node);
-    }else if (target_userdata == show_hidden_apps) {
+    } else if (target_userdata == show_hidden_apps) {
         show_hidden_apps(node);
+    } else if (target_userdata == set_login_pin) {
+        set_login_pin(node);
     }
 }
 
@@ -144,6 +154,14 @@ static void show_hidden_apps(const pclist_t *node) {
     uuidstr_t *id = calloc(1, sizeof(uuidstr_t));
     *id = node->id;
     bus_pushevent(USER_SHOW_HIDDEN_APPS, id, NULL);
+}
+
+static void set_login_pin(const pclist_t *node) {
+    /* Same editor the Host Settings list opens, so a credential set from either place
+     * behaves identically. It owns its own lifetime now rather than being a fragment
+     * this menu has to keep alive. */
+    uuidstr_t uuid = node->id;
+    pin_dialog_open(&uuid, NULL, NULL);
 }
 
 static void forget_host(const pclist_t *node) {

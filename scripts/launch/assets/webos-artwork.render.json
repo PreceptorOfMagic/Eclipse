@@ -1,0 +1,40 @@
+{
+  "renderer": "sharp 0.35.4",
+  "sources": [
+    {
+      "path": "site/assets/brand-mark.svg",
+      "sha256": "1a3c483516bd04acc7b984ef239dc048a1a0e60c013323c320f056f979922c27"
+    },
+    {
+      "path": "scripts/launch/assets/webos-splash.svg",
+      "sha256": "002fdbec59f1e1c6f9f334ecabb50701a1bd8c05c8d0834c76ef8ff37f99afa0"
+    },
+    {
+      "path": "scripts/launch/assets/webos-icon.svg",
+      "sha256": "f6f892f6fde4f241260dfdd0a93b20b6cb941ab7ce056225d7777c3c9428f7f1"
+    }
+  ],
+  "outputs": [
+    {
+      "path": "deploy/webos/icon.png",
+      "source": "scripts/launch/assets/webos-icon.svg",
+      "sha256": "402961a0190f89a435659db272f249393ab20182946b909d0e2f086a87e3bac0",
+      "width": 80,
+      "height": 80
+    },
+    {
+      "path": "deploy/webos/icon_large.png",
+      "source": "scripts/launch/assets/webos-icon.svg",
+      "sha256": "4531b1219b6baf662358b8e70acfac7e05d8abbfe9fa38ac8d65cd7e4089a128",
+      "width": 130,
+      "height": 130
+    },
+    {
+      "path": "deploy/webos/splash.png",
+      "source": "scripts/launch/assets/webos-splash.svg",
+      "sha256": "65edfea3a863b6d368f0f34f778f7b1892fdc6bdaa349ceeb27a319a93d56f34",
+      "width": 1920,
+      "height": 1080
+    }
+  ]
+}

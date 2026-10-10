@@ -1,29 +1,27 @@
 # Copy this file into a fork of https://github.com/webosbrew/apps-repo under packages/
 # then open a Pull Request. See docs/WEBOS_HOMEBREW.md
 
-title: Aurora
-iconUri: https://raw.githubusercontent.com/GuiDev1994/moonlight-tv/main/deploy/webos/icon_large.png
-detailIconUri: https://raw.githubusercontent.com/GuiDev1994/moonlight-tv/main/deploy/webos/icon_large.png
-manifestUrl: https://github.com/GuiDev1994/moonlight-tv/releases/latest/download/com.aurora.gamestream.manifest.json
+title: Eclipse
+iconUri: https://raw.githubusercontent.com/PreceptorOfMagic/Eclipse/main/deploy/webos/icon_large.png
+detailIconUri: https://raw.githubusercontent.com/PreceptorOfMagic/Eclipse/main/deploy/webos/icon_large.png
+manifestUrl: https://github.com/PreceptorOfMagic/Eclipse/releases/latest/download/com.aurora.gamestream.manifest.json
 category: game
 pool: main
 description: |
-  **Aurora** is a fork of [Moonlight TV](https://github.com/mariotaku/moonlight-tv) for LG webOS (C1–C5 and similar),
-  focused on **4K 120fps HDR** streaming with Sunshine / GameStream hosts.
+  **Eclipse** is a game-streaming client for LG webOS, derived from
+  [Moonlight TV](https://github.com/mariotaku/moonlight-tv). Stream from an Umbra, Apollo
+  or Sunshine host. Supported resolution, frame rate and HDR depend on your TV and host.
 
-  ![GitHub Release](https://img.shields.io/github/v/release/GuiDev1994/moonlight-tv)
-  ![GitHub Downloads](https://img.shields.io/github/downloads/GuiDev1994/moonlight-tv/total)
+  ![GitHub Release](https://img.shields.io/github/v/release/PreceptorOfMagic/Eclipse)
+  ![GitHub Downloads](https://img.shields.io/github/downloads/PreceptorOfMagic/Eclipse/total)
 
   ## Notes
 
   * App ID: `com.aurora.gamestream` (separate from store / Homebrew **Moonlight** `com.limelight.webos`).
-  * Releases: [github.com/GuiDev1994/moonlight-tv/releases](https://github.com/GuiDev1994/moonlight-tv/releases)
+  * Releases: [github.com/PreceptorOfMagic/Eclipse/releases](https://github.com/PreceptorOfMagic/Eclipse/releases)
 
   ## Highlights
 
   * High bitrate option (up to 300 Mbps — use responsibly on Wi‑Fi).
   * HDR10 (PQ) over HEVC Main10 or AV1 Main10 when the host sends HDR.
   * Optional **Tight display sync** (webOS Starfish) and optional **AV1** in Settings → Video.
-
-funding:
-  github: [GuiDev1994]

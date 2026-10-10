@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" role="img" aria-labelledby="title desc">
+  <title id="title">Eclipse/Umbra webOS splash</title>
+  <desc id="desc">The Eclipse/Umbra split-screen mark (purple-outlined square, two violet panels, white seam) centred on a dark background.</desc>
+  <defs>
+    <radialGradient id="halo"><stop offset="0" stop-color="#7c3aed" stop-opacity=".2"/><stop offset="1" stop-color="#7c3aed" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="#09090d"/>
+  <ellipse cx="960" cy="540" rx="420" ry="360" fill="url(#halo)"/>
+  <!-- the Project Hub brand mark (site/assets/brand-mark.svg), 288 px, centred -->
+  <g transform="translate(824.47 404.47) scale(4.2353)">
+      <rect width="64" height="64" rx="18" fill="#09090d" stroke="#8b5cf6" stroke-width="2"/>
+      <path d="M13 15h15v34H13c-2 0-4-2-4-4V19c0-2 2-4 4-4Z" fill="#7c3aed"/>
+      <path d="M36 15h15c2 0 4 2 4 4v26c0 2-2 4-4 4H36V15Z" fill="#c084fc"/>
+      <path d="M32 16v32" stroke="#fff" stroke-linecap="round" stroke-width="2.5"/>
+  </g>
+</svg>

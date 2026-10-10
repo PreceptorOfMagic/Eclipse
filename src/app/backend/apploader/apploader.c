@@ -158,12 +158,21 @@ static int task_run(apploader_task_ctx_t *task) {
 
 static void task_finalize(apploader_task_ctx_t *task, int result) {
     commons_log_debug("AppLoader", "[loader %p] task finalize. result=%d", task->loader, result);
+    /* The executor frees its opaque task object immediately after this function. Do
+     * not leave that address behind for a later apploader_cancel(): an allocator could
+     * reuse it for an unrelated job before the UI consumes our queued callback. */
+    if (task->loader->task == task->task) {
+        task->loader->task = NULL;
+    }
     if (result == ECANCELED) {
         if (task->result != NULL) {
             apploader_list_free(task->result);
         }
     } else if (app_bus_post(task->loader->app, (bus_actionfunc) task_callback, task)) {
         return;
+    } else if (task->result != NULL) {
+        /* The app stopped before the worker could hand the list to the UI. */
+        apploader_list_free(task->result);
     }
     apploader_unref(task->loader);
     free(task);
@@ -176,6 +185,11 @@ static void task_callback(apploader_task_ctx_t *task) {
         loader->state = APPLOADER_STATE_IDLE;
         if (loader->callback.data != NULL) {
             loader->callback.data(task->result, loader->userdata);
+        } else {
+            /* The owner may have been destroyed while this worker result was queued
+             * on the UI bus. apploader_destroy() deliberately clears callbacks; the
+             * result still belongs to us when there is nobody left to receive it. */
+            apploader_list_free(task->result);
         }
     } else {
         loader->state = APPLOADER_STATE_ERROR;
@@ -236,4 +250,3 @@ static int applist_name_comparator(apploader_item_t *p1, apploader_item_t *p2) {
     }
     return extra;
 }
-

@@ -21,7 +21,7 @@ typedef struct launcher_fragment_t {
 
     app_t *global;
 
-    /* Top-bar (formerly the side nav). Contains logo + Aurora label on the left,
+    /* Top-bar (formerly the side nav). Contains logo + Eclipse label on the left,
      * and the action buttons on the right. */
     lv_obj_t *nav;
     /* Detail area below the top bar; full width, hosts the apps fragment (game rail). */

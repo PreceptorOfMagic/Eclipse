@@ -1,0 +1,6 @@
+{
+    PmLogGetContext;
+    PmLogSetContextLevel;
+    PmLogString_;
+    _PmLogMsgKV;
+};

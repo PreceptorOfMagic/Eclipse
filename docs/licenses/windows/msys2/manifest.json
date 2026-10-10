@@ -1,0 +1,626 @@
+{
+  "schema": 1,
+  "scope": "Supplemental licence notices and verified source input references for these exact MSYS2 binary packages. This is not the complete Eclipse external corresponding-source component.",
+  "packages": [
+    {
+      "package": "mingw-w64-x86_64-ca-certificates",
+      "version": "20260816-1",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-ca-certificates-20260816-1-any.pkg.tar.zst",
+        "sha256": "6030a6e98afd408164e9fdf2b76b53492189b57c6d2ec3b460fcb4d9d249e1ed",
+        "buildinfo_sha256": "f0cb9459f97bbd457f7ca439b3975cca781f4db805dd591c6dde1b3682092457",
+        "pkgbuild_sha256": "635b260940bd2f517269ac1a346bf539d4ab4224b4c38579f05d055eaf0b5882"
+      },
+      "recipe_commit": "2d56ca74e888b37258d57bad79e8b2e398891b70",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-ca-certificates/PKGBUILD",
+          "sha256": "635b260940bd2f517269ac1a346bf539d4ab4224b4c38579f05d055eaf0b5882",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-ca-certificates/PKGBUILD"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-ca-certificates/certdata2pem.py",
+          "sha256": "9508738b61cc89bfc1f42580b1091a650f0acbf5c1b49edc2aa4e0313276ea0d",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-ca-certificates/certdata2pem.py"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-ca-certificates/certdata2pem.patch",
+          "sha256": "5736cc3a73ff9bceed43bafad85100a2fcfdfae1cf2cb7e201b5fa6f1421fc2e",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-ca-certificates/certdata2pem.patch"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-ca-certificates/update-ca-trust",
+          "sha256": "ad9fd7ba5c304521128a0a15f3c3ccd79480d9414de08c93bca8bbb7a942f1b0",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-ca-certificates/update-ca-trust"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-ca-certificates/update-ca-trust.8",
+          "sha256": "b052972dd118a3e25f785b6caa141599f0db6fc1d943e9ebcd6ca0e1f0421f60",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-ca-certificates/update-ca-trust.8"
+        }
+      ],
+      "source": {
+        "url": "https://ftp.debian.org/debian/pool/main/c/ca-certificates/ca-certificates_20260816.tar.xz",
+        "sha256": "d939bcdd0cb058712cf4175bac76997676eb8b68fe9473765e1b40fb3d5b186a",
+        "recipe_source_checksum": "d939bcdd0cb058712cf4175bac76997676eb8b68fe9473765e1b40fb3d5b186a",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-ca-certificates/debian/copyright",
+          "sha256": "1ae033c4679e4440848d2fcf6bc8e57d4da2644662775f401e2fede57862674c",
+          "archive_member": "ca-certificates/debian/copyright"
+        },
+        {
+          "path": "mingw-w64-x86_64-ca-certificates/GPL-2.0.txt",
+          "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+          "source_url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz",
+          "source_sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635",
+          "archive_member": "ffmpeg-9.0.1/COPYING.GPLv2",
+          "purpose": "Complete GPL2 text referenced by the Debian copyright notice; exact upstream FFmpeg copy."
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-ffmpeg",
+      "version": "9.0.1-3",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-ffmpeg-9.0.1-3-any.pkg.tar.zst",
+        "sha256": "eb056f54b62fa546afefb630fc884734956e43d76576c0628b60d861adb6202f",
+        "buildinfo_sha256": "e6c918b744c5c12dca27fcdcc2b217d38b4d717875b47100547d8a6491e4d0ef",
+        "pkgbuild_sha256": "44f68cdf2e49231ddb8650c46015967b6bd0e8087299e682e43672375a9209f2"
+      },
+      "recipe_commit": "31f3eae107514ef4c3c31475d7b3c87a63d07446",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-ffmpeg/PKGBUILD",
+          "sha256": "44f68cdf2e49231ddb8650c46015967b6bd0e8087299e682e43672375a9209f2",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/31f3eae107514ef4c3c31475d7b3c87a63d07446/mingw-w64-ffmpeg/PKGBUILD"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-ffmpeg/pathtools.c",
+          "sha256": "ebf471173f5ee9c4416c10a78760cea8afaf1a4a6e653977321e8547ce7bf3c0",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/31f3eae107514ef4c3c31475d7b3c87a63d07446/mingw-w64-ffmpeg/pathtools.c"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-ffmpeg/pathtools.h",
+          "sha256": "1585ef1b61cf53a2ca27049c11d49e0834683dfda798f03547761375df482a90",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/31f3eae107514ef4c3c31475d7b3c87a63d07446/mingw-w64-ffmpeg/pathtools.h"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-ffmpeg/0005-Win32-Add-path-relocation-to-frei0r-plugins-search.patch",
+          "sha256": "8c74e9b5800dbb41c33a60114712726ec768ad6de8f147c2eb30656fd4c899cc",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/31f3eae107514ef4c3c31475d7b3c87a63d07446/mingw-w64-ffmpeg/0005-Win32-Add-path-relocation-to-frei0r-plugins-search.patch"
+        }
+      ],
+      "source": {
+        "url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz",
+        "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635",
+        "recipe_source_checksum": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-ffmpeg/COPYING.LGPLv2.1",
+          "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
+          "archive_member": "ffmpeg-9.0.1/COPYING.LGPLv2.1"
+        },
+        {
+          "path": "mingw-w64-x86_64-ffmpeg/COPYING.GPLv2",
+          "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+          "archive_member": "ffmpeg-9.0.1/COPYING.GPLv2"
+        },
+        {
+          "path": "mingw-w64-x86_64-ffmpeg/COPYING.LGPLv3",
+          "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+          "archive_member": "ffmpeg-9.0.1/COPYING.LGPLv3"
+        },
+        {
+          "path": "mingw-w64-x86_64-ffmpeg/COPYING.GPLv3",
+          "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+          "archive_member": "ffmpeg-9.0.1/COPYING.GPLv3"
+        },
+        {
+          "path": "mingw-w64-x86_64-ffmpeg/tests/checkasm/ext/src/html_data/LICENSE",
+          "sha256": "0fd2c601fb2ead2add56807b7e32664da8d973b9835a422464f210bfea997a52",
+          "archive_member": "ffmpeg-9.0.1/tests/checkasm/ext/src/html_data/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-ffmpeg/tests/checkasm/ext/LICENSE",
+          "sha256": "a2dc8194271e5989c0622531c645a7b41af5da92eeb2531e4f2a3ec31023bc52",
+          "archive_member": "ffmpeg-9.0.1/tests/checkasm/ext/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-ffmpeg/CREDITS",
+          "sha256": "28ecc96d495fa5ad48c76739a8f8d2c8980548d7a171585a6eb3f27a9ac8e4a2",
+          "archive_member": "ffmpeg-9.0.1/CREDITS"
+        },
+        {
+          "path": "mingw-w64-x86_64-ffmpeg/LICENSE.md",
+          "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af",
+          "archive_member": "ffmpeg-9.0.1/LICENSE.md"
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-lame",
+      "version": "3.100-3",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-lame-3.100-3-any.pkg.tar.zst",
+        "sha256": "083e74a93c2fa764c26d73b5a21e2f5055242bc13997d8dbe6a6c2b4577d6b03",
+        "buildinfo_sha256": "a502802a67cea61740a3dcb8804b7e3cf5adbdaa46dda1b48233e6615bd06e3f",
+        "pkgbuild_sha256": "8ebce80af0c5f0b09006b88fdcd320a8c17d14a52e8a493004abdd1458d21453"
+      },
+      "recipe_commit": "b3be8a16ab7bbbba81c1d07ae1a231f23c2e31be",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-lame/PKGBUILD",
+          "sha256": "8ebce80af0c5f0b09006b88fdcd320a8c17d14a52e8a493004abdd1458d21453",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/b3be8a16ab7bbbba81c1d07ae1a231f23c2e31be/mingw-w64-lame/PKGBUILD"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-lame/0002-07-field-width-fix.all.patch",
+          "sha256": "d3ba595816761706d1e5dcf432f0b3ad8c9c6b37584032e21bf24c89e4fd0fc8",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/b3be8a16ab7bbbba81c1d07ae1a231f23c2e31be/mingw-w64-lame/0002-07-field-width-fix.all.patch"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-lame/0005-no-gtk.all.patch",
+          "sha256": "cd3c8807de5b435b8e97200e369e7e8f93f7fc0eba7d44b393ede925e42d3b00",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/b3be8a16ab7bbbba81c1d07ae1a231f23c2e31be/mingw-w64-lame/0005-no-gtk.all.patch"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-lame/0006-dont-use-outdated-symbol-list.patch",
+          "sha256": "21c7ee85854be00a3e8e6790911292837676f083a5c1085718bed899096d3679",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/b3be8a16ab7bbbba81c1d07ae1a231f23c2e31be/mingw-w64-lame/0006-dont-use-outdated-symbol-list.patch"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-lame/0007-revert-posix-code.patch",
+          "sha256": "1e7f61456b15ceea613de8fd982b3f892340b851393d4ca4aff44395ae237ae9",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/b3be8a16ab7bbbba81c1d07ae1a231f23c2e31be/mingw-w64-lame/0007-revert-posix-code.patch"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-lame/0008-skip-termcap.patch",
+          "sha256": "8fddeebd0ccdec62ede2932ce3bbe767af6ed6f06018f7f13113401d4ce06179",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/b3be8a16ab7bbbba81c1d07ae1a231f23c2e31be/mingw-w64-lame/0008-skip-termcap.patch"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-lame/0009-lame-add-pkgconfig.patch",
+          "sha256": "65edcb5090417f822227b4a43f2f0c0224ceca7486fb3fd01aa9a6cf153ad714",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/b3be8a16ab7bbbba81c1d07ae1a231f23c2e31be/mingw-w64-lame/0009-lame-add-pkgconfig.patch"
+        }
+      ],
+      "source": {
+        "url": "https://downloads.sourceforge.net/lame/lame-3.100.tar.gz",
+        "sha256": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e",
+        "recipe_source_checksum": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-lame/COPYING",
+          "sha256": "bfe4a52dc4645385f356a8e83cc54216a293e3b6f1cb4f79f5fc0277abf937fd",
+          "archive_member": "lame-3.100/COPYING"
+        },
+        {
+          "path": "mingw-w64-x86_64-lame/LICENSE",
+          "sha256": "7a40cbd8818c57e5285e83c772a459a996d1662c824a879836b97b473c07cae4",
+          "archive_member": "lame-3.100/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-lame/mpglib/AUTHORS",
+          "sha256": "d8ecf9556aafa8c653796d6be3dc43deea374257680e21c30109a5c3c4484263",
+          "archive_member": "lame-3.100/mpglib/AUTHORS"
+        },
+        {
+          "path": "mingw-w64-x86_64-lame/debian/copyright",
+          "sha256": "1f27f9f698183275bd615c1140b7bf6e498750e9280597c6eb39790e54ae809b",
+          "archive_member": "lame-3.100/debian/copyright"
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-libidn2",
+      "version": "2.3.8-4",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libidn2-2.3.8-4-any.pkg.tar.zst",
+        "sha256": "f98a157446f9ac35465022e329cdaf6169b0c9fa19837e9d80aff9d4e5109013",
+        "buildinfo_sha256": "d13ef86293cdf2712c9201c20f3630a018c343bba902fb503b1ae2460a2cd18d",
+        "pkgbuild_sha256": "cf6def1817d6a38b49c66fc4cbe36cd56705d9b8952dae13e06d60da703983ff"
+      },
+      "recipe_commit": "2d56ca74e888b37258d57bad79e8b2e398891b70",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-libidn2/PKGBUILD",
+          "sha256": "cf6def1817d6a38b49c66fc4cbe36cd56705d9b8952dae13e06d60da703983ff",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-libidn2/PKGBUILD"
+        }
+      ],
+      "source": {
+        "url": "https://ftp.gnu.org/gnu/libidn/libidn2-2.3.8.tar.gz",
+        "sha256": "f557911bf6171621e1f72ff35f5b1825bb35b52ed45325dcdee931e5d3c0787a",
+        "recipe_source_checksum": "f557911bf6171621e1f72ff35f5b1825bb35b52ed45325dcdee931e5d3c0787a",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-libidn2/AUTHORS",
+          "sha256": "7719304df806ca5cd68c1f1c7e0139e0c11ed14fede560ae192d3c4d1989e839",
+          "archive_member": "libidn2-2.3.8/AUTHORS"
+        },
+        {
+          "path": "mingw-w64-x86_64-libidn2/COPYING",
+          "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+          "archive_member": "libidn2-2.3.8/COPYING"
+        },
+        {
+          "path": "mingw-w64-x86_64-libidn2/COPYING.LESSERv3",
+          "sha256": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+          "archive_member": "libidn2-2.3.8/COPYING.LESSERv3"
+        },
+        {
+          "path": "mingw-w64-x86_64-libidn2/COPYING.unicode",
+          "sha256": "01d621eef165cf4d3d3dbb737aa0699178d94c6f18cf87e9dde6db3ca7790f46",
+          "archive_member": "libidn2-2.3.8/COPYING.unicode"
+        },
+        {
+          "path": "mingw-w64-x86_64-libidn2/COPYINGv2",
+          "sha256": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+          "archive_member": "libidn2-2.3.8/COPYINGv2"
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-libtheora",
+      "version": "1.2.0-1",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libtheora-1.2.0-1-any.pkg.tar.zst",
+        "sha256": "97a75f86edaf4b201fa3e82f9d68e303c19fa1911cc90fbcee138999349c1f39",
+        "buildinfo_sha256": "33c658c78297371de1da1cfecff0c04797ae7d524862920d8b282c758ac91eba",
+        "pkgbuild_sha256": "6febdba0e00b0385072bb558eb9f9ab61c12f7604571b8c18afc2274a3455f54"
+      },
+      "recipe_commit": "d544d1e54be8fb798fb881400000983fe9e912da",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-libtheora/PKGBUILD",
+          "sha256": "6febdba0e00b0385072bb558eb9f9ab61c12f7604571b8c18afc2274a3455f54",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/d544d1e54be8fb798fb881400000983fe9e912da/mingw-w64-libtheora/PKGBUILD"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-libtheora/001-example.patch",
+          "sha256": "5627d26c3316fef71bca037e1834bcba063dbf949ea9293820f0e68b13641105",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/d544d1e54be8fb798fb881400000983fe9e912da/mingw-w64-libtheora/001-example.patch"
+        }
+      ],
+      "source": {
+        "url": "https://downloads.xiph.org/releases/theora/libtheora-1.2.0.tar.gz",
+        "sha256": "279327339903b544c28a92aeada7d0dcfd0397b59c2f368cc698ac56f515906e",
+        "recipe_source_checksum": "279327339903b544c28a92aeada7d0dcfd0397b59c2f368cc698ac56f515906e",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-libtheora/LICENSE",
+          "sha256": "2c902950c73a63cd285dc0c36573de9c5fefe66d49312949c51d941f33e92932",
+          "archive_member": "libtheora-1.2.0/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-libtheora/COPYING",
+          "sha256": "8417fad7da775735564e209484a2e011e0fa201e94f01fdbee6e4977e478e6fc",
+          "archive_member": "libtheora-1.2.0/COPYING"
+        },
+        {
+          "path": "mingw-w64-x86_64-libtheora/AUTHORS",
+          "sha256": "ef0ba8da05924cf4e2f9acf782076892ed477c01a6d4cc9f5d107652cf84da8c",
+          "archive_member": "libtheora-1.2.0/AUTHORS"
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-libvorbis",
+      "version": "1.3.7-3",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libvorbis-1.3.7-3-any.pkg.tar.zst",
+        "sha256": "3d68dc3ccb32f0ea230a4bbc19c8fd440893058437c49864c4e26b12d6cb078a",
+        "buildinfo_sha256": "15c1a7f76348198adbfe949e4274d170eeb4efea8b5ef373d51e3b6e38d65313",
+        "pkgbuild_sha256": "38f4410bcfba376befc9031b4c204e9abc1d5949d2e617c53497cdb19db5316a"
+      },
+      "recipe_commit": "2d56ca74e888b37258d57bad79e8b2e398891b70",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-libvorbis/PKGBUILD",
+          "sha256": "38f4410bcfba376befc9031b4c204e9abc1d5949d2e617c53497cdb19db5316a",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-libvorbis/PKGBUILD"
+        }
+      ],
+      "source": {
+        "url": "https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.gz",
+        "sha256": "0e982409a9c3fc82ee06e08205b1355e5c6aa4c36bca58146ef399621b0ce5ab",
+        "recipe_source_checksum": "0e982409a9c3fc82ee06e08205b1355e5c6aa4c36bca58146ef399621b0ce5ab",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-libvorbis/COPYING",
+          "sha256": "ec1815db59fcd302846df949d7424876cb2e2dc5ed1606c5fb0b36787b1cf43a",
+          "archive_member": "libvorbis-1.3.7/COPYING"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvorbis/AUTHORS",
+          "sha256": "f5cab9f16035f770f50299f85cf2938c06dc3a9a30425961067788102ec896d3",
+          "archive_member": "libvorbis-1.3.7/AUTHORS"
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-libvpx",
+      "version": "1.17.0-1",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libvpx-1.17.0-1-any.pkg.tar.zst",
+        "sha256": "59801c4a1a8cc76211a16f355121632ebc52e2f7eefb592e9b6885d81833e476",
+        "buildinfo_sha256": "5a8a041cc0bdf51003d95255baae47b9091a3bc48040e3001bd7c3cfb3da5048",
+        "pkgbuild_sha256": "ec57aa54095093c69364d4870f84176a6470ff6eed74bea64954ed4ebec74592"
+      },
+      "recipe_commit": "2d56ca74e888b37258d57bad79e8b2e398891b70",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-libvpx/PKGBUILD",
+          "sha256": "ec57aa54095093c69364d4870f84176a6470ff6eed74bea64954ed4ebec74592",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-libvpx/PKGBUILD"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-libvpx/0001-enable-shared-on.mingw.patch",
+          "sha256": "f37a24525725cad215d73c538c0b06343b043f2b07553e7dc25835bd68af0695",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-libvpx/0001-enable-shared-on.mingw.patch"
+        }
+      ],
+      "source": {
+        "url": "https://github.com/webmproject/libvpx/archive/v1.17.0/libvpx-1.17.0.tar.gz",
+        "sha256": "1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a",
+        "recipe_source_checksum": "1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-libvpx/AUTHORS",
+          "sha256": "8a98b560e5314713550e6d3ba2d8acf3ef54dfc870fc448bef08a7c57648a0bd",
+          "archive_member": "libvpx-1.17.0/AUTHORS"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvpx/LICENSE",
+          "sha256": "8267348d5af1262c11d1a08de2f5afc77457755f1ac658627dd9acf71011d615",
+          "archive_member": "libvpx-1.17.0/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvpx/PATENTS",
+          "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c",
+          "archive_member": "libvpx-1.17.0/PATENTS"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvpx/third_party/googletest/src/LICENSE",
+          "sha256": "9702de7e4117a8e2b20dafab11ffda58c198aede066406496bef670d40a22138",
+          "archive_member": "libvpx-1.17.0/third_party/googletest/src/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvpx/third_party/libwebm/AUTHORS.TXT",
+          "sha256": "3edb5f5496bfff3d6d4a62fa75fe996b814920d0d6e348c2e65c589e7ac5d177",
+          "archive_member": "libvpx-1.17.0/third_party/libwebm/AUTHORS.TXT"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvpx/third_party/libwebm/LICENSE.TXT",
+          "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf",
+          "archive_member": "libvpx-1.17.0/third_party/libwebm/LICENSE.TXT"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvpx/third_party/libwebm/PATENTS.TXT",
+          "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c",
+          "archive_member": "libvpx-1.17.0/third_party/libwebm/PATENTS.TXT"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvpx/third_party/libyuv/LICENSE",
+          "sha256": "2b2cc1180c7e6988328ad2033b04b80117419db9c4c584918bbb3cfec7e9364f",
+          "archive_member": "libvpx-1.17.0/third_party/libyuv/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvpx/third_party/nalloc/LICENSE",
+          "sha256": "d7dd0396ec46975e1bf9093680068ef301bc0ed204603e623a6f7073ab922ab1",
+          "archive_member": "libvpx-1.17.0/third_party/nalloc/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-libvpx/third_party/x86inc/LICENSE",
+          "sha256": "719d8fa235f2068e0ae6d6a7dceb0a7720d7840f0f0ebed29957989e6ded3cd8",
+          "archive_member": "libvpx-1.17.0/third_party/x86inc/LICENSE"
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-opencore-amr",
+      "version": "0.1.6-1",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-opencore-amr-0.1.6-1-any.pkg.tar.zst",
+        "sha256": "39cec71d74f94d63cca90f22e6810818248c15fb2a6bf1ee544dde4cd6e2d1a4",
+        "buildinfo_sha256": "b27f1f9c3cc8c9fc1abd2f29cf83da3034bbda3f77f211d85756f2a19b1ce5ef",
+        "pkgbuild_sha256": "bc9705ceb1778361f49feaae30b3a895a92679125a31c9447aaa8b8d9d809edc"
+      },
+      "recipe_commit": "1e192c8e73903e7b31631cb20985ad4e10a3a134",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-opencore-amr/PKGBUILD",
+          "sha256": "bc9705ceb1778361f49feaae30b3a895a92679125a31c9447aaa8b8d9d809edc",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/1e192c8e73903e7b31631cb20985ad4e10a3a134/mingw-w64-opencore-amr/PKGBUILD"
+        }
+      ],
+      "source": {
+        "url": "https://downloads.sourceforge.net/opencore-amr/opencore-amr-0.1.6.tar.gz",
+        "sha256": "483eb4061088e2b34b358e47540b5d495a96cd468e361050fae615b1809dc4a1",
+        "recipe_source_checksum": "483eb4061088e2b34b358e47540b5d495a96cd468e361050fae615b1809dc4a1",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-opencore-amr/LICENSE",
+          "sha256": "8b3f1762349248d444ab9acbafe73941254e36e1064954da56bb9ddbd5873ddb",
+          "archive_member": "opencore-amr-0.1.6/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-opencore-amr/opencore/NOTICE",
+          "sha256": "d106802b5e406073c1d10fbe9f638234c6973ebce37df71773179642085eb489",
+          "archive_member": "opencore-amr-0.1.6/opencore/NOTICE"
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-libx264",
+      "version": "0.165.r3222.b35605a-3",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libx264-0.165.r3222.b35605a-3-any.pkg.tar.zst",
+        "sha256": "d034c2a4bc8966b8301d48bde2b9d251057683717c17a03dbc402d160cc0e726",
+        "buildinfo_sha256": "4c107e91977d264fc29046adf59431c8f2899aee79d8d0dd5dc960f0273e134c",
+        "pkgbuild_sha256": "6b62ca0fdb77e937527efb9f68d0a6704a8f023b0b6a1c7980b5cc7b0efc1ee5"
+      },
+      "recipe_commit": "2d56ca74e888b37258d57bad79e8b2e398891b70",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-libx264/PKGBUILD",
+          "sha256": "6b62ca0fdb77e937527efb9f68d0a6704a8f023b0b6a1c7980b5cc7b0efc1ee5",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-x264/PKGBUILD"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-libx264/0001-beautify-pc.all.patch",
+          "sha256": "8e92f4d6c1924664e7c9f5b797070a35f8eabbfce431f996167fe426fc833dda",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-x264/0001-beautify-pc.all.patch"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-libx264/0002-install-avisynth_c.h.mingw.patch",
+          "sha256": "611d427742347e0dfbcea8d45c8c9b0fd15e29ab0b22207000f8bf5f3ba1a3a9",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-x264/0002-install-avisynth_c.h.mingw.patch"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-libx264/0003-pkgconfig-add-Cflags-private.patch",
+          "sha256": "0cbf016c01291f1b8b97ffabdf7e52a8a8593ddf8d88c782245b60462a18bd60",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2d56ca74e888b37258d57bad79e8b2e398891b70/mingw-w64-x264/0003-pkgconfig-add-Cflags-private.patch"
+        }
+      ],
+      "source": {
+        "url": "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz",
+        "sha256": "cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9",
+        "recipe_source_checksum": "e92edc35efe3f8c3effb0c04854de0f8428cc09a218b2062ec3fe44f8ad2aa4e",
+        "checksum_kind": "git archive --format tar exact commit",
+        "git_commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-libx264/AUTHORS",
+          "sha256": "783150c1bef404fc7140924f3006eff27c940ea73ef38b3bc76fcb9c173229a5",
+          "archive_member": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55/AUTHORS"
+        },
+        {
+          "path": "mingw-w64-x86_64-libx264/COPYING",
+          "sha256": "32b1062f7da84967e7019d01ab805935caa7ab7321a7ced0e30ebe75e5df1670",
+          "archive_member": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55/COPYING"
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-x265",
+      "version": "4.3-1",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-x265-4.3-1-any.pkg.tar.zst",
+        "sha256": "bf952eec0a847a2dc10bbbe6d029d8a898e473c1ddb6842f11d789449863e40a",
+        "buildinfo_sha256": "861c8e585c904c6a95776e2fe64d5506af18ba358257498403e7f4ee42fdc02a",
+        "pkgbuild_sha256": "fe843669fb3a7bebf6ab0ede3a360e23226c42d727a5b52062469fe66411ce41"
+      },
+      "recipe_commit": "6957a18a07490303709e2f3b30763f792b885776",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-x265/PKGBUILD",
+          "sha256": "fe843669fb3a7bebf6ab0ede3a360e23226c42d727a5b52062469fe66411ce41",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/6957a18a07490303709e2f3b30763f792b885776/mingw-w64-x265/PKGBUILD"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-x265/0001-missing-include.patch",
+          "sha256": "20e240c5365665e254b6030a458376fac16c1797903d607cae5863b280859a8f",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/6957a18a07490303709e2f3b30763f792b885776/mingw-w64-x265/0001-missing-include.patch"
+        }
+      ],
+      "source": {
+        "url": "https://github.com/Multicorewareinc/x265/releases/download/4.3/x265_4.3.tar.gz",
+        "sha256": "83c53e4c8bbb8f1e33ed59e10a7d621d1d7801ca853910c3eb41f038b8ffb121",
+        "recipe_source_checksum": "83c53e4c8bbb8f1e33ed59e10a7d621d1d7801ca853910c3eb41f038b8ffb121",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-x265/COPYING",
+          "sha256": "d8afb1bcc7a2cfc603683b168d6987ef0a48e59e0da3693bf55c5d33b67e2b49",
+          "archive_member": "x265_4.3/COPYING"
+        },
+        {
+          "path": "mingw-w64-x86_64-x265/source/dynamicHDR10/LICENSE.txt",
+          "sha256": "47f15d63e82eb8a4de6e46471d5f96cf6d052fd5355944a002c3157880248b69",
+          "archive_member": "x265_4.3/source/dynamicHDR10/LICENSE.txt"
+        },
+        {
+          "path": "mingw-w64-x86_64-x265/source/dynamicHDR10/json11/LICENSE.txt",
+          "sha256": "950e288a2548cb33f6a90d23958806b0803f510ab17c600d661619a73ae3a6c8",
+          "archive_member": "x265_4.3/source/dynamicHDR10/json11/LICENSE.txt"
+        }
+      ]
+    },
+    {
+      "package": "mingw-w64-x86_64-xvidcore",
+      "version": "1.3.7-5",
+      "binary_package": {
+        "url": "https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-xvidcore-1.3.7-5-any.pkg.tar.zst",
+        "sha256": "e1f9555a92a143f10b015e6f180c7de8a2e832e57b1bb5df950778984a2d4afe",
+        "buildinfo_sha256": "8042e8774424aa6b4127bcc35cd3ddfbdedea5e33da3a8d88bf1af8b812ec00a",
+        "pkgbuild_sha256": "b1273eaf3ecafaff982bfaa227ad78df50c8774c8623da52dae3f27f79f6693f"
+      },
+      "recipe_commit": "2ee20fd5546c64c5f45373e4f7c015119da1d92e",
+      "recipe_files": [
+        {
+          "path": "provenance/mingw-w64-x86_64-xvidcore/PKGBUILD",
+          "sha256": "b1273eaf3ecafaff982bfaa227ad78df50c8774c8623da52dae3f27f79f6693f",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2ee20fd5546c64c5f45373e4f7c015119da1d92e/mingw-w64-xvidcore/PKGBUILD"
+        },
+        {
+          "path": "provenance/mingw-w64-x86_64-xvidcore/0001-remove-dll-option-clang.patch",
+          "sha256": "e100d96f183bf0e7334ab6ae12ded47a72157fc3976c10db32377ab8cda22715",
+          "url": "https://raw.githubusercontent.com/msys2/MINGW-packages/2ee20fd5546c64c5f45373e4f7c015119da1d92e/mingw-w64-xvidcore/0001-remove-dll-option-clang.patch"
+        }
+      ],
+      "source": {
+        "url": "https://downloads.xvid.com/downloads/xvidcore-1.3.7.tar.bz2",
+        "sha256": "aeeaae952d4db395249839a3bd03841d6844843f5a4f84c271ff88f7aa1acff7",
+        "recipe_source_checksum": "aeeaae952d4db395249839a3bd03841d6844843f5a4f84c271ff88f7aa1acff7",
+        "checksum_kind": "archive sha256",
+        "git_commit": null
+      },
+      "notices": [
+        {
+          "path": "mingw-w64-x86_64-xvidcore/AUTHORS",
+          "sha256": "c6fc2bbc06918472097224a9d7096cf47d8337643afd3b9b9b281cb17711b29e",
+          "archive_member": "xvidcore/AUTHORS"
+        },
+        {
+          "path": "mingw-w64-x86_64-xvidcore/LICENSE",
+          "sha256": "2ab06d2335f9781f1a485c78a557e6c61b6c24e118caad4d4210c46426bbce95",
+          "archive_member": "xvidcore/LICENSE"
+        },
+        {
+          "path": "mingw-w64-x86_64-xvidcore/vfw/LICENSE",
+          "sha256": "40a8c1ea469c6813413443df59115ecc781421cc7d184839ccc7c9f54057a283",
+          "archive_member": "xvidcore/vfw/LICENSE"
+        }
+      ]
+    }
+  ]
+}

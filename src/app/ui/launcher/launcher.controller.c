@@ -1,3 +1,4 @@
+#include "platform/this_pc.h"
 #include "app.h"
 #include "app_launch.h"
 
@@ -132,7 +133,8 @@ void launcher_refresh_server_label(launcher_fragment_t *controller) {
     if (!controller || !controller->server_label) { return; }
     const pclist_t *selected = NULL;
     for (const pclist_t *cur = pcmanager_servers(pcmanager); cur != NULL; cur = cur->next) {
-        if (cur->selected) {
+        /* A saved selection of THIS PC does not count: it is a co-op host only (issue #39). */
+        if (cur->selected && !(cur->server != NULL && local_host_is_this_pc(cur->server->serverInfo.address))) {
             selected = cur;
             break;
         }
@@ -156,6 +158,10 @@ static void launcher_controller(lv_fragment_t *self, void *args) {
 
 static void controller_dtor(lv_fragment_t *self) {
     launcher_fragment_t *controller = (launcher_fragment_t *) self;
+    lv_async_call_cancel(launcher_async_try_focus_detail, controller);
+    if (current_instance == controller) {
+        current_instance = NULL;
+    }
     lv_style_reset(&controller->topbar_btn_style);
 }
 
@@ -187,7 +193,9 @@ static void launcher_view_init(lv_fragment_t *self, lv_obj_t *view) {
     /* Auto-load the previously selected PC (if any) and request status refresh
      * for the others; same behavior as before. */
     for (const pclist_t *cur = pcmanager_servers(pcmanager); cur != NULL; cur = cur->next) {
-        if (cur->selected) {
+        /* Never reopen THIS PC as the launcher's host (issue #39) -- keep polling it, co-op
+         * still needs its status. */
+        if (cur->selected && !(cur->server != NULL && local_host_is_this_pc(cur->server->serverInfo.address))) {
             select_pc(fragment, &cur->id);
             continue;
         }
@@ -215,7 +223,13 @@ static void launcher_view_init(lv_fragment_t *self, lv_obj_t *view) {
 static void launcher_view_destroy(lv_fragment_t *self, lv_obj_t *view) {
     launcher_fragment_t *controller = (launcher_fragment_t *) self;
     LV_UNUSED(view);
-    current_instance = NULL;
+    /* The callback owns only this borrowed fragment pointer. Remove it before any
+     * groups or child fragments are destroyed; the identity check in the callback
+     * is a second line of defence for teardown/recreate races. */
+    lv_async_call_cancel(launcher_async_try_focus_detail, controller);
+    if (current_instance == controller) {
+        current_instance = NULL;
+    }
     if (controller->settings_fragment) {
         lv_fragment_del(controller->settings_fragment);
         controller->settings_fragment = NULL;
@@ -234,10 +248,11 @@ static void launcher_view_destroy(lv_fragment_t *self, lv_obj_t *view) {
 
 static bool launcher_event_cb(lv_fragment_t *self, int code, void *userdata) {
     LV_UNUSED(userdata);
-    launcher_fragment_t *fragment = (launcher_fragment_t *) self;
-    if (code == USER_SIZE_CHANGED) {
-        lv_obj_set_size(self->obj, fragment->global->ui.width, fragment->global->ui.height);
-    }
+    LV_UNUSED(self);
+    LV_UNUSED(code);
+    /* No resize here on USER_SIZE_CHANGED: the root is LV_PCT(100) (launcher.view.c) and
+     * LVGL's own layout pass follows the display. Setting a pixel size here was what pinned
+     * the subtree, and it ran AFTER the child fragments had already re-measured. */
     return false;
 }
 
@@ -245,6 +260,18 @@ void on_pc_added(const uuidstr_t *uuid, void *userdata) {
     LV_UNUSED(uuid);
     launcher_fragment_t *controller = userdata;
     populate_selected_host(controller);
+    /* Launch params carry a host uuid + app id, and select_pc() is what turns the
+     * app id into an actual launch. At fragment init the server list is usually
+     * still empty on a cold start, so the init-time select_pc loop finds nothing;
+     * the host then arrives here via discovery, populate_selected_host marks it
+     * selected, and nothing ever opened it -- so `ares-launch -p '{host_uuid,
+     * host_app_id}'` parsed correctly and then silently did nothing. Open it here
+     * once, guarded so a normal (non-param) launch is unaffected. */
+    if (controller->pane_initialized && controller->def_host_selected &&
+        !controller->def_app_requested && controller->launch_params != NULL &&
+        !uuidstr_is_empty(&controller->launch_params->default_host_uuid)) {
+        select_pc(controller, &controller->launch_params->default_host_uuid);
+    }
     launcher_refresh_server_label(controller);
 }
 
@@ -431,6 +458,12 @@ static void focus_detail(launcher_fragment_t *controller) {
 
 static void launcher_async_try_focus_detail(void *userdata) {
     launcher_fragment_t *fragment = userdata;
+    /* Check ownership before touching the borrowed pointer. A queued callback can
+     * outlive the view that scheduled it, and pane_initialized itself would then be
+     * a use-after-free. */
+    if (current_instance != fragment) {
+        return;
+    }
     if (!fragment->pane_initialized) {
         return;
     }
@@ -470,7 +503,7 @@ static void show_decoder_error() {
 #if FEATURE_EMBEDDED_SHELL
     lv_label_set_text_static(msgview, locstr("Streaming can't work without a valid decoder.\n"
                                              "(If your device supports moonlight-embedded, install it "
-                                             "and Aurora will use it automatically.)"));
+                                             "and Eclipse will use it automatically.)"));
 #else
     lv_label_set_text_static(msgview, locstr("Streaming can't work without a valid decoder."));
 #endif
@@ -482,9 +515,15 @@ static void show_conf_persistent_error() {
     lv_obj_t *msgbox = lv_msgbox_create_i18n(NULL, locstr("Can't save settings"), "placeholder", btn_txts, false);
     lv_obj_add_event_cb(msgbox, decoder_error_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_t *msgview = lv_msgbox_get_text(msgbox);
+#if defined(TARGET_WEBOS)
     lv_label_set_text_static(msgview, locstr("Can't find a writable directory to save settings. Settings and pairing "
                                              "information will be lost when the TV is turned off.\n\n"
                                              "(If you're using webOS 3.0 or newer, restart the TV may fix this issue.)"));
+#else
+    lv_label_set_text_static(msgview, locstr("Can't find a writable directory to save settings. Settings and pairing "
+                                             "information will be lost when the app closes. Check that your user "
+                                             "settings directory exists and is writable."));
+#endif
     lv_obj_center(msgbox);
 }
 
@@ -505,7 +544,8 @@ static void populate_selected_host(launcher_fragment_t *controller) {
         return;
     }
     for (const pclist_t *cur = pcmanager_servers(pcmanager); cur != NULL; cur = cur->next) {
-        if (uuidstr_t_equals_t(&cur->id, &controller->launch_params->default_host_uuid)) {
+        if (uuidstr_t_equals_t(&cur->id, &controller->launch_params->default_host_uuid) &&
+            !(cur->server != NULL && local_host_is_this_pc(cur->server->serverInfo.address))) {
             commons_log_info("UI", "Host %s was selected", cur->server->hostname);
             pcmanager_select(pcmanager, &cur->id);
             controller->def_host_selected = true;

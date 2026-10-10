@@ -1,0 +1,3936 @@
+diff --git a/include/ss4s.h b/include/ss4s.h
+index 934e88c3a4419881a544dbdf274b233868c40350..c59edb50a5e76350d618a2cff4928a3a4fcdc492 100644
+--- a/include/ss4s.h
++++ b/include/ss4s.h
+@@ -18,12 +18,20 @@ extern "C" {
+ typedef struct SS4S_Config {
+     const char *audioDriver;
+     const char *videoDriver;
++    /** Backend-specific output device name. NULL, empty, and "default" select
++     * the operating-system default. Drivers that cannot select devices ignore it. */
++    const char *audioDevice;
+ 
+     SS4S_LoggingFunction *loggingFunction;
+ } SS4S_Config;
+ 
+ int SS4S_Init(int argc, char *argv[], const SS4S_Config *config);
+ 
++/** Change the output device used by players opened FROM NOW ON (same meaning as SS4S_Config.audioDevice).
++ *  For a session that must not follow the OS default, e.g. Eclipse's co-op when a host is this PC and it moves
++ *  the default output to its virtual sink. Players already open keep their device. */
++void SS4S_SetAudioDevice(const char *device);
++
+ int SS4S_PostInit(int argc, char *argv[]);
+ 
+ void SS4S_Quit();
+@@ -42,4 +50,4 @@ SS4S_LoggingFunction * SS4S_DefaultLoggingFunction();
+ }
+ #endif
+ 
+-#endif // SS4S_MODAPI_H
+\ No newline at end of file
++#endif // SS4S_MODAPI_H
+diff --git a/include/ss4s/audio.h b/include/ss4s/audio.h
+index 5394df366027263e553ba8826cae76641b9b2973..7d2d2b9226e646fa8f6a88a5754f98837589aa07 100644
+--- a/include/ss4s/audio.h
++++ b/include/ss4s/audio.h
+@@ -6,6 +6,7 @@ extern "C" {
+ 
+ #include <stdbool.h>
+ #include <stddef.h>
++#include <stdint.h>
+ 
+ typedef enum SS4S_AudioCodec {
+     SS4S_AUDIO_NONE = 0,
+@@ -40,11 +41,42 @@ typedef struct SS4S_AudioInfo {
+     const char *streamName;
+ } SS4S_AudioInfo;
+ 
++/* Called only by the backend audio thread. Fill a prefix of interleaved S16 PCM
++ * and return its frame count (normally frames); the backend zeros a short tail.
++ * callback_begin_us is client monotonic microseconds (SDL uses raw QPC/QPF on
++ * Windows), never wall time or DAC presentation. A compatible provider must use
++ * the same epoch as the client's decode timestamps. No SS4S calls, waits, locks
++ * held by producers, allocation, logging or file access are permitted here.
++ * Callback/context bindings are immutable until AudioClose joins the last callback. */
++typedef unsigned (*SS4S_AudioPullRenderFunction)(void *context, int16_t *pcm,
++                                                unsigned frames, uint64_t callback_begin_us);
++
+ typedef struct SS4S_AudioCapabilities {
+     SS4S_AudioCodec codecs;
+     unsigned int maxChannels;
+ } SS4S_AudioCapabilities;
+ 
++/* Optional PCM output-consumption clock. Counts are interleaved sample frames,
++ * not scalar channel samples. They reset on each successful audio open.
++ * This boundary is backend consumption, NOT hardware/speaker presentation.
++ * observed_us marks the most recently published completed device callback (or
++ * open before its first callback), in a backend monotonic epoch: compare deltas
++ * only. Pull publication can lag during reader contention; cumulative counters
++ * catch up on the next publication and Close flushes the final ledger.
++ * queued_frames includes feeds accepted since that callback. All counters are
++ * queried together with no partially completed callback visible.
++ */
++typedef struct SS4S_AudioClock {
++    uint32_t sample_rate;
++    uint32_t quantum_frames; /* Latest callback demand; obtained quantum before first callback. */
++    uint64_t demand_frames; /* Includes device demand filled with underrun silence. */
++    uint64_t consumed_frames; /* Real accepted PCM removed for output. */
++    uint64_t queued_frames; /* Accepted PCM still held by this backend. */
++    uint64_t discarded_frames; /* Accepted PCM removed without output. */
++    uint64_t observed_us;
++    uint64_t generation; /* Per-player successful-open epoch; compare only on the same player. */
++} SS4S_AudioClock;
++
+ typedef struct SS4S_Player SS4S_Player;
+ 
+ #ifndef SS4S_MODAPI_H
+@@ -55,10 +87,29 @@ bool SS4S_GetAudioCapabilities(SS4S_AudioCapabilities *capabilities);
+ 
+ SS4S_AudioCodec SS4S_GetAudioPreferredCodecs(const SS4S_AudioInfo *info);
+ 
++/* Pre-open advertisement only: true when the selected, initialized audio module
++ * exports the versioned clock query. Does not open a device or promise that a
++ * particular format/instance will work. Call GetClock after successful open.
++ * Library selection/quit must be externally serialized, as with capabilities. */
++bool SS4S_AudioHasClock(void);
++
++/* Optional versioned pull capability. Does not open or qualify a device. */
++bool SS4S_AudioHasPull(void);
++
++/* Initialize render state before this call: callbacks may start before return.
++ * Context must survive until AudioClose returns. Feed is rejected in pull mode.
++ * Unsupported modules and already-open players return ERROR without changes. */
++SS4S_AudioOpenResult SS4S_PlayerAudioOpenPull(SS4S_Player *player, const SS4S_AudioInfo *info,
++                                            SS4S_AudioPullRenderFunction render, void *context);
++
+ SS4S_AudioOpenResult SS4S_PlayerAudioOpen(SS4S_Player *player, const SS4S_AudioInfo *info);
+ 
+ SS4S_AudioFeedResult SS4S_PlayerAudioFeed(SS4S_Player *player, const unsigned char *data, size_t size);
+ 
++/* False for unsupported/closed audio; zeroes clock on failure. Query serializes
++ * with audio close. The player itself must remain alive through the call. */
++bool SS4S_PlayerAudioGetClock(SS4S_Player *player, SS4S_AudioClock *clock);
++
+ bool SS4S_PlayerAudioClose(SS4S_Player *player);
+ 
+ #endif // SS4S_MODAPI_H
+@@ -82,4 +133,4 @@ static inline const char *SS4S_AudioCodecName(SS4S_AudioCodec codec) {
+ 
+ #ifdef __cplusplus
+ }
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/include/ss4s/hostrender.h b/include/ss4s/hostrender.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..1480852e9617121f8acce87f81cdb29216c16383
+--- /dev/null
++++ b/include/ss4s/hostrender.h
+@@ -0,0 +1,49 @@
++#pragma once
++
++/*
++ * Host-side render handoff, for desktop hosts whose UI already owns the window.
++ *
++ * WHY. On webOS the video never touches the UI's renderer: starfish puts it on a hardware
++ * plane underneath. On a desktop there is one window and SDL allows exactly one
++ * SDL_Renderer per window, so a video module cannot make its own -- and it must not make
++ * its own WINDOW either. The app interrupts the session on SDL_WINDOWEVENT_FOCUS_LOST
++ * (src/app/app.c), so a second window tore every stream down 23ms after it started, and a
++ * window created on the decode thread would in any case never have its messages pumped:
++ * Windows delivers them to the creating thread.
++ *
++ * SO: the app publishes its SDL_Window, the module renders into that window's existing
++ * renderer, and -- because SDL_Renderer is not thread safe -- it does so ONLY when the app
++ * calls draw() from its own main thread, at the point in the LVGL flush where the render
++ * target is the window and the UI texture has not yet been blended on top. That is the
++ * same split moonlight-qt uses: decode on the stream thread, present on the main thread.
++ *
++ * The handoff goes through SDL hints because it needs no linkage in either direction: the
++ * module is a DLL loaded by ss4s, the app never sees its symbols, and both sides are in
++ * one process. The value is the pointer, printed with "%p" and read back with the same.
++ */
++
++#include <stdbool.h>
++
++/** App -> module: the SDL_Window the app's UI owns, as "%p". Set before any module loads. */
++#define SS4S_HINT_HOST_WINDOW "SS4S_HOST_WINDOW"
++
++/** Module -> app: a SS4S_HostRender*, as "%p". Set while a video instance is open. */
++#define SS4S_HINT_HOST_RENDER "SS4S_HOST_RENDER"
++
++typedef struct SS4S_HostRender {
++    /**
++     * True if a decoded frame has arrived that has not been presented yet. Cheap, and safe
++     * from any thread: the app polls it to decide whether to redraw, so that the main loop
++     * presents at the stream's rate rather than spinning.
++     */
++    bool (*pending)(void *context);
++
++    /**
++     * Draw the most recent frame into the CURRENT render target of the app's SDL_Renderer.
++     * MAIN THREAD ONLY. Does not present -- the app does that once, after blending its UI.
++     * Returns true if something was drawn.
++     */
++    bool (*draw)(void *context);
++
++    void *context;
++} SS4S_HostRender;
+diff --git a/modules/CMakeLists.txt b/modules/CMakeLists.txt
+index 835f47d2384f1b31dd53c20c2e74bb300eede2cb..2b86a85ba378d768fb8d36a7a221ca816688a950 100644
+--- a/modules/CMakeLists.txt
++++ b/modules/CMakeLists.txt
+@@ -31,6 +31,14 @@ function(ss4s_add_module NAME)
+             PREFIX ""
+             LIBRARY_OUTPUT_NAME "ss4s-${NAME}"
+             LIBRARY_OUTPUT_DIRECTORY "${SS4S_MODULE_LIBRARY_OUTPUT_DIRECTORY}"
++            # ON WINDOWS A DLL IS A *RUNTIME* ARTIFACT. LIBRARY_OUTPUT_NAME renames only the
++            # import library there, so every module DLL kept its target name
++            # (ss4s-module-<x>.dll) while SS4S_ModuleOpen() looks for ss4s-<x>.dll via
++            # ModuleFileName() -- LoadLibraryA failed, SS4S_ModuleCheck returned 0, and every
++            # module was silently dropped. The app then reported "No working decoder" with no
++            # hint that the module had built fine and simply could not be found by name.
++            RUNTIME_OUTPUT_NAME "ss4s-${NAME}"
++            RUNTIME_OUTPUT_DIRECTORY "${SS4S_MODULE_LIBRARY_OUTPUT_DIRECTORY}"
+             SS4S_MODULE_NAME "${NAME}"
+             SS4S_MODULE_GROUP "${MODULE_IN_GROUP}"
+             SS4S_MODULE_DISPLAY_NAME "${MODULE_DISPLAY_NAME}"
+@@ -53,7 +61,12 @@ function(ss4s_add_module NAME)
+     else ()
+         target_compile_options(${SS4S_MODULE_TARGET} PRIVATE -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter)
+     endif ()
+-    install(TARGETS ${SS4S_MODULE_TARGET} LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
++    # A DLL is a RUNTIME artifact to CMake. Keep it beside the generated
++    # ss4s_modules.ini in the module directory; ELF and Mach-O builds continue
++    # to use the existing LIBRARY destination.
++    install(TARGETS ${SS4S_MODULE_TARGET}
++            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
++            RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR})
+     message(STATUS "Enable SS4S module `${NAME}`")
+ endfunction()
+ 
+@@ -62,6 +75,7 @@ add_subdirectory(utils)
+ add_subdirectory(alsa)
+ add_subdirectory(pulse)
+ add_subdirectory(sdl)
++add_subdirectory(ffmpeg)
+ add_subdirectory(mmal)
+ add_subdirectory(webos)
+ add_subdirectory(steamlink)
+@@ -72,4 +86,4 @@ endif ()
+ 
+ if (SS4S_GENERATE_MODULES_LIST)
+     add_subdirectory(list-ini)
+-endif ()
+\ No newline at end of file
++endif ()
+diff --git a/modules/ffmpeg/CMakeLists.txt b/modules/ffmpeg/CMakeLists.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..16a322e418df38c7c30b9394c75e4a78729f6edc
+--- /dev/null
++++ b/modules/ffmpeg/CMakeLists.txt
+@@ -0,0 +1,50 @@
++# Desktop video backend. ss4s has none: webos/mmal/steamlink cover their own hardware and
++# the sdl module is audio-only. Decode and presentation are both modelled on moonlight-qt,
++# the native PC client (see the header of ffmpegvid.c).
++find_package(PkgConfig REQUIRED)
++if (WIN32)
++    # A Windows build without these libraries would produce an apparently healthy client
++    # with no usable video decoder. Make that a configure-time failure, not a runtime trap.
++    pkg_check_modules(LIBAVCODEC REQUIRED libavcodec)
++    pkg_check_modules(LIBAVUTIL REQUIRED libavutil)
++    # D3D11VA returns NV12/P010 hardware frames.  The current host renderer owns an
++    # SDL IYUV texture, so the Windows bridge downloads and normalizes those frames
++    # with libswscale until direct D3D11 texture presentation is implemented.
++    pkg_check_modules(LIBSWSCALE REQUIRED libswscale)
++else ()
++    # Preserve the existing optional desktop module on non-Windows platforms. Linux can
++    # replace only the hardware-device/presentation seam when its backend is added.
++    pkg_check_modules(LIBAVCODEC libavcodec)
++    pkg_check_modules(LIBAVUTIL libavutil)
++    # Linux GPU decode (NVDEC / VA-API, ffmpegvid.c) downloads frames and normalizes them with
++    # libswscale exactly like the Windows bridge. Without libswscale the module stays software-only.
++    pkg_check_modules(LIBSWSCALE libswscale)
++endif ()
++
++if (LIBAVCODEC_FOUND AND LIBAVUTIL_FOUND AND SDL2_FOUND AND (NOT WIN32 OR LIBSWSCALE_FOUND))
++    if (WIN32)
++        set(FFMPEG_DISPLAY_NAME "D3D11VA (FFmpeg)")
++    else ()
++        set(FFMPEG_DISPLAY_NAME "FFmpeg")
++    endif ()
++    ss4s_add_module(ffmpeg FOR_VIDEO DISPLAY_NAME "${FFMPEG_DISPLAY_NAME}" SOURCES ffmpegvid.c WEIGHT 50)
++    if (NOT SS4S_MODULE_TARGET)
++        return()
++    endif ()
++    target_include_directories(${SS4S_MODULE_TARGET} SYSTEM PRIVATE
++            ${LIBAVCODEC_INCLUDE_DIRS} ${LIBAVUTIL_INCLUDE_DIRS} ${LIBSWSCALE_INCLUDE_DIRS}
++            ${SDL2_INCLUDE_DIRS})
++    target_link_directories(${SS4S_MODULE_TARGET} PRIVATE
++            ${LIBAVCODEC_LIBRARY_DIRS} ${LIBAVUTIL_LIBRARY_DIRS} ${LIBSWSCALE_LIBRARY_DIRS})
++    target_link_libraries(${SS4S_MODULE_TARGET} PRIVATE
++            ${LIBAVCODEC_LIBRARIES} ${LIBAVUTIL_LIBRARIES} ${LIBSWSCALE_LIBRARIES}
++            ${SDL2_LIBRARIES})
++    if (NOT WIN32 AND LIBSWSCALE_FOUND)
++        target_compile_definitions(${SS4S_MODULE_TARGET} PRIVATE SS4S_FFMPEG_HWACCEL=1)
++    endif ()
++    if (WIN32)
++        # System SDK import libraries only: used to identify the adapter behind FFmpeg's
++        # D3D11VA device and reject WARP/software or remote adapters before accepting a stream.
++        target_link_libraries(${SS4S_MODULE_TARGET} PRIVATE dxgi dxguid)
++    endif ()
++endif ()
+diff --git a/modules/ffmpeg/ffmpegvid.c b/modules/ffmpeg/ffmpegvid.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c6847b5d2bef
+--- /dev/null
++++ b/modules/ffmpeg/ffmpegvid.c
+@@ -0,0 +1,1510 @@
++/*
++ * SS4S video module: FFmpeg decode + SDL presentation, for desktop platforms.
++ *
++ * WHY THIS EXISTS. ss4s ships video backends for the platforms it grew up on -- webos
++ * (starfish), mmal (Raspberry Pi), steamlink -- and none for a generic desktop. The app
++ * takes its entire video capability from ss4s, so without one the client builds, the UI
++ * runs, and it reports "No working decoder" with Video Settings reading "using (null)".
++ *
++ * WHAT IS COPIED RATHER THAN INVENTED. The decode loop and the presentation path are both
++ * taken from moonlight-qt, the native PC client, because it has solved exactly this on
++ * exactly this platform: send_packet/receive_frame around an AVCodecContext, strict
++ * get_format selection that cannot silently fall back from hardware, D3D11VA device
++ * contexts on Windows, and SDL presentation (moonlight-qt commit
++ * 032529d782242e3833e0b3b147dbbf96e878e3ca, app/streaming/video/ffmpeg.cpp,
++ * ffmpeg-renderers/d3d11va.cpp, and ffmpeg-renderers/sdlvid.cpp). What is written here
++ * is only the glue between those established paths and the SS4S_VideoDriver contract.
++ *
++ * Windows deliberately fails closed if D3D11VA cannot be selected.  Software decode is
++ * available only for diagnosis by setting ECLIPSE_DIAGNOSTIC_VIDEO_DECODER=software;
++ * the module emits a warning that such a run is not a valid Windows functional test.
++ * D3D11VA output is currently downloaded and converted to IYUV for the shared SDL
++ * renderer.  Decode is on the GPU, but presentation still pays a GPU->CPU readback and
++ * (normally NV12/P010 -> YUV420P) conversion until the host-render contract can carry a
++ * D3D11 texture directly.
++ *
++ * Linux decodes on the GPU where it can (NVDEC, then VA-API) through the same readback and
++ * IYUV normalisation, but FALLS BACK to software instead of failing closed: a random Linux
++ * machine may have no usable driver at all. See linux_open_hwaccel().
++ *
++ * THIS DOES NOT OWN A WINDOW, AND THAT IS THE WHOLE POINT. It used to create one, which
++ * cost two evenings: the new window took focus, the app saw SDL_WINDOWEVENT_FOCUS_LOST on
++ * its own window and called session_interrupt(STREAMING_INTERRUPT_BACKGROUND), so every
++ * stream tore itself down 23ms in with "Control stream connection failed: 10004" and "No
++ * video traffic was ever received" -- a host-shaped failure with an entirely client-side
++ * cause. It renders into the app's window instead, through ss4s/hostrender.h; read that
++ * file for the contract and for why presentation happens on the app's thread.
++ */
++#include "ss4s/modapi.h"
++#include "ss4s/hostrender.h"
++
++#ifdef _WIN32
++#define COBJMACROS
++#endif
++
++#include <SDL.h>
++#include <libavcodec/avcodec.h>
++#include <libavutil/pixdesc.h>
++
++#ifdef _WIN32
++#include <libavutil/hwcontext.h>
++#include <libavutil/hwcontext_d3d11va.h>
++#include <libswscale/swscale.h>
++
++#include <dxgi1_2.h>
++
++#define DIAGNOSTIC_DECODER_ENV "ECLIPSE_DIAGNOSTIC_VIDEO_DECODER"
++#endif
++
++#if defined(__linux__) && defined(SS4S_FFMPEG_HWACCEL)
++#define LINUX_HWACCEL 1
++#include <libavutil/hwcontext.h>
++#include <libswscale/swscale.h>
++
++#define DIAGNOSTIC_DECODER_ENV "ECLIPSE_DIAGNOSTIC_VIDEO_DECODER"
++#endif
++
++#include <stdio.h>
++#include <limits.h>
++#include <stdlib.h>
++#include <string.h>
++
++static const SS4S_LibraryContext *LibContext = NULL;
++
++static bool host_pending(void *context);
++
++static bool host_draw(void *context);
++
++/* The hint must never expose an object whose lifetime is tied to one stream. The app reads
++ * the pointer and calls it on its UI thread while Close() runs on the stream thread; clearing
++ * the hint cannot revoke a pointer the UI already fetched. Keep this proxy alive for the whole
++ * driver lifetime instead. Its lock is held across each callback, so detaching an instance in
++ * Close() waits for an in-flight draw to finish before the instance, texture or mutex is freed. */
++typedef struct FFmpegHostRenderProxy {
++    SS4S_HostRender render;
++    SDL_mutex *lock;
++    SS4S_VideoInstance *instance;
++    struct RetiredTexture *retired_head;
++    struct RetiredTexture *retired_tail;
++    SDL_threadID render_thread_id;   /* NOT Uint32: an unsigned long, a 64-bit pthread_t on Linux */
++} FFmpegHostRenderProxy;
++
++typedef struct RetiredTexture {
++    SDL_Texture *texture;
++    struct RetiredTexture *next;
++} RetiredTexture;
++
++static FFmpegHostRenderProxy *HostRenderProxy = NULL;
++
++#ifdef _WIN32
++static bool WindowsCapabilitiesProbed = false;
++static SS4S_VideoCodec WindowsHardwareCodecs = SS4S_VIDEO_NONE;
++static SS4S_VideoCodec probe_windows_codecs(void);
++#endif
++
++struct SS4S_VideoInstance {
++    AVCodecContext *codec_ctx;
++    AVPacket *packet;
++    AVFrame *frame;     /* decode target, stream thread only */
++
++    SDL_mutex *lock;
++    AVFrame *shared;    /* latest decoded frame, handed to the app's thread under `lock` */
++    bool has_new;
++
++    SDL_Renderer *renderer;
++    SDL_Texture *texture;
++    int tex_w, tex_h;
++
++    /* Counted, not guessed: a black window with a healthy connection could be no packets,
++     * no decoded frames, or frames that are drawn and then covered. One line every 120
++     * tells which. */
++    unsigned long fed, decoded, corrupt_frames, drawn;
++    unsigned int last_corrupt_frame_flags, last_decode_error_flags;
++    int mean_luma;
++
++    /* The player this decoder feeds, for SS4S's video stats: feed -> decoded frame ready to
++     * draw, which the client shows as "Decoder latency" (issue #32; NULL = not reported). */
++    SS4S_Player *player;
++
++#ifdef _WIN32
++    AVBufferRef *hw_device_ctx;
++    enum AVPixelFormat hw_pix_fmt;
++    AVFrame *download;  /* GPU -> CPU transfer target */
++    AVFrame *i420;      /* normalized frame consumed by SDL_UpdateYUVTexture */
++    struct SwsContext *sws;
++    bool use_d3d11va;
++    bool hardware_confirmed;
++    bool fatal_decode_error;
++    unsigned long hardware_frames, readbacks, i420_conversions;
++    char adapter_description[384];
++    unsigned int adapter_vendor, adapter_device;
++#endif
++#ifdef LINUX_HWACCEL
++    AVBufferRef *hw_device_ctx;
++    enum AVPixelFormat hw_pix_fmt;  /* AV_PIX_FMT_CUDA / _VAAPI while a GPU path is armed; NONE = software */
++    const char *hw_path;            /* "nvdec", "vaapi" or "software"; host_draw reads it under `lock` */
++    AVFrame *download;              /* GPU -> CPU transfer target */
++    AVFrame *i420;                  /* normalized frame consumed by SDL_UpdateYUVTexture */
++    struct SwsContext *sws;
++    unsigned long hardware_frames;
++    unsigned int hw_errors;         /* decode errors before the first GPU frame; 3 => software */
++    bool hardware_confirmed;
++#endif
++};
++
++/* A player context only so Open() learns its SS4S_Player: the stats API is per player, and
++ * without it the Windows client could not show its own decode time (#32). Defined before
++ * Open(), which reads it. */
++struct SS4S_PlayerContext {
++    SS4S_Player *player;
++};
++
++static int Init(int argc, char *argv[]) {
++    (void) argc;
++    (void) argv;
++    /* This runs before SDL_INIT_VIDEO in the desktop app. Only core SDL primitives are
++     * created here; window/renderer use begins later through the host-render handoff. */
++    if (HostRenderProxy != NULL) {
++        return 0;
++    }
++    FFmpegHostRenderProxy *proxy = calloc(1, sizeof(*proxy));
++    if (proxy == NULL) {
++        return -1;
++    }
++    proxy->lock = SDL_CreateMutex();
++    if (proxy->lock == NULL) {
++        free(proxy);
++        return -1;
++    }
++    proxy->render.pending = host_pending;
++    proxy->render.draw = host_draw;
++    proxy->render.context = proxy;
++    proxy->render_thread_id = SDL_ThreadID();
++    HostRenderProxy = proxy;
++#ifdef _WIN32
++    WindowsCapabilitiesProbed = false;
++    WindowsHardwareCodecs = SS4S_VIDEO_NONE;
++#endif
++    return 0;
++}
++
++static void Quit(void) {
++    FFmpegHostRenderProxy *proxy = HostRenderProxy;
++    if (proxy == NULL) {
++        return;
++    }
++
++    /* SS4S_Quit runs after every player has closed and after the app UI has stopped polling.
++     * This is therefore the one point where both the published pointer and the proxy itself can
++     * go away. Clear the hint first so a later app-side lookup cannot acquire it. */
++    SDL_SetHintWithPriority(SS4S_HINT_HOST_RENDER, "", SDL_HINT_OVERRIDE);
++    SDL_LockMutex(proxy->lock);
++    proxy->instance = NULL;
++    /* app_deinit() tears the SDL renderer/window down before SS4S_Quit(). Any queued
++     * texture pointer is stale now and SDL already released the underlying resource.
++     * Free queue bookkeeping only; touching the SDL_Texture here would be a UAF. */
++    RetiredTexture *retired = proxy->retired_head;
++    while (retired != NULL) {
++        RetiredTexture *next = retired->next;
++        free(retired);
++        retired = next;
++    }
++    proxy->retired_head = proxy->retired_tail = NULL;
++    SDL_UnlockMutex(proxy->lock);
++    HostRenderProxy = NULL;
++    SDL_DestroyMutex(proxy->lock);
++    free(proxy);
++}
++
++static bool GetCapabilities(SS4S_VideoCapabilities *capabilities) {
++    memset(capabilities, 0, sizeof(*capabilities));
++    /* UI_COMPOSITING: the app's UI is drawn OVER this video, in the same window, by the
++     * same renderer. Saying so keeps the app from calling SS4S_PlayerVideoSetDisplayArea
++     * (there is no separate surface to place) and keeps it from closing its UI, which is
++     * what UI_EXCLUSIVE would mean and would leave nothing to render into. */
++    capabilities->transform = SS4S_VIDEO_CAP_TRANSFORM_UI_COMPOSITING;
++#ifdef _WIN32
++    /* Adapter-specific and fail-closed: do not make HEVC (or even H.264) visible in
++     * Settings until both FFmpeg and the selected physical D3D11 adapter prove it. */
++    capabilities->codecs = probe_windows_codecs();
++#else
++    capabilities->codecs = SS4S_VIDEO_H264 | SS4S_VIDEO_H265;
++#endif
++    /* Desktop game streams are Rec.709. Leaving this zero makes the session request
++     * Rec.601 while SDL treats HD IYUV as Rec.709, producing visibly wrong colour. */
++    capabilities->colorSpace = SS4S_VIDEO_CAP_COLORSPACE_BT709;
++    return capabilities->codecs != SS4S_VIDEO_NONE;
++}
++
++static enum AVCodecID codec_id_for(SS4S_VideoCodec codec) {
++    switch (codec) {
++        case SS4S_VIDEO_H264:
++            return AV_CODEC_ID_H264;
++        case SS4S_VIDEO_H265:
++            return AV_CODEC_ID_HEVC;
++        default:
++            return AV_CODEC_ID_NONE;
++    }
++}
++
++#ifdef _WIN32
++static const char *pixel_format_name(enum AVPixelFormat format) {
++    const char *name = av_get_pix_fmt_name(format);
++    return name != NULL ? name : "unknown";
++}
++
++/* Moonlight's ffGetFormat() deliberately returns AV_PIX_FMT_NONE rather than allowing
++ * FFmpeg to choose a software format when its selected accelerator is absent.  Do the
++ * same here: a Windows stream that logs D3D11VA must actually deliver D3D11 frames. */
++static enum AVPixelFormat windows_get_format(AVCodecContext *codec_ctx,
++                                              const enum AVPixelFormat *formats) {
++    SS4S_VideoInstance *inst = codec_ctx != NULL ? codec_ctx->opaque : NULL;
++    if (inst == NULL || formats == NULL) {
++        return AV_PIX_FMT_NONE;
++    }
++
++    if (inst->use_d3d11va) {
++        for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
++            if (*format == inst->hw_pix_fmt) {
++                return *format;
++            }
++        }
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "D3D11VA fail-closed gate: decoder did not offer required format %s",
++                        pixel_format_name(inst->hw_pix_fmt));
++        inst->fatal_decode_error = true;
++        return AV_PIX_FMT_NONE;
++    }
++
++    /* Reached only through the explicit diagnostic opt-in.  Never choose an accelerator
++     * here: the point of this mode is to isolate the software decoder for diagnosis. */
++    for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
++        const AVPixFmtDescriptor *descriptor = av_pix_fmt_desc_get(*format);
++        if (descriptor != NULL && !(descriptor->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
++            return *format;
++        }
++    }
++    return AV_PIX_FMT_NONE;
++}
++
++static const AVCodecHWConfig *find_d3d11va_config(const AVCodec *decoder) {
++    for (int index = 0;; index++) {
++        const AVCodecHWConfig *config = avcodec_get_hw_config(decoder, index);
++        if (config == NULL) {
++            return NULL;
++        }
++        if (config->device_type == AV_HWDEVICE_TYPE_D3D11VA &&
++                (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) {
++            return config;
++        }
++    }
++}
++
++static AVD3D11VADeviceContext *d3d11va_device_context(AVBufferRef *device_ref) {
++    if (device_ref == NULL || device_ref->data == NULL) {
++        return NULL;
++    }
++    AVHWDeviceContext *hw_device = (AVHWDeviceContext *) device_ref->data;
++    return (AVD3D11VADeviceContext *) hw_device->hwctx;
++}
++
++static bool validate_d3d11va_adapter(AVBufferRef *device_ref, char *adapter_description,
++                                     size_t adapter_description_size,
++                                     unsigned int *adapter_vendor,
++                                     unsigned int *adapter_device) {
++    if (adapter_description == NULL || adapter_description_size == 0 ||
++            adapter_vendor == NULL || adapter_device == NULL) {
++        return false;
++    }
++
++    AVD3D11VADeviceContext *d3d11 = d3d11va_device_context(device_ref);
++    if (d3d11 == NULL || d3d11->device == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "D3D11VA fail-closed gate: hardware device has no ID3D11Device");
++        return false;
++    }
++
++    IDXGIDevice *dxgi_device = NULL;
++    IDXGIAdapter *base_adapter = NULL;
++    IDXGIAdapter1 *adapter = NULL;
++    bool valid = false;
++    HRESULT hr = ID3D11Device_QueryInterface(d3d11->device, &IID_IDXGIDevice,
++                                              (void **) &dxgi_device);
++    if (FAILED(hr) || dxgi_device == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "D3D11VA fail-closed gate: ID3D11Device -> IDXGIDevice failed: 0x%08lx",
++                        (unsigned long) hr);
++        goto cleanup;
++    }
++    hr = IDXGIDevice_GetAdapter(dxgi_device, &base_adapter);
++    if (FAILED(hr) || base_adapter == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "D3D11VA fail-closed gate: IDXGIDevice::GetAdapter failed: 0x%08lx",
++                        (unsigned long) hr);
++        goto cleanup;
++    }
++    hr = IDXGIAdapter_QueryInterface(base_adapter, &IID_IDXGIAdapter1, (void **) &adapter);
++    if (FAILED(hr) || adapter == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "D3D11VA fail-closed gate: IDXGIAdapter1 query failed: 0x%08lx",
++                        (unsigned long) hr);
++        goto cleanup;
++    }
++
++    DXGI_ADAPTER_DESC1 description;
++    memset(&description, 0, sizeof(description));
++    hr = IDXGIAdapter1_GetDesc1(adapter, &description);
++    if (FAILED(hr)) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "D3D11VA fail-closed gate: IDXGIAdapter1::GetDesc1 failed: 0x%08lx",
++                        (unsigned long) hr);
++        goto cleanup;
++    }
++    if ((description.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE | DXGI_ADAPTER_FLAG_REMOTE)) != 0) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "D3D11VA fail-closed gate: selected DXGI adapter is software/WARP "
++                        "or remote "
++                        "(vendor=0x%04x device=0x%04x flags=0x%x)",
++                        description.VendorId, description.DeviceId, description.Flags);
++        goto cleanup;
++    }
++
++    int converted = WideCharToMultiByte(CP_UTF8, 0, description.Description, -1,
++                                        adapter_description, (int) adapter_description_size,
++                                        NULL, NULL);
++    if (converted <= 0) {
++        snprintf(adapter_description, adapter_description_size, "unavailable");
++    }
++    *adapter_vendor = description.VendorId;
++    *adapter_device = description.DeviceId;
++    LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++                    "D3D11VA HARDWARE ADAPTER: name=\"%s\" vendor=0x%04x device=0x%04x "
++                    "flags=0x%x",
++                    adapter_description, *adapter_vendor, *adapter_device, description.Flags);
++    valid = true;
++
++cleanup:
++    if (adapter != NULL) { IDXGIAdapter1_Release(adapter); }
++    if (base_adapter != NULL) { IDXGIAdapter_Release(base_adapter); }
++    if (dxgi_device != NULL) { IDXGIDevice_Release(dxgi_device); }
++    return valid;
++}
++
++static bool d3d11va_profile_format_supported(AVBufferRef *device_ref, const GUID *profile,
++                                             DXGI_FORMAT format, const char *codec_name) {
++    AVD3D11VADeviceContext *d3d11 = d3d11va_device_context(device_ref);
++    if (d3d11 == NULL || d3d11->device == NULL) {
++        return false;
++    }
++
++    ID3D11VideoDevice *video_device = NULL;
++    HRESULT hr = ID3D11Device_QueryInterface(d3d11->device, &IID_ID3D11VideoDevice,
++                                              (void **) &video_device);
++    if (FAILED(hr) || video_device == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "D3D11VA %s capability query: ID3D11VideoDevice unavailable: 0x%08lx",
++                        codec_name, (unsigned long) hr);
++        return false;
++    }
++
++    bool profile_found = false;
++    const UINT profile_count = ID3D11VideoDevice_GetVideoDecoderProfileCount(video_device);
++    for (UINT index = 0; index < profile_count; index++) {
++        GUID candidate;
++        memset(&candidate, 0, sizeof(candidate));
++        hr = ID3D11VideoDevice_GetVideoDecoderProfile(video_device, index, &candidate);
++        if (SUCCEEDED(hr) && memcmp(&candidate, profile, sizeof(candidate)) == 0) {
++            profile_found = true;
++            break;
++        }
++    }
++
++    BOOL output_supported = FALSE;
++    if (profile_found) {
++        hr = ID3D11VideoDevice_CheckVideoDecoderFormat(video_device, profile, format,
++                                                       &output_supported);
++        if (FAILED(hr)) {
++            output_supported = FALSE;
++        }
++    }
++    ID3D11VideoDevice_Release(video_device);
++
++    LibContext->Log(profile_found && output_supported ? SS4S_LogLevelInfo : SS4S_LogLevelWarn,
++                    "FFmpeg", "D3D11VA %s capability: profile=%s output_format=%s",
++                    codec_name, profile_found ? "yes" : "no",
++                    output_supported ? "yes" : "no");
++    return profile_found && output_supported;
++}
++
++static bool d3d11va_codec_supported(AVBufferRef *device_ref, SS4S_VideoCodec codec) {
++    switch (codec) {
++        case SS4S_VIDEO_H264:
++            return d3d11va_profile_format_supported(device_ref,
++                                                    &D3D11_DECODER_PROFILE_H264_VLD_NOFGT,
++                                                    DXGI_FORMAT_NV12, "H.264/NV12");
++        case SS4S_VIDEO_H265:
++            return d3d11va_profile_format_supported(device_ref,
++                                                    &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
++                                                    DXGI_FORMAT_NV12, "HEVC Main/NV12");
++        default:
++            return false;
++    }
++}
++
++static SS4S_VideoCodec probe_windows_codecs(void) {
++    if (WindowsCapabilitiesProbed) {
++        return WindowsHardwareCodecs;
++    }
++    WindowsCapabilitiesProbed = true;
++    WindowsHardwareCodecs = SS4S_VIDEO_NONE;
++
++    const char *diagnostic_decoder = SDL_getenv(DIAGNOSTIC_DECODER_ENV);
++    if (diagnostic_decoder != NULL && strcmp(diagnostic_decoder, "software") == 0) {
++        if (avcodec_find_decoder(AV_CODEC_ID_H264) != NULL) {
++            WindowsHardwareCodecs = (SS4S_VideoCodec) (WindowsHardwareCodecs | SS4S_VIDEO_H264);
++        }
++        if (avcodec_find_decoder(AV_CODEC_ID_HEVC) != NULL) {
++            WindowsHardwareCodecs = (SS4S_VideoCodec) (WindowsHardwareCodecs | SS4S_VIDEO_H265);
++        }
++        LibContext->Log(SS4S_LogLevelWarn, "FFmpeg",
++                        "Windows capabilities are software-only because %s=software; "
++                        "this run is NOT a valid functional test",
++                        DIAGNOSTIC_DECODER_ENV);
++        return WindowsHardwareCodecs;
++    }
++
++    AVBufferRef *device_ref = NULL;
++    const int err = av_hwdevice_ctx_create(&device_ref, AV_HWDEVICE_TYPE_D3D11VA,
++                                           NULL, NULL, 0);
++    if (err < 0 || device_ref == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "D3D11VA capability gate: hardware device creation failed: %d", err);
++        av_buffer_unref(&device_ref);
++        return WindowsHardwareCodecs;
++    }
++
++    char adapter_description[384];
++    unsigned int adapter_vendor = 0;
++    unsigned int adapter_device = 0;
++    if (!validate_d3d11va_adapter(device_ref, adapter_description,
++                                  sizeof(adapter_description), &adapter_vendor,
++                                  &adapter_device)) {
++        av_buffer_unref(&device_ref);
++        return WindowsHardwareCodecs;
++    }
++
++    const AVCodec *h264 = avcodec_find_decoder(AV_CODEC_ID_H264);
++    if (h264 != NULL && find_d3d11va_config(h264) != NULL &&
++            d3d11va_codec_supported(device_ref, SS4S_VIDEO_H264)) {
++        WindowsHardwareCodecs = (SS4S_VideoCodec) (WindowsHardwareCodecs | SS4S_VIDEO_H264);
++    }
++    const AVCodec *hevc = avcodec_find_decoder(AV_CODEC_ID_HEVC);
++    if (hevc != NULL && find_d3d11va_config(hevc) != NULL &&
++            d3d11va_codec_supported(device_ref, SS4S_VIDEO_H265)) {
++        WindowsHardwareCodecs = (SS4S_VideoCodec) (WindowsHardwareCodecs | SS4S_VIDEO_H265);
++    }
++
++    LibContext->Log(WindowsHardwareCodecs != SS4S_VIDEO_NONE ? SS4S_LogLevelInfo :
++                                                               SS4S_LogLevelError,
++                    "FFmpeg", "D3D11VA advertised codecs on \"%s\": H.264=%s HEVC=%s",
++                    adapter_description,
++                    (WindowsHardwareCodecs & SS4S_VIDEO_H264) ? "yes" : "no",
++                    (WindowsHardwareCodecs & SS4S_VIDEO_H265) ? "yes" : "no");
++    av_buffer_unref(&device_ref);
++    return WindowsHardwareCodecs;
++}
++#endif
++
++static void instance_free(SS4S_VideoInstance *instance) {
++    if (instance == NULL) {
++        return;
++    }
++    /* SDL textures are retired by Close() and destroyed by host_draw() on the UI thread.
++     * Never call SDL_DestroyTexture() from this stream-thread cleanup helper. */
++    if (instance->texture != NULL && LibContext != NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "Texture reached instance_free without UI-thread retirement; "
++                        "leaving it for SDL renderer teardown");
++    }
++    if (instance->shared != NULL) { av_frame_free(&instance->shared); }
++    if (instance->frame != NULL) { av_frame_free(&instance->frame); }
++    if (instance->packet != NULL) { av_packet_free(&instance->packet); }
++    if (instance->codec_ctx != NULL) { avcodec_free_context(&instance->codec_ctx); }
++#ifdef _WIN32
++    if (instance->download != NULL) { av_frame_free(&instance->download); }
++    if (instance->i420 != NULL) { av_frame_free(&instance->i420); }
++    if (instance->sws != NULL) { sws_freeContext(instance->sws); }
++    av_buffer_unref(&instance->hw_device_ctx);
++#endif
++#ifdef LINUX_HWACCEL
++    if (instance->download != NULL) { av_frame_free(&instance->download); }
++    if (instance->i420 != NULL) { av_frame_free(&instance->i420); }
++    if (instance->sws != NULL) { sws_freeContext(instance->sws); }
++    av_buffer_unref(&instance->hw_device_ctx);
++#endif
++    if (instance->lock != NULL) { SDL_DestroyMutex(instance->lock); }
++    free(instance);
++}
++
++#ifdef LINUX_HWACCEL
++/* LINUX GPU DECODE. NVDEC first: the VA-API shim on NVIDIA cannot hand frames back to the
++ * CPU, while CUDA device creation fails fast (no libcuda) everywhere else. Then VA-API for
++ * Intel and AMD. ECLIPSE_DIAGNOSTIC_VIDEO_DECODER=software|nvdec|vaapi pins one path. */
++static const struct {
++    enum AVHWDeviceType type;
++    const char *name;
++} LinuxHwBackends[] = {
++        {AV_HWDEVICE_TYPE_CUDA,  "nvdec"},
++        {AV_HWDEVICE_TYPE_VAAPI, "vaapi"},
++};
++
++static const char *linux_pix_fmt_name(enum AVPixelFormat format) {
++    const char *name = av_get_pix_fmt_name(format);
++    return name != NULL ? name : "unknown";
++}
++
++static void linux_set_software(SS4S_VideoInstance *inst) {
++    SDL_LockMutex(inst->lock);
++    inst->hw_pix_fmt = AV_PIX_FMT_NONE;
++    inst->hw_path = "software";
++    SDL_UnlockMutex(inst->lock);
++}
++
++/* Take the armed GPU format when the decoder offers it. Otherwise -- the driver lacks this
++ * profile, or FFmpeg's hwaccel init failed and it is asking again without it -- pick a
++ * software format; returning NONE, as Windows does, would end the stream. */
++static enum AVPixelFormat linux_get_format(AVCodecContext *codec_ctx, const enum AVPixelFormat *formats) {
++    SS4S_VideoInstance *inst = codec_ctx != NULL ? codec_ctx->opaque : NULL;
++    if (inst == NULL || formats == NULL) {
++        return AV_PIX_FMT_NONE;
++    }
++    if (inst->hw_pix_fmt != AV_PIX_FMT_NONE) {
++        for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
++            if (*format == inst->hw_pix_fmt) {
++                return *format;
++            }
++        }
++        LibContext->Log(SS4S_LogLevelWarn, "FFmpeg", "%s did not offer %s for this stream; decoding in software",
++                        inst->hw_path, linux_pix_fmt_name(inst->hw_pix_fmt));
++        linux_set_software(inst);
++    }
++    for (const enum AVPixelFormat *format = formats; *format != AV_PIX_FMT_NONE; format++) {
++        const AVPixFmtDescriptor *descriptor = av_pix_fmt_desc_get(*format);
++        if (descriptor != NULL && !(descriptor->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
++            return *format;
++        }
++    }
++    return AV_PIX_FMT_NONE;
++}
++
++/* Arm the first GPU backend whose device opens. Nothing is decoded yet: the first frame
++ * proves the path (linux_present_frame), and failures before it fall back to software. */
++static void linux_open_hwaccel(SS4S_VideoInstance *inst, const AVCodec *decoder) {
++    inst->hw_pix_fmt = AV_PIX_FMT_NONE;
++    inst->hw_path = "software";
++    inst->codec_ctx->opaque = inst;
++    inst->codec_ctx->get_format = linux_get_format;
++    const char *pinned = SDL_getenv(DIAGNOSTIC_DECODER_ENV);
++    if (pinned != NULL && pinned[0] == '\0') {
++        pinned = NULL;
++    }
++    if (pinned != NULL && strcmp(pinned, "software") == 0) {
++        LibContext->Log(SS4S_LogLevelWarn, "FFmpeg", "Software decode pinned by %s=software",
++                        DIAGNOSTIC_DECODER_ENV);
++        return;
++    }
++    for (size_t i = 0; i < sizeof(LinuxHwBackends) / sizeof(LinuxHwBackends[0]); i++) {
++        if (pinned != NULL && strcmp(pinned, LinuxHwBackends[i].name) != 0) {
++            continue;
++        }
++        const AVCodecHWConfig *config = NULL;
++        for (int index = 0; (config = avcodec_get_hw_config(decoder, index)) != NULL; index++) {
++            if (config->device_type == LinuxHwBackends[i].type &&
++                    (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) {
++                break;
++            }
++        }
++        if (config == NULL) {
++            continue;
++        }
++        const int err = av_hwdevice_ctx_create(&inst->hw_device_ctx, LinuxHwBackends[i].type, NULL, NULL, 0);
++        if (err < 0 || inst->hw_device_ctx == NULL) {
++            LibContext->Log(SS4S_LogLevelInfo, "FFmpeg", "%s unavailable (device creation: %d)",
++                            LinuxHwBackends[i].name, err);
++            av_buffer_unref(&inst->hw_device_ctx);
++            continue;
++        }
++        inst->codec_ctx->hw_device_ctx = av_buffer_ref(inst->hw_device_ctx);
++        if (inst->codec_ctx->hw_device_ctx == NULL) {
++            av_buffer_unref(&inst->hw_device_ctx);
++            continue;
++        }
++        inst->hw_pix_fmt = config->pix_fmt;
++        inst->hw_path = LinuxHwBackends[i].name;
++        LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++                        "%s device ready for %s (frame format %s); waiting for the first GPU frame",
++                        inst->hw_path, decoder->name, linux_pix_fmt_name(inst->hw_pix_fmt));
++        return;
++    }
++    LibContext->Log(pinned != NULL ? SS4S_LogLevelWarn : SS4S_LogLevelInfo, "FFmpeg",
++                    "No GPU decoder %s; decoding in software",
++                    pinned != NULL ? "matches the pinned value" : "is available");
++}
++
++/* The armed GPU path failed before proving itself, or its readback broke: rebuild the decoder
++ * in software (same settings as Open) so the caller's keyframe request restarts the picture. */
++static bool linux_fallback_to_software(SS4S_VideoInstance *inst, const char *why) {
++    LibContext->Log(SS4S_LogLevelWarn, "FFmpeg", "%s failed (%s); reopening the decoder in software",
++                    inst->hw_path, why);
++    const AVCodec *decoder = inst->codec_ctx->codec;
++    AVCodecContext *ctx = decoder != NULL ? avcodec_alloc_context3(decoder) : NULL;
++    if (ctx == NULL) {
++        return false;
++    }
++    ctx->width = inst->codec_ctx->width;
++    ctx->height = inst->codec_ctx->height;
++    ctx->flags = inst->codec_ctx->flags;
++    ctx->flags2 = inst->codec_ctx->flags2;
++    ctx->err_recognition = inst->codec_ctx->err_recognition;
++    ctx->thread_type = FF_THREAD_SLICE;
++    ctx->opaque = inst;
++    ctx->get_format = linux_get_format;
++    linux_set_software(inst);
++    if (avcodec_open2(ctx, decoder, NULL) < 0) {
++        avcodec_free_context(&ctx);
++        return false;
++    }
++    avcodec_free_context(&inst->codec_ctx);
++    inst->codec_ctx = ctx;
++    av_buffer_unref(&inst->hw_device_ctx);
++    return true;
++}
++
++/* A decode error while a GPU path is armed but unproven: the third one falls back. */
++static void linux_note_gpu_error(SS4S_VideoInstance *inst, const char *what) {
++    if (inst->hw_pix_fmt != AV_PIX_FMT_NONE && !inst->hardware_confirmed && ++inst->hw_errors >= 3) {
++        linux_fallback_to_software(inst, what);
++    }
++}
++
++/* GPU frame -> CPU -> IYUV, as normalize_windows_frame() does for D3D11VA. Returns the frame
++ * to present: `decoded` itself when it is already a CPU frame in the renderer's layout. */
++static AVFrame *linux_present_frame(SS4S_VideoInstance *inst, AVFrame *decoded) {
++    AVFrame *cpu_frame = decoded;
++    if (decoded->hw_frames_ctx != NULL) {
++        av_frame_unref(inst->download);
++        const int err = av_hwframe_transfer_data(inst->download, decoded, 0);
++        if (err < 0) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg", "%s GPU->CPU frame transfer failed: %d",
++                            inst->hw_path, err);
++            return NULL;
++        }
++        cpu_frame = inst->download;
++        SDL_LockMutex(inst->lock);
++        inst->hardware_frames++;
++        const bool first_hardware_frame = !inst->hardware_confirmed;
++        inst->hardware_confirmed = true;
++        SDL_UnlockMutex(inst->lock);
++        if (first_hardware_frame) {
++            LibContext->Log(SS4S_LogLevelInfo, "FFmpeg", "%s ACTIVE: GPU decode confirmed, readback format %s",
++                            inst->hw_path, linux_pix_fmt_name((enum AVPixelFormat) cpu_frame->format));
++        }
++    }
++    if (cpu_frame->format == AV_PIX_FMT_YUV420P || cpu_frame->format == AV_PIX_FMT_YUVJ420P) {
++        return cpu_frame;
++    }
++    if (cpu_frame->width <= 0 || cpu_frame->height <= 0 || cpu_frame->data[0] == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "Decoded frame has invalid CPU layout: format=%s size=%dx%d",
++                        linux_pix_fmt_name((enum AVPixelFormat) cpu_frame->format),
++                        cpu_frame->width, cpu_frame->height);
++        return NULL;
++    }
++    int err;
++    if (inst->i420->format != AV_PIX_FMT_YUV420P || inst->i420->width != cpu_frame->width ||
++            inst->i420->height != cpu_frame->height || inst->i420->data[0] == NULL) {
++        av_frame_unref(inst->i420);
++        inst->i420->format = AV_PIX_FMT_YUV420P;
++        inst->i420->width = cpu_frame->width;
++        inst->i420->height = cpu_frame->height;
++        err = av_frame_get_buffer(inst->i420, 32);
++    } else {
++        err = av_frame_make_writable(inst->i420);
++    }
++    if (err < 0) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "Unable to prepare the IYUV presentation frame: %d", err);
++        return NULL;
++    }
++    inst->sws = sws_getCachedContext(inst->sws,
++                                     cpu_frame->width, cpu_frame->height, cpu_frame->format,
++                                     cpu_frame->width, cpu_frame->height, AV_PIX_FMT_YUV420P,
++                                     SWS_FAST_BILINEAR, NULL, NULL, NULL);
++    if (inst->sws == NULL ||
++            sws_scale(inst->sws, (const uint8_t *const *) cpu_frame->data, cpu_frame->linesize, 0,
++                      cpu_frame->height, inst->i420->data, inst->i420->linesize) != cpu_frame->height) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "%s -> yuv420p presentation conversion failed",
++                        linux_pix_fmt_name((enum AVPixelFormat) cpu_frame->format));
++        return NULL;
++    }
++    return inst->i420;
++}
++#endif
++
++static SS4S_VideoOpenResult Open(const SS4S_VideoInfo *info, const SS4S_VideoExtraInfo *extraInfo,
++                                 SS4S_VideoInstance **instance, SS4S_PlayerContext *context) {
++    (void) extraInfo;
++
++    const enum AVCodecID id = codec_id_for(info->codec);
++    if (id == AV_CODEC_ID_NONE) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "Unsupported codec %d", (int) info->codec);
++        return SS4S_VIDEO_OPEN_UNSUPPORTED_CODEC;
++    }
++
++    /* The app's window, published before any module loaded. Without it there is nothing to
++     * draw into and no honest way to continue: creating one here is the failure this module
++     * was rewritten to remove. */
++    SDL_Window *window = NULL;
++    const char *window_hint = SDL_GetHint(SS4S_HINT_HOST_WINDOW);
++    if (window_hint != NULL) {
++        sscanf(window_hint, "%p", (void **) &window);
++    }
++    if (window == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "No host window published (%s)",
++                        SS4S_HINT_HOST_WINDOW);
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++    SDL_Renderer *renderer = SDL_GetRenderer(window);
++    if (renderer == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "Host window has no renderer: %s", SDL_GetError());
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++
++    SS4S_VideoInstance *inst = calloc(1, sizeof(SS4S_VideoInstance));
++    if (inst == NULL) {
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++    inst->renderer = renderer;
++    inst->player = context != NULL ? context->player : NULL;
++
++    const AVCodec *decoder = avcodec_find_decoder(id);
++    if (decoder == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "No decoder for %s",
++                        SS4S_VideoCodecName(info->codec));
++        instance_free(inst);
++        return SS4S_VIDEO_OPEN_UNSUPPORTED_CODEC;
++    }
++    inst->codec_ctx = avcodec_alloc_context3(decoder);
++    if (inst->codec_ctx == NULL) {
++        instance_free(inst);
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++    inst->codec_ctx->width = info->width;
++    inst->codec_ctx->height = info->height;
++    /* Low latency, as the native client asks for: no frame reordering and every thread on
++     * the picture rather than pipelined across frames. */
++    inst->codec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY | AV_CODEC_FLAG_OUTPUT_CORRUPT;
++    inst->codec_ctx->flags2 |= AV_CODEC_FLAG2_SHOW_ALL;
++    /* Match Moonlight Qt: HEVC hwaccel start_frame failures can otherwise be dropped
++     * without an error, leaving persistent corruption for an infinite-GOP stream. */
++    inst->codec_ctx->err_recognition = AV_EF_EXPLODE;
++#ifdef _WIN32
++    const char *diagnostic_decoder = SDL_getenv(DIAGNOSTIC_DECODER_ENV);
++    const bool diagnostic_software = diagnostic_decoder != NULL &&
++                                     strcmp(diagnostic_decoder, "software") == 0;
++    if (diagnostic_decoder != NULL && diagnostic_decoder[0] != '\0' && !diagnostic_software) {
++        LibContext->Log(SS4S_LogLevelWarn, "FFmpeg",
++                        "Ignoring invalid %s=%s (the only accepted value is 'software'); "
++                        "D3D11VA remains mandatory",
++                        DIAGNOSTIC_DECODER_ENV, diagnostic_decoder);
++    }
++
++    inst->codec_ctx->opaque = inst;
++    inst->codec_ctx->get_format = windows_get_format;
++    inst->hw_pix_fmt = AV_PIX_FMT_NONE;
++    if (diagnostic_software) {
++        LibContext->Log(SS4S_LogLevelWarn, "FFmpeg",
++                        "DIAGNOSTIC SOFTWARE DECODER ENABLED by %s=software; "
++                        "this run is NOT a valid Windows functional test",
++                        DIAGNOSTIC_DECODER_ENV);
++        inst->codec_ctx->thread_type = FF_THREAD_SLICE;
++    } else {
++        const AVCodecHWConfig *hw_config = find_d3d11va_config(decoder);
++        if (hw_config == NULL) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                            "D3D11VA fail-closed gate: %s decoder exposes no D3D11VA "
++                            "HW_DEVICE_CTX configuration",
++                            decoder->name);
++            instance_free(inst);
++            return SS4S_VIDEO_OPEN_ERROR;
++        }
++        inst->hw_pix_fmt = hw_config->pix_fmt;
++        int hw_err = av_hwdevice_ctx_create(&inst->hw_device_ctx, AV_HWDEVICE_TYPE_D3D11VA,
++                                            NULL, NULL, 0);
++        if (hw_err < 0 || inst->hw_device_ctx == NULL) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                            "D3D11VA fail-closed gate: av_hwdevice_ctx_create failed: %d; "
++                            "software fallback is disabled",
++                            hw_err);
++            instance_free(inst);
++            return SS4S_VIDEO_OPEN_ERROR;
++        }
++        if (!validate_d3d11va_adapter(inst->hw_device_ctx, inst->adapter_description,
++                                      sizeof(inst->adapter_description),
++                                      &inst->adapter_vendor, &inst->adapter_device)) {
++            instance_free(inst);
++            return SS4S_VIDEO_OPEN_ERROR;
++        }
++        if (!d3d11va_codec_supported(inst->hw_device_ctx, info->codec)) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                            "D3D11VA fail-closed gate: selected physical adapter does not "
++                            "support %s in the required output format",
++                            SS4S_VideoCodecName(info->codec));
++            instance_free(inst);
++            return SS4S_VIDEO_OPEN_ERROR;
++        }
++        inst->codec_ctx->hw_device_ctx = av_buffer_ref(inst->hw_device_ctx);
++        if (inst->codec_ctx->hw_device_ctx == NULL) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                            "D3D11VA fail-closed gate: unable to retain hardware device");
++            instance_free(inst);
++            return SS4S_VIDEO_OPEN_ERROR;
++        }
++        inst->use_d3d11va = true;
++        inst->codec_ctx->thread_count = 1;
++        LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++                        "D3D11VA REQUIRED: device initialized for %s (expected frame format %s); "
++                        "waiting for the first decoded hardware frame",
++                        decoder->name, pixel_format_name(inst->hw_pix_fmt));
++    }
++#else
++    inst->codec_ctx->thread_type = FF_THREAD_SLICE;
++#ifdef LINUX_HWACCEL
++    linux_open_hwaccel(inst, decoder);
++#endif
++#endif
++    if (avcodec_open2(inst->codec_ctx, decoder, NULL) < 0) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "avcodec_open2 failed");
++        instance_free(inst);
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++
++    inst->packet = av_packet_alloc();
++    inst->frame = av_frame_alloc();
++    inst->shared = av_frame_alloc();
++    inst->lock = SDL_CreateMutex();
++#if defined(_WIN32) || defined(LINUX_HWACCEL)
++    inst->download = av_frame_alloc();
++    inst->i420 = av_frame_alloc();
++#endif
++    if (inst->packet == NULL || inst->frame == NULL || inst->shared == NULL || inst->lock == NULL
++#if defined(_WIN32) || defined(LINUX_HWACCEL)
++            || inst->download == NULL || inst->i420 == NULL
++#endif
++    ) {
++        instance_free(inst);
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++
++    FFmpegHostRenderProxy *proxy = HostRenderProxy;
++    if (proxy == NULL) {
++        instance_free(inst);
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++    SDL_LockMutex(proxy->lock);
++    proxy->instance = inst;
++    SDL_UnlockMutex(proxy->lock);
++    char buf[32];
++    snprintf(buf, sizeof(buf), "%p", (void *) &proxy->render);
++    if (!SDL_SetHintWithPriority(SS4S_HINT_HOST_RENDER, buf, SDL_HINT_OVERRIDE)) {
++        SDL_LockMutex(proxy->lock);
++        if (proxy->instance == inst) {
++            proxy->instance = NULL;
++        }
++        SDL_UnlockMutex(proxy->lock);
++        instance_free(inst);
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++
++    LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++#ifdef _WIN32
++                    "Opened %s decoder at %dx%d (path=%s), drawing into host window",
++                    SS4S_VideoCodecName(info->codec), info->width, info->height,
++                    inst->use_d3d11va ? "d3d11va-required" : "software-diagnostic");
++#elif defined(LINUX_HWACCEL)
++                    "Opened %s decoder at %dx%d (path=%s), drawing into host window",
++                    SS4S_VideoCodecName(info->codec), info->width, info->height, inst->hw_path);
++#else
++                    "Opened %s decoder at %dx%d, drawing into host window",
++                    SS4S_VideoCodecName(info->codec), info->width, info->height);
++#endif
++    *instance = inst;
++    return SS4S_VIDEO_OPEN_OK;
++}
++
++static bool ensure_texture(SS4S_VideoInstance *inst, int w, int h) {
++    if (inst->texture != NULL && inst->tex_w == w && inst->tex_h == h) {
++        return true;
++    }
++    if (inst->texture != NULL) {
++        SDL_DestroyTexture(inst->texture);
++        inst->texture = NULL;
++    }
++    /* IYUV because the presentation boundary is AV_PIX_FMT_YUV420P -- directly from the
++     * decoder on other platforms, or normalized after D3D11VA readback on Windows. */
++    SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
++    inst->texture = SDL_CreateTexture(inst->renderer, SDL_PIXELFORMAT_IYUV,
++                                      SDL_TEXTUREACCESS_STREAMING, w, h);
++    if (inst->texture == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "SDL_CreateTexture failed: %s", SDL_GetError());
++        return false;
++    }
++    inst->tex_w = w;
++    inst->tex_h = h;
++    return true;
++}
++
++static bool host_pending(void *context) {
++    FFmpegHostRenderProxy *proxy = context;
++    if (proxy == NULL || proxy->lock == NULL || SDL_LockMutex(proxy->lock) != 0) {
++        return false;
++    }
++    SS4S_VideoInstance *inst = proxy->instance;
++    bool pending = proxy->retired_head != NULL;
++    if (inst != NULL) {
++        SDL_LockMutex(inst->lock);
++        pending = pending || inst->has_new;
++        SDL_UnlockMutex(inst->lock);
++    }
++    SDL_UnlockMutex(proxy->lock);
++    return pending;
++}
++
++/* Main thread. Uploads the newest frame if there is one, then draws whatever the texture
++ * holds -- redrawing the last frame is correct and cheap when the app repaints for its own
++ * reasons (a menu opening) between two arrivals. */
++static bool host_draw(void *context) {
++    FFmpegHostRenderProxy *proxy = context;
++    if (proxy == NULL || proxy->lock == NULL || SDL_LockMutex(proxy->lock) != 0) {
++        return false;
++    }
++    if (SDL_ThreadID() != proxy->render_thread_id) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "Refusing host_draw outside the SDL UI thread");
++        SDL_UnlockMutex(proxy->lock);
++        return false;
++    }
++
++    /* Close() transfers textures here instead of destroying them on the stream worker.
++     * Drain the whole list first so rapid reconnects cannot strand an older texture. */
++    while (proxy->retired_head != NULL) {
++        RetiredTexture *retired = proxy->retired_head;
++        proxy->retired_head = retired->next;
++        if (proxy->retired_head == NULL) {
++            proxy->retired_tail = NULL;
++        }
++        SDL_DestroyTexture(retired->texture);
++        free(retired);
++    }
++
++    SS4S_VideoInstance *inst = proxy->instance;
++    if (inst == NULL) {
++        SDL_UnlockMutex(proxy->lock);
++        return false;
++    }
++    unsigned long fed_snapshot;
++    unsigned long decoded_snapshot;
++    unsigned long corrupt_frames_snapshot;
++    unsigned int last_corrupt_frame_flags_snapshot;
++    unsigned int last_decode_error_flags_snapshot;
++#ifdef _WIN32
++    unsigned long hardware_frames_snapshot;
++    unsigned long readbacks_snapshot;
++    unsigned long i420_conversions_snapshot;
++    bool hardware_confirmed_snapshot;
++#endif
++#ifdef LINUX_HWACCEL
++    const char *hw_path_snapshot;
++    unsigned long hardware_frames_snapshot;
++#endif
++    SDL_LockMutex(inst->lock);
++    if (inst->has_new && inst->shared->data[0] != NULL) {
++        if (ensure_texture(inst, inst->shared->width, inst->shared->height)) {
++            SDL_UpdateYUVTexture(inst->texture, NULL,
++                                 inst->shared->data[0], inst->shared->linesize[0],
++                                 inst->shared->data[1], inst->shared->linesize[1],
++                                 inst->shared->data[2], inst->shared->linesize[2]);
++        }
++        /* Mean luma of the frame we just uploaded. A black window is either a black
++         * SOURCE -- which is what a fullscreen client on the machine it is streaming FROM
++         * captures, its own empty window -- or a picture that something drew over. The
++         * counters cannot tell those apart and this can. */
++        if (inst->drawn % 600 == 0) {
++            unsigned long sum = 0, n = 0;
++            for (int y = 0; y < inst->shared->height; y += 16) {
++                const uint8_t *row = inst->shared->data[0] + (size_t) y * inst->shared->linesize[0];
++                for (int x = 0; x < inst->shared->width; x += 16) { sum += row[x]; n++; }
++            }
++            inst->mean_luma = n ? (int) (sum / n) : -1;
++        }
++        inst->has_new = false;
++        /* The SDL texture owns the uploaded pixels now. Releasing this reference promptly
++         * lets the decoder or IYUV normalization buffer be reused instead of allocating a
++         * fresh full-resolution buffer for every frame. */
++        av_frame_unref(inst->shared);
++    }
++    /* Feed() owns these counters on the stream thread. Snapshot them under the same
++     * mutex as their writes; "diagnostic only" does not make a C data race benign. */
++    fed_snapshot = inst->fed;
++    decoded_snapshot = inst->decoded;
++    corrupt_frames_snapshot = inst->corrupt_frames;
++    last_corrupt_frame_flags_snapshot = inst->last_corrupt_frame_flags;
++    last_decode_error_flags_snapshot = inst->last_decode_error_flags;
++#ifdef _WIN32
++    hardware_frames_snapshot = inst->hardware_frames;
++    readbacks_snapshot = inst->readbacks;
++    i420_conversions_snapshot = inst->i420_conversions;
++    hardware_confirmed_snapshot = inst->hardware_confirmed;
++#endif
++#ifdef LINUX_HWACCEL
++    hw_path_snapshot = inst->hw_path;
++    hardware_frames_snapshot = inst->hardware_frames;
++#endif
++    SDL_UnlockMutex(inst->lock);
++
++    if (inst->texture == NULL) {
++        SDL_UnlockMutex(proxy->lock);
++        return false;
++    }
++    /* One line every ~10s of a 60fps stream. It is the cheapest thing that distinguishes
++     * the three ways this can look broken while the connection looks healthy: nothing fed,
++     * fed but not decoding, decoding but never drawn -- plus meanY for a picture that is
++     * simply black at the source. */
++    if (++inst->drawn % 600 == 1) {
++#ifdef _WIN32
++        LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++                        "path=%s fed=%lu decoded=%lu hw_frames=%lu readbacks=%lu "
++                        "i420_conversions=%lu corrupt=%lu last=0x%x/0x%x "
++                        "drawn=%lu tex=%dx%d meanY=%d",
++                        inst->use_d3d11va ?
++                                (hardware_confirmed_snapshot ? "d3d11va-active" :
++                                                               "d3d11va-pending") :
++                                "software-diagnostic",
++                        fed_snapshot, decoded_snapshot, hardware_frames_snapshot,
++                        readbacks_snapshot, i420_conversions_snapshot, corrupt_frames_snapshot,
++                        last_corrupt_frame_flags_snapshot, last_decode_error_flags_snapshot,
++                        inst->drawn, inst->tex_w, inst->tex_h, inst->mean_luma);
++#elif defined(LINUX_HWACCEL)
++        LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++                        "path=%s fed=%lu decoded=%lu hw_frames=%lu corrupt=%lu last=0x%x/0x%x "
++                        "drawn=%lu tex=%dx%d meanY=%d",
++                        hw_path_snapshot, fed_snapshot, decoded_snapshot, hardware_frames_snapshot,
++                        corrupt_frames_snapshot, last_corrupt_frame_flags_snapshot,
++                        last_decode_error_flags_snapshot, inst->drawn, inst->tex_w, inst->tex_h,
++                        inst->mean_luma);
++#else
++        LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++                        "fed=%lu decoded=%lu corrupt=%lu last=0x%x/0x%x "
++                        "drawn=%lu tex=%dx%d meanY=%d",
++                        fed_snapshot, decoded_snapshot, corrupt_frames_snapshot,
++                        last_corrupt_frame_flags_snapshot, last_decode_error_flags_snapshot,
++                        inst->drawn, inst->tex_w, inst->tex_h, inst->mean_luma);
++#endif
++    }
++    /* Letterbox rather than stretch: the stream's aspect is the host's, the window's is the
++     * user's, and they are not the same once the window is resized. */
++    int win_w = 0, win_h = 0;
++    if (SDL_GetRendererOutputSize(inst->renderer, &win_w, &win_h) != 0 || win_w <= 0 || win_h <= 0) {
++        SDL_UnlockMutex(proxy->lock);
++        return false;
++    }
++    SDL_Rect dst;
++    const int scaled_h = inst->tex_h * win_w / inst->tex_w;
++    if (scaled_h <= win_h) {
++        dst.w = win_w;
++        dst.h = scaled_h;
++    } else {
++        dst.w = inst->tex_w * win_h / inst->tex_h;
++        dst.h = win_h;
++    }
++    dst.x = (win_w - dst.w) / 2;
++    dst.y = (win_h - dst.h) / 2;
++
++    SDL_SetRenderDrawColor(inst->renderer, 0, 0, 0, 0xFF);
++    SDL_RenderClear(inst->renderer);
++    SDL_RenderCopy(inst->renderer, inst->texture, NULL, &dst);
++    SDL_UnlockMutex(proxy->lock);
++    return true;
++}
++
++#ifdef _WIN32
++/* Turn a D3D11VA download (normally NV12, or P010 for 10-bit HEVC) into the planar
++ * 8-bit layout consumed by the existing SDL IYUV renderer. This is intentionally a
++ * presentation conversion only: avcodec_receive_frame() has already completed on the
++ * D3D11VA hardware path, and the counters/logs keep that distinction observable. */
++static AVFrame *normalize_windows_frame(SS4S_VideoInstance *instance, AVFrame *decoded) {
++    AVFrame *cpu_frame = decoded;
++
++    if (instance->use_d3d11va) {
++        if (decoded->format != instance->hw_pix_fmt || decoded->hw_frames_ctx == NULL) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                            "D3D11VA fail-closed gate: received %s frame without a hardware "
++                            "frames context (expected %s)",
++                            pixel_format_name((enum AVPixelFormat) decoded->format),
++                            pixel_format_name(instance->hw_pix_fmt));
++            instance->fatal_decode_error = true;
++            return NULL;
++        }
++
++        av_frame_unref(instance->download);
++        int err = av_hwframe_transfer_data(instance->download, decoded, 0);
++        if (err < 0) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                            "D3D11VA fail-closed gate: GPU->CPU frame transfer failed: %d", err);
++            instance->fatal_decode_error = true;
++            return NULL;
++        }
++        cpu_frame = instance->download;
++
++        SDL_LockMutex(instance->lock);
++        instance->hardware_frames++;
++        instance->readbacks++;
++        const bool first_hardware_frame = !instance->hardware_confirmed;
++        instance->hardware_confirmed = true;
++        SDL_UnlockMutex(instance->lock);
++
++        if (first_hardware_frame) {
++            LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++                            "D3D11VA ACTIVE: received hardware format %s with hw_frames_ctx; "
++                            "GPU decode confirmed on \"%s\" (vendor=0x%04x device=0x%04x), "
++                            "readback format=%s",
++                            pixel_format_name(instance->hw_pix_fmt),
++                            instance->adapter_description, instance->adapter_vendor,
++                            instance->adapter_device,
++                            pixel_format_name((enum AVPixelFormat) cpu_frame->format));
++        }
++    }
++
++    if (cpu_frame->width <= 0 || cpu_frame->height <= 0 || cpu_frame->data[0] == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "Decoded frame has invalid CPU layout: format=%s size=%dx%d",
++                        pixel_format_name((enum AVPixelFormat) cpu_frame->format),
++                        cpu_frame->width, cpu_frame->height);
++        instance->fatal_decode_error = instance->use_d3d11va;
++        return NULL;
++    }
++    if (cpu_frame->format == AV_PIX_FMT_YUV420P) {
++        return cpu_frame;
++    }
++
++    if (instance->i420->format != AV_PIX_FMT_YUV420P ||
++            instance->i420->width != cpu_frame->width ||
++            instance->i420->height != cpu_frame->height || instance->i420->data[0] == NULL) {
++        av_frame_unref(instance->i420);
++        instance->i420->format = AV_PIX_FMT_YUV420P;
++        instance->i420->width = cpu_frame->width;
++        instance->i420->height = cpu_frame->height;
++        int err = av_frame_get_buffer(instance->i420, 32);
++        if (err < 0) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                            "Unable to allocate IYUV presentation frame: %d", err);
++            instance->fatal_decode_error = instance->use_d3d11va;
++            return NULL;
++        }
++    } else {
++        int err = av_frame_make_writable(instance->i420);
++        if (err < 0) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                            "Unable to make IYUV presentation frame writable: %d", err);
++            instance->fatal_decode_error = instance->use_d3d11va;
++            return NULL;
++        }
++    }
++
++    instance->sws = sws_getCachedContext(instance->sws,
++                                         cpu_frame->width, cpu_frame->height, cpu_frame->format,
++                                         cpu_frame->width, cpu_frame->height, AV_PIX_FMT_YUV420P,
++                                         SWS_FAST_BILINEAR, NULL, NULL, NULL);
++    if (instance->sws == NULL) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "Unable to create %s -> yuv420p presentation conversion",
++                        pixel_format_name((enum AVPixelFormat) cpu_frame->format));
++        instance->fatal_decode_error = instance->use_d3d11va;
++        return NULL;
++    }
++    const int rows = sws_scale(instance->sws,
++                               (const uint8_t *const *) cpu_frame->data, cpu_frame->linesize,
++                               0, cpu_frame->height,
++                               instance->i420->data, instance->i420->linesize);
++    if (rows != cpu_frame->height) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                        "%s -> yuv420p presentation conversion returned %d/%d rows",
++                        pixel_format_name((enum AVPixelFormat) cpu_frame->format), rows,
++                        cpu_frame->height);
++        instance->fatal_decode_error = instance->use_d3d11va;
++        return NULL;
++    }
++    SDL_LockMutex(instance->lock);
++    instance->i420_conversions++;
++    SDL_UnlockMutex(instance->lock);
++    return instance->i420;
++}
++#endif
++
++static SS4S_VideoFeedResult Feed(SS4S_VideoInstance *instance, const unsigned char *data, size_t size,
++                                 SS4S_VideoFeedFlags flags) {
++    if (instance == NULL || instance->codec_ctx == NULL) {
++        return SS4S_VIDEO_FEED_ERROR;
++    }
++#ifdef _WIN32
++    if (instance->fatal_decode_error) {
++        return SS4S_VIDEO_FEED_ERROR;
++    }
++#endif
++    if (size > INT_MAX) {
++        return SS4S_VIDEO_FEED_ERROR;
++    }
++    /* FFmpeg bit readers may inspect AV_INPUT_BUFFER_PADDING_SIZE bytes beyond the packet.
++     * The SS4S caller owns and immediately reuses its buffer, and co-op can hand us one of
++     * several independently allocated rewrite buffers, so there is no single caller-side
++     * allocation that can safely promise this contract. Own one padded AVPacket here instead.
++     * av_new_packet() allocates the required tail; zero it explicitly so damaged streams
++     * cannot turn an optimized over-read into undefined behavior. */
++    av_packet_unref(instance->packet);
++    if (av_new_packet(instance->packet, (int) size) < 0) {
++        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "av_new_packet(%llu) failed",
++                        (unsigned long long) size);
++        return SS4S_VIDEO_FEED_ERROR;
++    }
++    memcpy(instance->packet->data, data, size);
++    memset(instance->packet->data + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++    /* Preserve the caller's access-unit identity at the libavcodec boundary. Moonlight's
++     * native FFmpeg path sets this exact flag; dropping it here made an SS4S keyframe
++     * indistinguishable from an ordinary packet to decoder integrations that consult it. */
++    instance->packet->flags = (flags & SS4S_VIDEO_FEED_DATA_KEYFRAME) != 0 ? AV_PKT_FLAG_KEY : 0;
++    SDL_LockMutex(instance->lock);
++    instance->fed++;
++    SDL_UnlockMutex(instance->lock);
++
++    /* Decoder latency (#32): from here to the frame being ready for the UI thread to draw --
++     * decode, and on Windows the D3D11VA readback + I420 normalization too. */
++    bool stats_open = instance->player != NULL;
++    const uint32_t stats_begin = stats_open ? LibContext->VideoStats.BeginFrame(instance->player) : 0;
++
++    int err = avcodec_send_packet(instance->codec_ctx, instance->packet);
++    if (err < 0) {
++        LibContext->Log(SS4S_LogLevelWarn, "FFmpeg", "avcodec_send_packet: %d", err);
++        av_packet_unref(instance->packet);
++#ifdef _WIN32
++        if (instance->fatal_decode_error) {
++            return SS4S_VIDEO_FEED_ERROR;
++        }
++#endif
++#ifdef LINUX_HWACCEL
++        linux_note_gpu_error(instance, "avcodec_send_packet");
++#endif
++        return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
++    }
++    av_packet_unref(instance->packet);
++    while ((err = avcodec_receive_frame(instance->codec_ctx, instance->frame)) == 0) {
++        /* OUTPUT_CORRUPT is enabled so libavcodec may return a frame despite a missing
++         * reference or another decode fault. A successful receive is therefore not by itself
++         * a healthy frame. Do not publish damaged pixels; translate libavcodec's existing signal
++         * into SS4S's existing keyframe request so the poisoned reference chain is re-anchored. */
++        const unsigned int frame_flags = (unsigned int) instance->frame->flags;
++        const unsigned int decode_error_flags =
++                (unsigned int) instance->frame->decode_error_flags;
++        if ((frame_flags & AV_FRAME_FLAG_CORRUPT) != 0 || decode_error_flags != 0) {
++            SDL_LockMutex(instance->lock);
++            instance->corrupt_frames++;
++            instance->last_corrupt_frame_flags = frame_flags;
++            instance->last_decode_error_flags = decode_error_flags;
++            SDL_UnlockMutex(instance->lock);
++            LibContext->Log(SS4S_LogLevelWarn, "FFmpeg",
++                            "Discarding corrupt decoded frame: flags=0x%x decode_errors=0x%x",
++                            frame_flags, decode_error_flags);
++            av_frame_unref(instance->frame);
++#ifdef LINUX_HWACCEL
++            linux_note_gpu_error(instance, "corrupt frames");
++#endif
++            return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
++        }
++        /* Hand the frame over by reference, not by copy: move_ref leaves `frame` clean for
++         * the next receive and the app's thread reads the buffer the decoder already owns. */
++#ifdef _WIN32
++        AVFrame *presented = normalize_windows_frame(instance, instance->frame);
++        if (presented == NULL) {
++            av_frame_unref(instance->frame);
++            return instance->fatal_decode_error ? SS4S_VIDEO_FEED_ERROR :
++                                                  SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
++        }
++        SDL_LockMutex(instance->lock);
++        av_frame_unref(instance->shared);
++        int ref_err = av_frame_ref(instance->shared, presented);
++        if (ref_err >= 0) {
++            instance->has_new = true;
++            instance->decoded++;
++        }
++        SDL_UnlockMutex(instance->lock);
++        av_frame_unref(instance->frame);
++        if (ref_err >= 0 && stats_open) {
++            LibContext->VideoStats.EndFrame(instance->player, stats_begin);
++            stats_open = false;
++        }
++        if (ref_err < 0) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                            "Unable to retain decoded presentation frame: %d", ref_err);
++            return SS4S_VIDEO_FEED_ERROR;
++        }
++#elif defined(LINUX_HWACCEL)
++        AVFrame *presented = linux_present_frame(instance, instance->frame);
++        if (presented == NULL) {
++            av_frame_unref(instance->frame);
++            if (instance->hw_pix_fmt != AV_PIX_FMT_NONE && !linux_fallback_to_software(instance, "frame readback")) {
++                return SS4S_VIDEO_FEED_ERROR;
++            }
++            return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
++        }
++        SDL_LockMutex(instance->lock);
++        av_frame_unref(instance->shared);
++        int ref_err = 0;
++        if (presented == instance->frame) {
++            av_frame_move_ref(instance->shared, instance->frame);   /* software frame: as before */
++        } else {
++            ref_err = av_frame_ref(instance->shared, presented);
++        }
++        if (ref_err >= 0) {
++            instance->has_new = true;
++            instance->decoded++;
++        }
++        SDL_UnlockMutex(instance->lock);
++        av_frame_unref(instance->frame);
++        if (ref_err < 0) {
++            LibContext->Log(SS4S_LogLevelError, "FFmpeg", "Unable to retain decoded presentation frame: %d", ref_err);
++            return SS4S_VIDEO_FEED_ERROR;
++        }
++        if (stats_open) {
++            LibContext->VideoStats.EndFrame(instance->player, stats_begin);
++            stats_open = false;
++        }
++#else
++        SDL_LockMutex(instance->lock);
++        av_frame_unref(instance->shared);
++        av_frame_move_ref(instance->shared, instance->frame);
++        instance->has_new = true;
++        instance->decoded++;
++        SDL_UnlockMutex(instance->lock);
++        if (stats_open) {
++            LibContext->VideoStats.EndFrame(instance->player, stats_begin);
++            stats_open = false;
++        }
++#endif
++    }
++    if (err != AVERROR(EAGAIN) && err != AVERROR_EOF) {
++        LibContext->Log(SS4S_LogLevelWarn, "FFmpeg", "avcodec_receive_frame: %d", err);
++#ifdef _WIN32
++        if (instance->fatal_decode_error) {
++            return SS4S_VIDEO_FEED_ERROR;
++        }
++#endif
++#ifdef LINUX_HWACCEL
++        linux_note_gpu_error(instance, "avcodec_receive_frame");
++#endif
++        return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
++    }
++    return SS4S_VIDEO_FEED_OK;
++}
++
++static bool SizeChanged(SS4S_VideoInstance *instance, int width, int height) {
++    /* The texture follows the DECODED frame size, so nothing to do until one arrives. */
++    (void) instance;
++    (void) width;
++    (void) height;
++    return true;
++}
++
++static bool SetHDRInfo(SS4S_VideoInstance *instance, const SS4S_VideoHDRInfo *info) {
++    /* The presentation boundary is 8-bit IYUV (including after D3D11VA readback): there
++     * is nowhere to put HDR metadata, and claiming otherwise would make the host send a
++     * picture this interim renderer cannot present correctly. */
++    (void) instance;
++    (void) info;
++    return false;
++}
++
++static void Close(SS4S_VideoInstance *instance) {
++    FFmpegHostRenderProxy *proxy = HostRenderProxy;
++    if (proxy != NULL) {
++        SDL_LockMutex(proxy->lock);
++        if (proxy->instance == instance) {
++            proxy->instance = NULL;
++        }
++        if (instance->texture != NULL) {
++            if (SDL_ThreadID() == proxy->render_thread_id) {
++                SDL_DestroyTexture(instance->texture);
++                instance->texture = NULL;
++            } else {
++                RetiredTexture *retired = calloc(1, sizeof(*retired));
++                if (retired != NULL) {
++                    retired->texture = instance->texture;
++                    instance->texture = NULL;
++                    if (proxy->retired_tail != NULL) {
++                        proxy->retired_tail->next = retired;
++                    } else {
++                        proxy->retired_head = retired;
++                    }
++                    proxy->retired_tail = retired;
++                    /* Ownership transfer is the synchronization boundary. Never wait here:
++                     * app shutdown joins this worker on the UI thread, so waiting for a draw
++                     * would deadlock. The unconditional pending poll drains the queue while
++                     * the UI runs; renderer teardown owns the last-resort release. */
++                    LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++                                    "SDL texture queued for UI-thread retirement");
++                } else {
++                    LibContext->Log(SS4S_LogLevelError, "FFmpeg",
++                                    "Unable to queue SDL texture for UI-thread retirement; "
++                                    "leaving it for SDL renderer teardown");
++                }
++            }
++        }
++        SDL_UnlockMutex(proxy->lock);
++    }
++    instance_free(instance);
++}
++
++static SS4S_PlayerContext *PlayerCreate(SS4S_Player *player) {
++    SS4S_PlayerContext *context = calloc(1, sizeof(SS4S_PlayerContext));
++    if (context != NULL) {
++        context->player = player;
++    }
++    return context;
++}
++
++static void PlayerDestroy(SS4S_PlayerContext *context) {
++    free(context);
++}
++
++static const SS4S_PlayerDriver FFmpegPlayerDriver = {
++        .Create = PlayerCreate,
++        .Destroy = PlayerDestroy,
++};
++
++static const SS4S_VideoDriver FFmpegDriver = {
++        .Base = {
++                .Init = Init,
++                .Quit = Quit,
++        },
++        .GetCapabilities = GetCapabilities,
++        .Open = Open,
++        .Feed = Feed,
++        .SizeChanged = SizeChanged,
++        /* No SetDisplayArea: claiming UI_COMPOSITING means the app never calls it. */
++        .SetHDRInfo = SetHDRInfo,
++        .Close = Close,
++};
++
++SS4S_EXPORTED bool SS4S_ModuleOpen_FFMPEG(SS4S_Module *module, const SS4S_LibraryContext *context) {
++    module->Name = "ffmpeg";
++    module->PlayerDriver = &FFmpegPlayerDriver;
++    module->VideoDriver = &FFmpegDriver;
++    LibContext = context;
++    return true;
++}
+diff --git a/modules/interface/include/ss4s/modapi.h b/modules/interface/include/ss4s/modapi.h
+index ef66c0b3cc373cc1414e18c68ddf804d910c3214..7e17d30b3dd5d077902da1195f8fb5d53c8dfb2a 100644
+--- a/modules/interface/include/ss4s/modapi.h
++++ b/modules/interface/include/ss4s/modapi.h
+@@ -40,6 +40,12 @@ typedef struct SS4S_PlayerDriver {
+ 
+ typedef struct SS4S_AudioInstance SS4S_AudioInstance;
+ 
++/* Optional standalone export; deliberately NOT an appended driver/module member.
++ * Export name: SS4S_ModuleAudioGetClockV1_<MODULE>. Implementations must reject
++ * any clock_size other than sizeof(SS4S_AudioClock) before accessing clock. */
++typedef bool (SS4S_ModuleAudioGetClockV1Function)(SS4S_AudioInstance *instance,
++                                               SS4S_AudioClock *clock, size_t clock_size);
++
+ typedef struct SS4S_AudioDriver {
+     SS4S_DriverBase Base;
+ 
+@@ -130,6 +136,9 @@ struct SS4S_Module {
+ 
+ typedef struct SS4S_LibraryContext {
+     SS4S_LoggingFunction *Log;
++    struct {
++        const char *device;
++    } Audio;
+     struct {
+         SS4S_VideoStatsBeginFrameFunction *BeginFrame;
+         SS4S_VideoStatsEndFrameFunction *EndFrame;
+@@ -142,6 +151,11 @@ typedef struct SS4S_LibraryContext {
+ /**
+  * Multiple calls to this function should have same effect.
+  */
++/* Optional standalone symbol, not a member of a legacy driver/module struct. */
++typedef SS4S_AudioOpenResult (SS4S_ModuleAudioOpenPullV1Function)(const SS4S_AudioInfo *info,
++    SS4S_AudioInstance **instance, SS4S_PlayerContext *player_context,
++    SS4S_AudioPullRenderFunction render, void *render_context);
++
+ typedef bool (SS4S_ModuleOpenFunction)(SS4S_Module *module, const SS4S_LibraryContext *context);
+ 
+ typedef SS4S_ModuleCheckFlag (SS4S_ModuleCheckFunction)(SS4S_ModuleCheckFlag flags);
+diff --git a/modules/list-ini/CMakeLists.txt b/modules/list-ini/CMakeLists.txt
+index 0d4a5fb609943ae428f67d92a81c03f742c4c42b..e2bb30995d7268b64985280707ec6dada2fbe4a4 100644
+--- a/modules/list-ini/CMakeLists.txt
++++ b/modules/list-ini/CMakeLists.txt
+@@ -16,4 +16,6 @@ if (HAS_DLFCN)
+     target_link_libraries(ss4s-modules-list-ini PRIVATE dl)
+ endif ()
+ 
+-install(TARGETS ss4s-modules-list-ini LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+\ No newline at end of file
++install(TARGETS ss4s-modules-list-ini
++        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
++        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR})
+diff --git a/modules/list-ini/modules_ini.c b/modules/list-ini/modules_ini.c
+index 49be525fc3058e8196d42cae0c2c5cc72cf7f1bc..4256bfafb00a1ed3d6a31fcfea811adc024ff338 100644
+--- a/modules/list-ini/modules_ini.c
++++ b/modules/list-ini/modules_ini.c
+@@ -3,6 +3,11 @@
+ #include <stdio.h>
+ #include <limits.h>
+ 
++#ifdef _WIN32
++#include <windows.h>
++#include <wchar.h>
++#endif
++
+ #ifdef HAS_DLADDR
+ 
+ #include <dlfcn.h>
+@@ -15,6 +20,22 @@
+ #endif
+ 
+ FILE *SS4S_ModulesListFileOpen() {
++#ifdef _WIN32
++    wchar_t iniPath[32768];
++    DWORD pathLen = GetModuleFileNameW(NULL, iniPath, (DWORD) (sizeof(iniPath) / sizeof(iniPath[0])));
++    if (pathLen == 0 || pathLen >= sizeof(iniPath) / sizeof(iniPath[0])) {
++        return NULL;
++    }
++    wchar_t *dirnameEnd = wcsrchr(iniPath, L'\\');
++    static const wchar_t iniName[] = L"\\ss4s_modules.ini";
++    if (dirnameEnd == NULL ||
++        (size_t) (dirnameEnd - iniPath) + sizeof(iniName) / sizeof(iniName[0]) >
++                sizeof(iniPath) / sizeof(iniPath[0])) {
++        return NULL;
++    }
++    wcscpy(dirnameEnd, iniName);
++    return _wfopen(iniPath, L"r");
++#else
+     char iniPath[PATH_MAX];
+ #ifdef HAS_DLADDR
+     Dl_info info;
+@@ -30,8 +51,9 @@ FILE *SS4S_ModulesListFileOpen() {
+     snprintf(iniPath, 255, "ss4s_modules.ini");
+ #endif
+     return fopen(iniPath, "r");
++#endif
+ }
+ 
+ void SS4S_ModulesListFileClose(FILE *file) {
+     fclose(file);
+-}
+\ No newline at end of file
++}
+diff --git a/modules/pulse/pulse.c b/modules/pulse/pulse.c
+index 6f02d7fe51dc1ad45949a495e2fac548fa214e49..80edd10939b6f2a9ea11c7d86f5097509b2f075e 100644
+--- a/modules/pulse/pulse.c
++++ b/modules/pulse/pulse.c
+@@ -1,14 +1,43 @@
+ #include "ss4s/modapi.h"
+ 
+ #include <pulse/simple.h>
++#include <pulse/pulseaudio.h>
+ #include <stdlib.h>
++#include <string.h>
++#include <time.h>
+ #include <pulse/error.h>
+ #include <assert.h>
+ 
+ static const SS4S_LibraryContext *LibContext;
+ 
++/* Pull mode: PulseAudio's own mainloop thread asks for bytes and the client renders
++ * exactly that much straight into PulseAudio's buffer, so server consumption paces the
++ * mixer the way SDL's callback does on Windows. The target latency is
++ * PULSE_PULL_TARGET_BLOCKS client blocks (tlength) requested in single blocks (minreq),
++ * with PA_STREAM_ADJUST_LATENCY so the server sizes the sink to it. */
++#define PULSE_PULL_TARGET_BLOCKS 4
++
++/* Written only by the mainloop thread; read after pa_threaded_mainloop_stop joins it. */
++typedef struct {
++    uint64_t demand_frames, delivered_frames, short_frames, invalid_results;
++    uint64_t render_max_us, interval_max_us, deadline_misses, callbacks;
++    uint64_t underflows, write_errors, last_begin_us, stream_failures, context_failures;
++    unsigned max_request_frames, last_request_frames;
++} PullStats;
++
+ struct SS4S_AudioInstance {
+     pa_simple *dev;
++    /* Pull mode only (loop != NULL). */
++    pa_threaded_mainloop *loop;
++    pa_context *context;
++    pa_stream *stream;
++    int loop_started, closing;
++    SS4S_AudioPullRenderFunction render;
++    void *render_context;
++    int frame_bytes, sample_rate;
++    uint64_t opened_us;
++    pa_buffer_attr attr;
++    PullStats pull;
+ };
+ 
+ static bool GetCapabilities(SS4S_AudioCapabilities *capabilities, SS4S_AudioCodec wantedCodecs) {
+@@ -17,6 +46,26 @@ static bool GetCapabilities(SS4S_AudioCapabilities *capabilities, SS4S_AudioCode
+     return true;
+ }
+ 
++static void FillChannelMap(pa_channel_map *channel_map, int channels) {
++    pa_channel_map *pchannel_map = pa_channel_map_init(channel_map);
++    pchannel_map->channels = channels;
++    switch (channels) {
++        case 8:
++            pchannel_map->map[6] = PA_CHANNEL_POSITION_SIDE_LEFT;
++            pchannel_map->map[7] = PA_CHANNEL_POSITION_SIDE_RIGHT;
++            // Intentionally fallthrough
++        case 6:
++            pchannel_map->map[2] = PA_CHANNEL_POSITION_FRONT_CENTER;
++            pchannel_map->map[3] = PA_CHANNEL_POSITION_LFE;
++            pchannel_map->map[4] = PA_CHANNEL_POSITION_REAR_LEFT;
++            pchannel_map->map[5] = PA_CHANNEL_POSITION_REAR_RIGHT;
++            // Intentionally fallthrough
++        default:
++            pchannel_map->map[0] = PA_CHANNEL_POSITION_FRONT_LEFT;
++            pchannel_map->map[1] = PA_CHANNEL_POSITION_FRONT_RIGHT;
++    }
++}
++
+ static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance **instance,
+                                  SS4S_PlayerContext *context) {
+     (void) context;
+@@ -36,29 +85,13 @@ static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance
+             .minreq =  -1,
+     };
+     pa_channel_map channel_map;
+-    pa_channel_map *pchannel_map = pa_channel_map_init(&channel_map);
+-    pchannel_map->channels = info->numOfChannels;
+-    switch (info->numOfChannels) {
+-        case 8:
+-            pchannel_map->map[6] = PA_CHANNEL_POSITION_SIDE_LEFT;
+-            pchannel_map->map[7] = PA_CHANNEL_POSITION_SIDE_RIGHT;
+-            // Intentionally fallthrough
+-        case 6:
+-            pchannel_map->map[2] = PA_CHANNEL_POSITION_FRONT_CENTER;
+-            pchannel_map->map[3] = PA_CHANNEL_POSITION_LFE;
+-            pchannel_map->map[4] = PA_CHANNEL_POSITION_REAR_LEFT;
+-            pchannel_map->map[5] = PA_CHANNEL_POSITION_REAR_RIGHT;
+-            // Intentionally fallthrough
+-        default:
+-            pchannel_map->map[0] = PA_CHANNEL_POSITION_FRONT_LEFT;
+-            pchannel_map->map[1] = PA_CHANNEL_POSITION_FRONT_RIGHT;
+-    }
++    FillChannelMap(&channel_map, info->numOfChannels);
+ 
+     assert(info->appName != NULL);
+     assert(info->streamName != NULL);
+     int error = 0;
+     pa_simple *dev = pa_simple_new(NULL, info->appName, PA_STREAM_PLAYBACK, NULL,
+-                                   info->streamName, &spec, pchannel_map, &buffer_attr, &error);
++                                   info->streamName, &spec, &channel_map, &buffer_attr, &error);
+     if (error != 0) {
+         LibContext->Log(SS4S_LogLevelError, "Pulse", "Can't open audio device: %s", pa_strerror(error));
+     }
+@@ -71,13 +104,258 @@ static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance
+     return SS4S_AUDIO_OPEN_OK;
+ }
+ 
++static uint64_t ClientTimeUs(void) {
++    /* Same epoch as the client's decode timestamps (CLOCK_MONOTONIC microseconds). */
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint64_t) ts.tv_sec * 1000000u + (uint64_t) ts.tv_nsec / 1000u;
++}
++
++/* Mainloop thread, loop lock held. Render into PulseAudio's own buffer: no copy, no
++ * waiting, and nothing here may log or call back into SS4S. */
++static void PullWrite(pa_stream *s, size_t nbytes, void *userdata) {
++    SS4S_AudioInstance *instance = userdata;
++    PullStats *p = &instance->pull;
++    const size_t frame_bytes = (size_t) instance->frame_bytes;
++    if (nbytes / frame_bytes > p->max_request_frames) p->max_request_frames = (unsigned) (nbytes / frame_bytes);
++    p->last_request_frames = (unsigned) (nbytes / frame_bytes);
++    while (nbytes >= frame_bytes) {
++        void *data = NULL;
++        size_t len = nbytes;
++        if (pa_stream_begin_write(s, &data, &len) < 0 || data == NULL) {
++            p->write_errors++;
++            return;
++        }
++        if (len > nbytes) len = nbytes;   /* never render more than was requested */
++        const unsigned frames = (unsigned) (len / frame_bytes);
++        if (frames == 0) {
++            pa_stream_cancel_write(s);
++            return;
++        }
++        len = (size_t) frames * frame_bytes;
++        const uint64_t begin_us = ClientTimeUs();
++        unsigned produced = instance->render(instance->render_context, data, frames, begin_us);
++        if (produced > frames) {
++            produced = 0;
++            p->invalid_results++;
++        }
++        memset((char *) data + (size_t) produced * frame_bytes, 0, len - (size_t) produced * frame_bytes);
++        const uint64_t render_us = ClientTimeUs() - begin_us;
++        if (pa_stream_write(s, data, len, NULL, 0, PA_SEEK_RELATIVE) < 0) {
++            p->write_errors++;
++            return;
++        }
++        p->demand_frames += frames;
++        p->delivered_frames += produced;
++        p->short_frames += frames - produced;
++        p->callbacks++;
++        if (render_us > p->render_max_us) p->render_max_us = render_us;
++        if (render_us > (uint64_t) frames * 1000000u / (unsigned) instance->sample_rate) p->deadline_misses++;
++        if (p->last_begin_us && begin_us - p->last_begin_us > p->interval_max_us)
++            p->interval_max_us = begin_us - p->last_begin_us;
++        p->last_begin_us = begin_us;
++        nbytes -= len;
++    }
++}
++
++static void PullUnderflow(pa_stream *s, void *userdata) {
++    (void) s;
++    ((SS4S_AudioInstance *) userdata)->pull.underflows++;
++}
++
++/* State callbacks run on the mainloop thread with the loop lock held. A FAILED or
++ * TERMINATED transition that our own teardown did not cause stops the write requests
++ * silently, so count it for the final ledger. */
++static void PullContextState(pa_context *c, void *userdata) {
++    SS4S_AudioInstance *instance = userdata;
++    const pa_context_state_t state = pa_context_get_state(c);
++    if (!instance->closing && (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED))
++        instance->pull.context_failures++;
++    pa_threaded_mainloop_signal(instance->loop, 0);
++}
++
++static void PullStreamState(pa_stream *s, void *userdata) {
++    SS4S_AudioInstance *instance = userdata;
++    const pa_stream_state_t state = pa_stream_get_state(s);
++    if (!instance->closing && (state == PA_STREAM_FAILED || state == PA_STREAM_TERMINATED))
++        instance->pull.stream_failures++;
++    pa_threaded_mainloop_signal(instance->loop, 0);
++}
++
++/* Disconnect under the lock, then stop: stop joins the mainloop thread, so no
++ * callback can run once it returns. */
++static void PullTeardown(SS4S_AudioInstance *instance) {
++    if (instance->loop == NULL) return;
++    if (instance->loop_started) pa_threaded_mainloop_lock(instance->loop);
++    instance->closing = 1;
++    if (instance->stream != NULL) {
++        pa_stream_set_write_callback(instance->stream, NULL, NULL);
++        pa_stream_disconnect(instance->stream);
++        pa_stream_unref(instance->stream);
++        instance->stream = NULL;
++    }
++    if (instance->context != NULL) {
++        pa_context_disconnect(instance->context);
++        pa_context_unref(instance->context);
++        instance->context = NULL;
++    }
++    if (instance->loop_started) {
++        pa_threaded_mainloop_unlock(instance->loop);
++        pa_threaded_mainloop_stop(instance->loop);
++    }
++    pa_threaded_mainloop_free(instance->loop);
++    instance->loop = NULL;
++}
++
++/* Same ledger fields and meanings as the SDL backend's pull line (§92), so
++ * scripts/coop/check_audio_timing.py reads both; pulse-only fields follow. Logged once
++ * when opened (zero counters) and once after the mainloop is joined. */
++static void PullReport(const SS4S_AudioInstance *instance, const char *phase) {
++    const PullStats *p = &instance->pull;
++    const unsigned long long fb = (unsigned long long) instance->frame_bytes;
++    LibContext->Log(SS4S_LogLevelInfo, "Pulse",
++                    "[AUDIO-OUTPUT] backend=pulse phase=%s elapsed_us=%llu rate=%d frame_bytes=%d callback_frames=%u "
++                    "callbacks=%llu submitted_bytes=%llu consumed_bytes=%llu silence_bytes=%llu cleared_bytes=0 "
++                    "queued_bytes=0 pull=1 pull_frames=%llu pull_short_frames=%llu pull_invalid_results=%llu "
++                    "pull_render_max_us=%llu pull_interval_max_us=%llu pull_deadline_misses=%llu pull_publish_skips=0 "
++                    "demand_frames=%llu underflows=%llu write_errors=%llu stream_failures=%llu context_failures=%llu "
++                    "max_request_frames=%u tlength_bytes=%u minreq_bytes=%u prebuf_bytes=%u maxlength_bytes=%u",
++                    phase, (unsigned long long) (ClientTimeUs() - instance->opened_us), instance->sample_rate,
++                    instance->frame_bytes, p->last_request_frames, (unsigned long long) p->callbacks,
++                    (unsigned long long) p->delivered_frames * fb, (unsigned long long) p->delivered_frames * fb,
++                    (unsigned long long) p->short_frames * fb, (unsigned long long) p->delivered_frames,
++                    (unsigned long long) p->short_frames, (unsigned long long) p->invalid_results,
++                    (unsigned long long) p->render_max_us, (unsigned long long) p->interval_max_us,
++                    (unsigned long long) p->deadline_misses, (unsigned long long) p->demand_frames,
++                    (unsigned long long) p->underflows, (unsigned long long) p->write_errors,
++                    (unsigned long long) p->stream_failures, (unsigned long long) p->context_failures,
++                    p->max_request_frames, instance->attr.tlength, instance->attr.minreq, instance->attr.prebuf,
++                    instance->attr.maxlength);
++}
++
++SS4S_EXPORTED SS4S_AudioOpenResult SS4S_ModuleAudioOpenPullV1_PULSE(const SS4S_AudioInfo *info,
++        SS4S_AudioInstance **instance, SS4S_PlayerContext *player_context,
++        SS4S_AudioPullRenderFunction render, void *render_context) {
++    (void) player_context;
++    if (info == NULL || instance == NULL || render == NULL) return SS4S_AUDIO_OPEN_ERROR;
++    if (info->codec != SS4S_AUDIO_PCM_S16LE) return SS4S_AUDIO_OPEN_UNSUPPORTED_CODEC;
++    if (info->numOfChannels <= 0 || info->sampleRate <= 0 || info->samplesPerFrame <= 0 ||
++        info->appName == NULL || info->streamName == NULL) {
++        return SS4S_AUDIO_OPEN_ERROR;
++    }
++    SS4S_AudioInstance *created = calloc(1, sizeof(SS4S_AudioInstance));
++    if (created == NULL) return SS4S_AUDIO_OPEN_ERROR;
++    created->render = render;
++    created->render_context = render_context;
++    created->frame_bytes = info->numOfChannels * (int) sizeof(int16_t);
++    created->sample_rate = info->sampleRate;
++    const pa_sample_spec spec = {
++            .format = PA_SAMPLE_S16LE,
++            .rate = (uint32_t) info->sampleRate,
++            .channels = (uint8_t) info->numOfChannels,
++    };
++    pa_channel_map channel_map;
++    FillChannelMap(&channel_map, info->numOfChannels);
++    const uint32_t block_bytes = (uint32_t) info->samplesPerFrame * (uint32_t) created->frame_bytes;
++    const pa_buffer_attr wanted = {
++            .maxlength = (uint32_t) -1,
++            .tlength = block_bytes * PULSE_PULL_TARGET_BLOCKS,
++            .prebuf = (uint32_t) -1,
++            .minreq = block_bytes,
++            .fragsize = (uint32_t) -1,
++    };
++    const char *failed = NULL;
++    int error = 0;
++    created->loop = pa_threaded_mainloop_new();
++    if (created->loop == NULL) {
++        failed = "mainloop";
++        goto fail;
++    }
++    created->context = pa_context_new(pa_threaded_mainloop_get_api(created->loop), info->appName);
++    if (created->context == NULL) {
++        failed = "context";
++        goto fail;
++    }
++    pa_context_set_state_callback(created->context, PullContextState, created);
++    pa_threaded_mainloop_lock(created->loop);
++    if (pa_context_connect(created->context, NULL, PA_CONTEXT_NOFLAGS, NULL) < 0 ||
++        pa_threaded_mainloop_start(created->loop) < 0) {
++        error = pa_context_errno(created->context);
++        pa_threaded_mainloop_unlock(created->loop);
++        failed = "connect";
++        goto fail;
++    }
++    created->loop_started = 1;
++    for (;;) {
++        const pa_context_state_t state = pa_context_get_state(created->context);
++        if (state == PA_CONTEXT_READY) break;
++        if (!PA_CONTEXT_IS_GOOD(state)) {
++            error = pa_context_errno(created->context);
++            pa_threaded_mainloop_unlock(created->loop);
++            failed = "context state";
++            goto fail;
++        }
++        pa_threaded_mainloop_wait(created->loop);
++    }
++    created->stream = pa_stream_new(created->context, info->streamName, &spec, &channel_map);
++    if (created->stream == NULL) {
++        error = pa_context_errno(created->context);
++        pa_threaded_mainloop_unlock(created->loop);
++        failed = "stream";
++        goto fail;
++    }
++    pa_stream_set_state_callback(created->stream, PullStreamState, created);
++    pa_stream_set_write_callback(created->stream, PullWrite, created);
++    pa_stream_set_underflow_callback(created->stream, PullUnderflow, created);
++    created->opened_us = ClientTimeUs();
++    if (pa_stream_connect_playback(created->stream, NULL, &wanted, PA_STREAM_ADJUST_LATENCY, NULL, NULL) < 0) {
++        error = pa_context_errno(created->context);
++        pa_threaded_mainloop_unlock(created->loop);
++        failed = "connect playback";
++        goto fail;
++    }
++    for (;;) {
++        const pa_stream_state_t state = pa_stream_get_state(created->stream);
++        if (state == PA_STREAM_READY) break;
++        if (!PA_STREAM_IS_GOOD(state)) {
++            error = pa_context_errno(created->context);
++            pa_threaded_mainloop_unlock(created->loop);
++            failed = "stream state";
++            goto fail;
++        }
++        pa_threaded_mainloop_wait(created->loop);
++    }
++    const pa_buffer_attr *granted = pa_stream_get_buffer_attr(created->stream);
++    if (granted != NULL) created->attr = *granted;
++    const PullStats opened = created->pull;   /* the opened line must not race the mainloop */
++    pa_threaded_mainloop_unlock(created->loop);
++    SS4S_AudioInstance snapshot = *created;
++    snapshot.pull = opened;
++    PullReport(&snapshot, "opened");
++    *instance = created;
++    return SS4S_AUDIO_OPEN_OK;
++fail:
++    LibContext->Log(SS4S_LogLevelError, "Pulse", "Can't open pull audio (%s): %s", failed,
++                    error ? pa_strerror(error) : "unknown");
++    PullTeardown(created);
++    free(created);
++    return SS4S_AUDIO_OPEN_ERROR;
++}
++
+ static SS4S_AudioFeedResult Feed(SS4S_AudioInstance *instance, const unsigned char *data, size_t size) {
++    if (instance->loop != NULL) return SS4S_AUDIO_FEED_ERROR;   /* pull mode takes no feeds */
+     int error;
+     pa_simple_write(instance->dev, data, size, &error);
+     return SS4S_AUDIO_FEED_OK;
+ }
+ 
+ static void Close(SS4S_AudioInstance *instance) {
++    if (instance->loop != NULL) {
++        PullTeardown(instance);
++        PullReport(instance, "final");
++        free(instance);
++        return;
++    }
+     pa_simple_free(instance->dev);
+     free(instance);
+ }
+diff --git a/modules/sdl/sdl.c b/modules/sdl/sdl.c
+index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003cea02614 100644
+--- a/modules/sdl/sdl.c
++++ b/modules/sdl/sdl.c
+@@ -1,40 +1,125 @@
+ #include <stdlib.h>
++#include <string.h>
+ #include "ss4s/modapi.h"
+ #include "ringbuf.h"
+ 
+ #include <SDL2/SDL.h>
++#ifndef _WIN32
++#include <time.h>
++#endif
++
++/* Written only by callback, read by Close only after SDL joins it. */
++typedef struct {
++    Uint64 demand_frames, delivered_frames, short_frames, invalid_results;
++    Uint64 render_max_us, interval_max_us, deadline_misses, publish_skips;
++    Uint64 callbacks, observed_us, last_begin_us;
++    unsigned quantum_frames;
++} SS4S_PullStats;
+ 
+ struct SS4S_AudioInstance {
++    SDL_AudioDeviceID device;
+     ss4s_ringbuf_t *ringbuf;
+     SDL_mutex *ringbuf_mutex;
+-    unsigned char *readbuf;
+-    int readbuf_size;
++    size_t ringbuf_capacity;
++    int frame_bytes, sample_rate, callback_frames;
++    Uint64 submitted_bytes, consumed_bytes, silence_bytes, cleared_bytes;
++    Uint64 callbacks, feeds;
++    size_t peak_queued_bytes;
++    Uint64 opened_counter, counter_frequency, observed_us;
++    SS4S_AudioPullRenderFunction pull_render;
++    void *pull_context;
++    Uint64 pull_frames, pull_short_frames, pull_invalid_results;
++    Uint64 pull_render_max_us, pull_interval_max_us, pull_deadline_misses;
++    Uint64 pull_publish_skips, report_callbacks;
++    SS4S_PullStats pull_stats;
+ };
+ 
+ static const SS4S_LibraryContext *LibContext;
+ 
+ static void Callback(void *userdata, Uint8 *stream, int len);
+ 
++static Uint64 CounterUs(Uint64 counter, Uint64 frequency) {
++    return counter / frequency * 1000000u + counter % frequency * 1000000u / frequency;
++}
++
++/* Match the application clock domain, not SDL's possibly MONOTONIC_RAW epoch. */
++static Uint64 ClientTimeUs(void) {
++#ifdef _WIN32
++    return CounterUs(SDL_GetPerformanceCounter(), SDL_GetPerformanceFrequency());
++#else
++    struct timespec now;
++    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
++    return (Uint64) now.tv_sec * 1000000u + (Uint64) now.tv_nsec / 1000u;
++#endif
++}
++
++/* Called on feed/close, never from the device callback. Counter snapshots are
++ * protected by the same mutex as the PCM ring. Silence includes idle startup. */
++static void ReportTiming(const SS4S_AudioInstance *instance) {
++    SDL_LockMutex(instance->ringbuf_mutex);
++    /* Never copy callback-private pull_stats: publication may be skipped while
++     * this reader owns the mutex, so those fields are concurrently writable. */
++    const SS4S_AudioInstance snapshot = {
++        .sample_rate = instance->sample_rate, .frame_bytes = instance->frame_bytes,
++        .callback_frames = instance->callback_frames, .callbacks = instance->callbacks,
++        .submitted_bytes = instance->submitted_bytes, .consumed_bytes = instance->consumed_bytes,
++        .silence_bytes = instance->silence_bytes, .cleared_bytes = instance->cleared_bytes,
++        .peak_queued_bytes = instance->peak_queued_bytes, .opened_counter = instance->opened_counter,
++        .pull_render = instance->pull_render, .pull_frames = instance->pull_frames,
++        .pull_short_frames = instance->pull_short_frames, .pull_invalid_results = instance->pull_invalid_results,
++        .pull_render_max_us = instance->pull_render_max_us, .pull_interval_max_us = instance->pull_interval_max_us,
++        .pull_deadline_misses = instance->pull_deadline_misses, .pull_publish_skips = instance->pull_publish_skips,
++    };
++    const size_t queued_bytes = instance->ringbuf ? ringbuf_size(instance->ringbuf) : 0;
++    SDL_UnlockMutex(instance->ringbuf_mutex);
++    instance = &snapshot;
++    const Uint64 counter = SDL_GetPerformanceCounter(), frequency = SDL_GetPerformanceFrequency();
++    const Uint64 elapsed = counter - instance->opened_counter;
++    const Uint64 elapsed_us = CounterUs(elapsed, frequency);
++    LibContext->Log(SS4S_LogLevelInfo, "SDLAudio",
++        "[AUDIO-OUTPUT] elapsed_us=%llu rate=%d frame_bytes=%d callback_frames=%d "
++        "callbacks=%llu submitted_bytes=%llu consumed_bytes=%llu silence_bytes=%llu "
++        "cleared_bytes=%llu queued_bytes=%llu peak_queued_bytes=%llu "
++        "pull=%d pull_frames=%llu pull_short_frames=%llu pull_invalid_results=%llu "
++        "pull_render_max_us=%llu pull_interval_max_us=%llu pull_deadline_misses=%llu pull_publish_skips=%llu",
++        (unsigned long long) elapsed_us, instance->sample_rate, instance->frame_bytes,
++        instance->callback_frames, (unsigned long long) instance->callbacks,
++        (unsigned long long) instance->submitted_bytes, (unsigned long long) instance->consumed_bytes,
++        (unsigned long long) instance->silence_bytes, (unsigned long long) instance->cleared_bytes,
++        (unsigned long long) queued_bytes, (unsigned long long) instance->peak_queued_bytes,
++        instance->pull_render != NULL, (unsigned long long) instance->pull_frames,
++        (unsigned long long) instance->pull_short_frames, (unsigned long long) instance->pull_invalid_results,
++        (unsigned long long) instance->pull_render_max_us, (unsigned long long) instance->pull_interval_max_us,
++        (unsigned long long) instance->pull_deadline_misses, (unsigned long long) instance->pull_publish_skips);
++}
++
+ static int Init(int argc, char *argv[]) {
+     (void) argc;
+     (void) argv;
+-    SDL_InitSubSystem(SDL_INIT_AUDIO);
+-    return 0;
++    return SDL_InitSubSystem(SDL_INIT_AUDIO);
+ }
+ 
+ static void Quit() {
+     SDL_QuitSubSystem(SDL_INIT_AUDIO);
+ }
+ 
+-static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance **instance,
+-                                 SS4S_PlayerContext *context) {
++static SS4S_AudioOpenResult OpenInternal(const SS4S_AudioInfo *info, SS4S_AudioInstance **instance,
++    SS4S_PlayerContext *context, SS4S_AudioPullRenderFunction render, void *render_context) {
+     (void) context;
+     if (info->codec != SS4S_AUDIO_PCM_S16LE) {
+         return SS4S_AUDIO_OPEN_UNSUPPORTED_CODEC;
+     }
+-    size_t bufSize = sizeof(short) * info->numOfChannels * info->samplesPerFrame;
++    if (info->sampleRate <= 0 || info->numOfChannels <= 0 || info->numOfChannels > 255 ||
++        info->samplesPerFrame <= 0 || info->samplesPerFrame > 65535) {
++        return SS4S_AUDIO_OPEN_ERROR;
++    }
++    size_t bufSize = sizeof(short) * (size_t) info->numOfChannels * (size_t) info->samplesPerFrame;
++    if (bufSize > SIZE_MAX / 1024u) return SS4S_AUDIO_OPEN_ERROR;
+ 
+     SS4S_AudioInstance *newInstance = calloc(1, sizeof(SS4S_AudioInstance));
++    if (newInstance == NULL) {
++        return SS4S_AUDIO_OPEN_ERROR;
++    }
+ 
+     SDL_AudioSpec want, have;
+     SDL_zero(want);
+@@ -45,52 +130,223 @@ static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance
+     want.channels = info->numOfChannels;
+     want.samples = info->samplesPerFrame;
+ 
+-    if (SDL_OpenAudio(&want, &have) != 0) {
++    /* Preserve PCM format, but expose the backend demand period. Keeping a smaller
++     * callback size lets SDL batch several callbacks before its device wait. */
++    const char *device_name = LibContext->Audio.device;
++    if (device_name != NULL && (device_name[0] == '\0' || strcmp(device_name, "default") == 0)) {
++        device_name = NULL;
++    }
++    newInstance->device = SDL_OpenAudioDevice(device_name, 0, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
++    /* A NAMED DEVICE CAN BE MOMENTARILY ABSENT. NVIDIA's HDMI/DP audio drops and re-creates its endpoints whenever
++     * the display layout changes -- which a co-op host on THIS PC does at the very moment the stream starts
++     * (measured 2026-10-02: "No such device" for "Gigabyte M32Q (NVIDIA High Definition Audio)", then a silent
++     * session). Re-scan for up to 5 s and accept the same device under a changed suffix by matching the part
++     * before " (". Never fall back to the default here: whoever named a device did it because the default is
++     * wrong for this session (in co-op it is the host's virtual sink, i.e. a feedback loop). */
++    if (newInstance->device == 0 && device_name != NULL) {
++        char base[256];
++        SDL_strlcpy(base, device_name, sizeof(base));
++        char *paren = strstr(base, " (");
++        if (paren != NULL) {
++            *paren = '\0';
++        }
++        for (int attempt = 0; attempt < 20 && newInstance->device == 0; attempt++) {
++            SDL_Delay(250);
++            for (int i = 0, n = SDL_GetNumAudioDevices(0); i < n && newInstance->device == 0; i++) {
++                const char *name = SDL_GetAudioDeviceName(i, 0);
++                if (name != NULL && (strcmp(name, device_name) == 0 || (base[0] != '\0' && strstr(name, base) != NULL))) {
++                    newInstance->device = SDL_OpenAudioDevice(name, 0, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
++                    if (newInstance->device != 0) {
++                        LibContext->Log(SS4S_LogLevelInfo, "SDLAudio", "Opened audio device %s after %d ms",
++                                        name, (attempt + 1) * 250);
++                    }
++                }
++            }
++        }
++    }
++    if (newInstance->device == 0) {
++        LibContext->Log(SS4S_LogLevelError, "SDLAudio", "Can't open audio device %s: %s",
++                        device_name != NULL ? device_name : "default", SDL_GetError());
+         free(newInstance);
+         return SS4S_AUDIO_OPEN_ERROR;
+     }
+-    if (have.format != want.format) {
++    /* SS4S supplies already-decoded PCM and this backend has no resampler. SDL
++     * is allowed to choose a nearby device rate, but accepting it would play at
++     * the wrong speed and pitch. Fail so the caller can choose another backend. */
++    if (have.freq != want.freq || have.format != want.format || have.channels != want.channels) {
++        SDL_CloseAudioDevice(newInstance->device);
++        free(newInstance);
++        return SS4S_AUDIO_OPEN_ERROR;
+     }
+-    newInstance->ringbuf = ringbuf_new(bufSize * 1024);
++    newInstance->pull_render = render;
++    newInstance->pull_context = render_context;
++    newInstance->ringbuf_capacity = bufSize * 1024u;
++    if (render == NULL) newInstance->ringbuf = ringbuf_new(newInstance->ringbuf_capacity);
+     newInstance->ringbuf_mutex = SDL_CreateMutex();
++    if ((render == NULL && newInstance->ringbuf == NULL) || newInstance->ringbuf_mutex == NULL) {
++        SDL_CloseAudioDevice(newInstance->device);
++        ringbuf_delete(newInstance->ringbuf);
++        if (newInstance->ringbuf_mutex != NULL) {
++            SDL_DestroyMutex(newInstance->ringbuf_mutex);
++        }
++        free(newInstance);
++        return SS4S_AUDIO_OPEN_ERROR;
++    }
+     *instance = newInstance;
+-    SDL_PauseAudio(0); // start audio playing.
++    newInstance->frame_bytes = sizeof(short) * have.channels;
++    newInstance->sample_rate = have.freq;
++    newInstance->callback_frames = have.samples;
++    newInstance->counter_frequency = SDL_GetPerformanceFrequency();
++    newInstance->opened_counter = SDL_GetPerformanceCounter();
++    newInstance->observed_us = ClientTimeUs();
++    ReportTiming(newInstance);
++    SDL_PauseAudioDevice(newInstance->device, 0); // start audio playing.
+     return SS4S_AUDIO_OPEN_OK;
+ }
+ 
+-static int Feed(SS4S_AudioInstance *instance, const unsigned char *data, size_t size) {
+-    size_t write_size = ringbuf_write(instance->ringbuf, data, size);
+-    if (!write_size) {
+-        LibContext->Log(SS4S_LogLevelWarn, "SDLAudio", "ring buffer overflow, clean the whole buffer");
+-        ringbuf_clear(instance->ringbuf);
+-    }
+-    return 0;
++static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance **instance,
++                                 SS4S_PlayerContext *context) {
++    return OpenInternal(info, instance, context, NULL, NULL);
++}
++
++SS4S_EXPORTED SS4S_AudioOpenResult SS4S_ModuleAudioOpenPullV1_SDL(const SS4S_AudioInfo *info,
++    SS4S_AudioInstance **instance, SS4S_PlayerContext *player_context,
++    SS4S_AudioPullRenderFunction render, void *render_context) {
++    if (!info || !instance || !render) return SS4S_AUDIO_OPEN_ERROR;
++    return OpenInternal(info, instance, player_context, render, render_context);
++}
++
++static SS4S_AudioFeedResult Feed(SS4S_AudioInstance *instance, const unsigned char *data, size_t size) {
++    if (instance->pull_render != NULL) return SS4S_AUDIO_FEED_ERROR;
++    if (size == 0) return SS4S_AUDIO_FEED_OK;
++    if (data == NULL || size % (size_t) instance->frame_bytes != 0) return SS4S_AUDIO_FEED_ERROR;
++    if (size >= instance->ringbuf_capacity) return SS4S_AUDIO_FEED_OVERFLOW;
++    SDL_LockMutex(instance->ringbuf_mutex);
++    const size_t write_size = ringbuf_write(instance->ringbuf, data, size);
++    instance->submitted_bytes += write_size;
++    const size_t queued_bytes = instance->ringbuf ? ringbuf_size(instance->ringbuf) : 0;
++    if (queued_bytes > instance->peak_queued_bytes) instance->peak_queued_bytes = queued_bytes;
++    const bool report = ++instance->feeds % 1000u == 0u;
++    SDL_UnlockMutex(instance->ringbuf_mutex);
++    if (report) ReportTiming(instance);
++    /* Backpressure is observable and never destroys already accepted PCM. */
++    return write_size == size ? SS4S_AUDIO_FEED_OK : SS4S_AUDIO_FEED_OVERFLOW;
++}
++
++/* Caller holds publication mutex; only callback or joined Close invokes this. */
++static void PublishPullStats(SS4S_AudioInstance *instance) {
++    const SS4S_PullStats *p = &instance->pull_stats;
++    instance->submitted_bytes = instance->consumed_bytes = p->delivered_frames * instance->frame_bytes;
++    instance->silence_bytes = (p->demand_frames - p->delivered_frames) * instance->frame_bytes;
++    instance->callbacks = p->callbacks;
++    instance->callback_frames = (int) p->quantum_frames;
++    instance->observed_us = p->observed_us;
++    instance->pull_frames = p->delivered_frames;
++    instance->pull_short_frames = p->short_frames;
++    instance->pull_invalid_results = p->invalid_results;
++    instance->pull_render_max_us = p->render_max_us;
++    instance->pull_interval_max_us = p->interval_max_us;
++    instance->pull_deadline_misses = p->deadline_misses;
++    instance->pull_publish_skips = p->publish_skips;
+ }
+ 
+ static void Callback(void *userdata, Uint8 *stream, int len) {
+     SS4S_AudioInstance *instance = userdata;
+-    if (instance->readbuf_size < len) {
+-        instance->readbuf = SDL_realloc(instance->readbuf, len);
+-        instance->readbuf_size = len;
++    if (len <= 0) return;
++    const Uint64 begin_us = ClientTimeUs();
++    SDL_memset(stream, 0, (size_t) len);
++    size_t read_size = 0;
++    unsigned produced = 0;
++    bool invalid = false;
++    Uint64 render_us = 0;
++    const unsigned frames = (unsigned) len / (unsigned) instance->frame_bytes;
++    if (instance->pull_render != NULL) {
++        /* No player/ring mutex surrounds application DSP. Callback state is
++         * immutable; SDL_CloseAudioDevice joins before its context can die. */
++        produced = instance->pull_render(instance->pull_context, (int16_t *) stream, frames, begin_us);
++        if (produced > frames) {
++            produced = 0;
++            invalid = true;
++            SDL_memset(stream, 0, (size_t) len);
++        } else {
++            SDL_memset(stream + (size_t) produced * instance->frame_bytes, 0,
++                       (size_t) len - (size_t) produced * instance->frame_bytes);
++        }
++        read_size = (size_t) produced * instance->frame_bytes;
++        render_us = ClientTimeUs() - begin_us;
+     }
+-    size_t read_size = ringbuf_read(instance->ringbuf, instance->readbuf, len);
+-    if (read_size > 0) {
+-        SDL_memset(stream, 0, len);
+-        SDL_MixAudio(stream, instance->readbuf, read_size, SDL_MIX_MAXVOLUME);
++    if (instance->pull_render != NULL) {
++        SS4S_PullStats *p = &instance->pull_stats;
++        p->demand_frames += frames;
++        p->delivered_frames += produced;
++        p->short_frames += frames - produced;
++        p->invalid_results += invalid;
++        p->callbacks++;
++        p->quantum_frames = frames;
++        if (render_us > p->render_max_us) p->render_max_us = render_us;
++        if (render_us > (Uint64) frames * 1000000u / (unsigned) instance->sample_rate)
++            p->deadline_misses++;
++        if (p->last_begin_us && begin_us - p->last_begin_us > p->interval_max_us)
++            p->interval_max_us = begin_us - p->last_begin_us;
++        p->last_begin_us = begin_us;
++        p->observed_us = ClientTimeUs();
++        /* A preempted reader must never stall audio. Only publication may be
++         * skipped; private cumulative accounting survives until next success. */
++        if (SDL_TryLockMutex(instance->ringbuf_mutex) == 0) {
++            PublishPullStats(instance);
++            SDL_UnlockMutex(instance->ringbuf_mutex);
++        } else {
++            p->publish_skips++;
++        }
++        return;
+     }
++    SDL_LockMutex(instance->ringbuf_mutex);
++    read_size = ringbuf_read(instance->ringbuf, stream, (size_t) len);
++    instance->consumed_bytes += read_size;
++    instance->silence_bytes += (Uint64) len - read_size;
++    instance->callbacks++;
++    instance->callback_frames = len / instance->frame_bytes;
++    instance->observed_us = ClientTimeUs();
++    SDL_UnlockMutex(instance->ringbuf_mutex);
+ }
+ 
++SS4S_EXPORTED bool SS4S_ModuleAudioGetClockV1_SDL(SS4S_AudioInstance *instance,
++                                                SS4S_AudioClock *clock, size_t clock_size) {
++    if (instance == NULL || clock == NULL || clock_size != sizeof(*clock)) return false;
++    SDL_LockMutex(instance->ringbuf_mutex);
++    *clock = (SS4S_AudioClock) {
++        .sample_rate = (uint32_t) instance->sample_rate,
++        .quantum_frames = (uint32_t) instance->callback_frames,
++        .demand_frames = (instance->consumed_bytes + instance->silence_bytes) / instance->frame_bytes,
++        .consumed_frames = instance->consumed_bytes / instance->frame_bytes,
++        .queued_frames = instance->ringbuf ? ringbuf_size(instance->ringbuf) / instance->frame_bytes : 0,
++        .discarded_frames = instance->cleared_bytes / instance->frame_bytes,
++        .observed_us = instance->observed_us,
++    };
++    /* Pull mode has no feeds to trigger periodic diagnostics. Defer them to a
++     * non-callback query every 1000 callbacks; close always reports the tail. */
++    const bool report = instance->pull_render != NULL && instance->callbacks - instance->report_callbacks >= 1000u;
++    if (report) instance->report_callbacks = instance->callbacks;
++    SDL_UnlockMutex(instance->ringbuf_mutex);
++    if (report) ReportTiming(instance);
++    return true;
++}
+ 
+ static void Close(SS4S_AudioInstance *instance) {
+-    SDL_CloseAudio();
++    SDL_CloseAudioDevice(instance->device);
++    if (instance->pull_render != NULL) {
++        SDL_LockMutex(instance->ringbuf_mutex);
++        PublishPullStats(instance); /* Final ledger includes any skipped publication. */
++        SDL_UnlockMutex(instance->ringbuf_mutex);
++    }
++    ReportTiming(instance);
+     if (instance->ringbuf != NULL) {
+         ringbuf_delete(instance->ringbuf);
+         instance->ringbuf = NULL;
+     }
+-    if (instance->readbuf != NULL) {
+-        SDL_free(instance->readbuf);
+-        instance->readbuf_size = 0;
+-        instance->readbuf = NULL;
++    if (instance->ringbuf_mutex != NULL) {
++        SDL_DestroyMutex(instance->ringbuf_mutex);
++        instance->ringbuf_mutex = NULL;
+     }
+     free(instance);
+ }
+@@ -110,4 +366,4 @@ SS4S_EXPORTED bool SS4S_ModuleOpen_SDL(SS4S_Module *module, const SS4S_LibraryCo
+     module->AudioDriver = &SDLDriver;
+     LibContext = context;
+     return true;
+-}
+\ No newline at end of file
++}
+diff --git a/modules/utils/ringbuf/ringbuf.c b/modules/utils/ringbuf/ringbuf.c
+index 7c8d0f2b4b463ca038a834d38313682152ae963a..4ff021d31b9c4ba3d3d564a4c192af305e4b9c8d 100644
+--- a/modules/utils/ringbuf/ringbuf.c
++++ b/modules/utils/ringbuf/ringbuf.c
+@@ -12,6 +12,9 @@ struct ss4s_ringbuf {
+ 
+ ss4s_ringbuf_t *ringbuf_new(size_t capacity) {
+     ss4s_ringbuf_t *buf = malloc(sizeof(ss4s_ringbuf_t) + capacity);
++    if (buf == NULL) {
++        return NULL;
++    }
+     buf->cap = capacity;
+     buf->size = 0;
+     buf->head = 0;
+diff --git a/modules/webos/ndl/webos5/ndl_audio.c b/modules/webos/ndl/webos5/ndl_audio.c
+index 40d14a5bc89e243079a342cf1af41dc9d30de831..c4664af17e886729eb3f6a16db8c5f2d60fb3bba 100644
+--- a/modules/webos/ndl/webos5/ndl_audio.c
++++ b/modules/webos/ndl/webos5/ndl_audio.c
+@@ -1,6 +1,8 @@
+ #include <stddef.h>
+ #include <dlfcn.h>
++#include <limits.h>
+ #include <string.h>
++#include <time.h>
+ 
+ #include "ndl_common.h"
+ #include "opus_empty.h"
+@@ -12,6 +14,77 @@ static bool ParseOpusConfig(const unsigned char *codecData, size_t codecDataLen,
+ 
+ static int SupportsPCM6Channel = 0;
+ 
++/* Real-stream qualification of NDL's own buffer queries for a future device-paced co-op
++ * output. The NDL probe (webOS 26) found byte units and 5 ms granularity, but also that the
++ * downstream pipeline absorbs whatever lead is fed, so the behaviour under a real stream with
++ * video flowing decides the design. Telemetry only: one [NDL-AUDIO] line per 2 s window from
++ * the feeding thread, no change to what is fed. Queries resolved at runtime (absent = -1). */
++typedef int (*NdlSizeQuery)(int *);
++static NdlSizeQuery QueryAvailable, QueryTotal;
++static struct {
++    uint64_t window_start_ms, window_bytes, window_feeds, total_bytes;
++    uint64_t lock_wait_max_us, play_max_us;   /* lock shared with video; a long wait stalls the co-op mixer */
++    int avail_min, avail_max, avail_last, query_errors;
++} FeedStats;
++
++static uint64_t NowUs(void) {
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    return (uint64_t) now.tv_sec * 1000000u + (uint64_t) now.tv_nsec / 1000u;
++}
++
++static void ResetFeedStats(void) {
++    memset(&FeedStats, 0, sizeof(FeedStats));
++}
++
++static void NoteFeed(size_t size, uint64_t pts, uint64_t lock_wait_us, uint64_t play_us) {
++    struct timespec now;
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    const uint64_t now_ms = (uint64_t) now.tv_sec * 1000u + (uint64_t) now.tv_nsec / 1000000u;
++    if (FeedStats.window_start_ms == 0) {
++        FeedStats.window_start_ms = now_ms;
++        FeedStats.avail_min = INT_MAX;
++        FeedStats.avail_max = -1;
++        FeedStats.avail_last = -1;
++    }
++    if (lock_wait_us > FeedStats.lock_wait_max_us) FeedStats.lock_wait_max_us = lock_wait_us;
++    if (play_us > FeedStats.play_max_us) FeedStats.play_max_us = play_us;
++    FeedStats.window_bytes += size;
++    FeedStats.total_bytes += size;
++    FeedStats.window_feeds++;
++    if (QueryAvailable != NULL) {
++        int available = -1;
++        if (QueryAvailable(&available) == 0) {
++            FeedStats.avail_last = available;
++            if (available < FeedStats.avail_min) FeedStats.avail_min = available;
++            if (available > FeedStats.avail_max) FeedStats.avail_max = available;
++        } else {
++            FeedStats.query_errors++;
++        }
++    }
++    const uint64_t window_ms = now_ms - FeedStats.window_start_ms;
++    if (window_ms < 2000) return;
++    int total = -1;
++    if (QueryTotal != NULL && QueryTotal(&total) != 0) total = -1;
++    SS4S_NDL_webOS5_Log(SS4S_LogLevelInfo, "NDL",
++                        "[NDL-AUDIO] window_ms=%llu fed_bytes=%llu feeds=%llu total_fed_bytes=%llu "
++                        "avail_last=%d avail_min=%d avail_max=%d total=%d query_errors=%d pts_ms=%llu "
++                        "lock_wait_max_us=%llu play_max_us=%llu",
++                        (unsigned long long) window_ms, (unsigned long long) FeedStats.window_bytes,
++                        (unsigned long long) FeedStats.window_feeds, (unsigned long long) FeedStats.total_bytes,
++                        FeedStats.avail_last, FeedStats.avail_min == INT_MAX ? -1 : FeedStats.avail_min,
++                        FeedStats.avail_max, total, FeedStats.query_errors, (unsigned long long) pts,
++                        (unsigned long long) FeedStats.lock_wait_max_us, (unsigned long long) FeedStats.play_max_us);
++    FeedStats.window_start_ms = now_ms;
++    FeedStats.window_bytes = 0;
++    FeedStats.window_feeds = 0;
++    FeedStats.avail_min = INT_MAX;
++    FeedStats.avail_max = -1;
++    FeedStats.query_errors = 0;
++    FeedStats.lock_wait_max_us = 0;
++    FeedStats.play_max_us = 0;
++}
++
+ static int DriverInit(int argc, char *argv[]) {
+     (void) argc;
+     (void) argv;
+@@ -20,6 +93,8 @@ static int DriverInit(int argc, char *argv[]) {
+      * We can use this to determine if the platform supports 6-channel PCM. 
+      */
+     SupportsPCM6Channel = dlsym(RTLD_DEFAULT, "NDL_DirectAudioRegisterCallback") != 0;
++    QueryAvailable = (NdlSizeQuery) dlsym(RTLD_DEFAULT, "NDL_DirectAudioGetAvailableBufferSize");
++    QueryTotal = (NdlSizeQuery) dlsym(RTLD_DEFAULT, "NDL_DirectAudioGetTotalBufferSize");
+     return 0;
+ }
+ 
+@@ -114,6 +189,7 @@ static SS4S_AudioOpenResult OpenAudio(const SS4S_AudioInfo *info, SS4S_AudioInst
+         result = SS4S_AUDIO_OPEN_ERROR;
+         goto finish;
+     }
++    ResetFeedStats();
+     *instance = (SS4S_AudioInstance *) context;
+     result = SS4S_AUDIO_OPEN_OK;
+ 
+@@ -124,7 +200,9 @@ static SS4S_AudioOpenResult OpenAudio(const SS4S_AudioInfo *info, SS4S_AudioInst
+ }
+ 
+ static SS4S_AudioFeedResult FeedAudio(SS4S_AudioInstance *instance, const unsigned char *data, size_t size) {
++    const uint64_t lock_begin_us = NowUs();
+     pthread_mutex_lock(&SS4S_NDL_webOS5_Lock);
++    const uint64_t locked_us = NowUs();
+     const SS4S_PlayerContext *context = (void *) instance;
+     if (!context->mediaLoaded) {
+         pthread_mutex_unlock(&SS4S_NDL_webOS5_Lock);
+@@ -143,6 +221,7 @@ static SS4S_AudioFeedResult FeedAudio(SS4S_AudioInstance *instance, const unsign
+     }
+     uint64_t pts = SS4S_NDL_webOS5_GetPts(context);
+     rc = NDL_DirectAudioPlay((void *) data, size, (long long) pts);
++    if (rc == 0) NoteFeed(size, pts, locked_us - lock_begin_us, NowUs() - locked_us);
+     if (rc != 0) {
+         SS4S_NDL_webOS5_Log(SS4S_LogLevelWarn, "NDL", "NDL_DirectAudioPlay returned %d: %s", rc,
+                             NDL_DirectMediaGetError());
+diff --git a/modules/webos/ndl/webos5/ndl_player.c b/modules/webos/ndl/webos5/ndl_player.c
+index 6891b24289ec53bbdf683242a114acb83ac0fe6a..e44115a470877d97b264799301846fef166c78a3 100644
+--- a/modules/webos/ndl/webos5/ndl_player.c
++++ b/modules/webos/ndl/webos5/ndl_player.c
+@@ -3,6 +3,7 @@
+ #include <stdlib.h>
+ #include <assert.h>
+ #include <string.h>
++#include <stdio.h>
+ 
+ #include "opus_empty.h"
+ 
+@@ -77,6 +78,38 @@ static int UnloadMedia(SS4S_PlayerContext *context) {
+     return ret;
+ }
+ 
++#ifdef AURORA_NDL_DIAGNOSTICS
++/* The installed webOS NDL implementation latches this into the SMP load JSON as
++ * videoRenderQueueThreshold. Set it AFTER initialization/unload but BEFORE Load:
++ * setting it after Load only changes the wrapper state, and Unload clears the flag.
++ * Binary audit: libNDL_directmedia_impl.so, DMPlayer::SetFrameDropThreshold
++ * 0xe448, createLoadParameter 0xfb04, Unload 0xd00e; passover 11 has the hash.
++ * Values <= 1 are successful no-ops on that build. Keep this experiment opt-in;
++ * a successful setter alone does not establish a latency or picture-quality win.
++ */
++#ifndef AURORA_NDL_DROP_THRESHOLD_PATH
++#define AURORA_NDL_DROP_THRESHOLD_PATH "/tmp/aurora-dropthresh"
++#endif
++static int ApplyFrameDropThreshold(void) {
++    FILE *f = fopen(AURORA_NDL_DROP_THRESHOLD_PATH, "r");
++    if (f == NULL) { return 0; }
++    int threshold = -1;
++    const bool got = fscanf(f, "%d", &threshold) == 1;
++    fclose(f);
++    if (!got || threshold <= 1) {
++        SS4S_NDL_webOS5_Log(SS4S_LogLevelWarn, "NDL",
++                            "Ignoring frame-drop threshold: expected an integer >= 2");
++        return 0;
++    }
++    const int rc = NDL_DirectVideoSetFrameDropThreshold(threshold);
++    SS4S_NDL_webOS5_Log(rc == 0 ? SS4S_LogLevelInfo : SS4S_LogLevelWarn, "NDL",
++                        "NDL_DirectVideoSetFrameDropThreshold(%d) before Load -> %d",
++                        threshold, rc);
++    return rc == 0 ? threshold : 0;
++}
++
++#endif /* AURORA_NDL_DIAGNOSTICS */
++
+ static int LoadMedia(SS4S_PlayerContext *context) {
+     int ret;
+     if (!SS4S_NDL_webOS5_Initialized) {
+@@ -99,9 +132,29 @@ static int LoadMedia(SS4S_PlayerContext *context) {
+         SS4S_NDL_webOS5_Log(SS4S_LogLevelInfo, "NDL", "Defer LoadMedia because audio or video has no type");
+         return 0;
+     }
++#ifdef AURORA_NDL_DIAGNOSTICS
++    const int threshold = info.video.type != 0 ? ApplyFrameDropThreshold() : 0;
++#endif
+     SS4S_NDL_webOS5_Log(SS4S_LogLevelInfo, "NDL", "NDL_DirectMediaLoad(video=%u (%d*%d), atype=%u)", info.video.type,
+                         info.video.width, info.video.height, info.audio.type);
+-    if ((ret = NDL_DirectMediaLoad(&info, LoadCallback)) != 0) {
++    ret = NDL_DirectMediaLoad(&info, LoadCallback);
++#ifdef AURORA_NDL_DIAGNOSTICS
++    if (threshold > 1) {
++        /* Per-load evidence only, not a claim that the renderer obeyed the policy. */
++#ifndef AURORA_NDL_LOAD_TRACE_LOG
++#define AURORA_NDL_LOAD_TRACE_LOG "/tmp/aurora-ndl-load.log"
++#endif
++        FILE *trace = fopen(AURORA_NDL_LOAD_TRACE_LOG, "a");
++        if (trace != NULL) {
++            struct timespec now;
++            clock_gettime(CLOCK_MONOTONIC, &now);
++            fprintf(trace, "t=%lld threshold=%d setter_rc=0 applied_before_load=1 load_rc=%d\n",
++                    (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000, threshold, ret);
++            fclose(trace);
++        }
++    }
++#endif /* AURORA_NDL_DIAGNOSTICS */
++    if (ret != 0) {
+         SS4S_NDL_webOS5_Log(SS4S_LogLevelWarn, "NDL", "NDL_DirectMediaLoad returned %d: %s", ret,
+                             NDL_DirectMediaGetError());
+         return ret;
+diff --git a/modules/webos/ndl/webos5/ndl_video.c b/modules/webos/ndl/webos5/ndl_video.c
+index 330a1651ea05d99a679e16c918d750c7527ded56..8da6e0bb9e12ece105c3450a168f96b46d7aac43 100644
+--- a/modules/webos/ndl/webos5/ndl_video.c
++++ b/modules/webos/ndl/webos5/ndl_video.c
+@@ -1,4 +1,7 @@
++#include <stdio.h>
+ #include <string.h>
++#include <time.h>
++#include <unistd.h>
+ #include "ndl_common.h"
+ #include "highend_check.h"
+ #include "max_res.h"
+@@ -70,6 +73,76 @@ static SS4S_VideoOpenResult OpenVideo(const SS4S_VideoInfo *info, const SS4S_Vid
+     return result;
+ }
+ 
++/* THE RAW DECODER PROXY -- passover 07 §3.3.
++ *
++ * WHAT WAS WRONG WITH THE OLD READING. Everything downstream saw only `dec_ms`, which is a
++ * rolling average of `substitute(bufLen) x interval`, and passover 07 §1 retracted the
++ * conclusion drawn from it: a zero or negative buffer length is replaced by 0.5 BEFORE the
++ * multiply, the average spans a one-second window that does not line up with the diag flush,
++ * and a product of two terms cannot say which term moved. "Depth never exceeded 2 frames" was
++ * not a measurement of depth at all.
++ *
++ * SO RECORD THE INPUTS, NOT THE PRODUCT: the getter's return code, the buffer value exactly as
++ * returned (including 0 and negatives, unsubstituted), the real feed interval, and the PTS we
++ * supplied. Maxima are kept with the monotonic time they occurred, because §3.3 asks for
++ * "maxima and event timing, not just means".
++ *
++ * UNITS ARE UNVERIFIED AND SAID SO. No primary documentation for
++ * NDL_DirectVideoGetRenderBufferLength has been found; "frames" is this project's assumption,
++ * never a vendor statement. The header row says so, so no reader can inherit the assumption
++ * silently.
++ *
++ * SAME SENTINEL AS THE CO-OP TRACE, unsuffixed: this module is built into ss4s, which does not
++ * receive the app's per-variant compile definitions, so it traces the LIVE variant's paths. */
++#ifdef AURORA_NDL_DIAGNOSTICS
++#ifndef AURORA_NDL_TRACE_SENTINEL
++#define AURORA_NDL_TRACE_SENTINEL "/tmp/aurora-agetrace"
++#endif
++#ifndef AURORA_NDL_TRACE_LOG
++#define AURORA_NDL_TRACE_LOG "/tmp/aurora-ndl-trace.csv"
++#endif
++#define AURORA_NDL_TRACE_MAX_ROWS 450000u
++
++static FILE *ndl_trace_f = NULL;
++static int ndl_trace_state = 0;       /* 0 = not tried, 1 = open, -1 = disabled */
++static unsigned ndl_trace_rows = 0;
++
++static unsigned long ndl_trace_now_ms(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (unsigned long) ts.tv_sec * 1000ul + (unsigned long) (ts.tv_nsec / 1000000ul);
++}
++
++static void ndl_trace_row(int rc, int rawBufLen, uint64_t intervalUs, uint64_t pts, size_t bytes) {
++    if (ndl_trace_state == 0) {
++        ndl_trace_state = -1;
++        if (access(AURORA_NDL_TRACE_SENTINEL, F_OK) == 0) {
++            ndl_trace_f = fopen(AURORA_NDL_TRACE_LOG, "w");
++            if (ndl_trace_f != NULL) {
++                fprintf(ndl_trace_f,
++                        "# aurora NDL raw feed trace -- clock=CLOCK_MONOTONIC ms\n"
++                        "# rc      = NDL_DirectVideoGetRenderBufferLength return code\n"
++                        "# buf     = its out value UNMODIFIED (the 0.5 substitution is NOT applied)\n"
++                        "#           UNITS UNVERIFIED -- no primary documentation found; do not\n"
++                        "#           assume frames, and do not assume 0 means empty\n"
++                        "# dt_us   = actual interval since the previous successful feed\n"
++                        "# pts     = the PTS this wrapper supplied, assigned from the LOCAL clock\n"
++                        "#           at feed time -- it cannot reveal an already-stale picture\n"
++                        "t_ms,rc,buf,dt_us,pts,bytes\n");
++                fflush(ndl_trace_f);
++                ndl_trace_state = 1;
++            }
++        }
++    }
++    if (ndl_trace_state != 1 || ndl_trace_rows >= AURORA_NDL_TRACE_MAX_ROWS) { return; }
++    fprintf(ndl_trace_f, "%lu,%d,%d,%llu,%llu,%zu\n", ndl_trace_now_ms(), rc, rawBufLen,
++            (unsigned long long) intervalUs, (unsigned long long) pts, bytes);
++    ndl_trace_rows++;
++    if ((ndl_trace_rows & 0x3Fu) == 0u) { fflush(ndl_trace_f); }
++}
++
++#endif /* AURORA_NDL_DIAGNOSTICS */
++
+ static SS4S_VideoFeedResult FeedVideo(SS4S_VideoInstance *instance, const unsigned char *data, size_t size,
+                                       SS4S_VideoFeedFlags flags) {
+     (void) flags;
+@@ -86,11 +159,16 @@ static SS4S_VideoFeedResult FeedVideo(SS4S_VideoInstance *instance, const unsign
+     }
+     uint64_t now = GetTimeUs();
+     int renderBufferLength = 0;
+-    if (context->lastFrameTime > 0 && NDL_DirectVideoGetRenderBufferLength(&renderBufferLength) == 0) {
++    int bufRc = NDL_DirectVideoGetRenderBufferLength(&renderBufferLength);
++    if (context->lastFrameTime > 0 && bufRc == 0) {
+         float bufLen = renderBufferLength > 0 ? (float) renderBufferLength : 0.5f;
+         float latency = bufLen * (float) (now - context->lastFrameTime);
+         SS4S_NDL_webOS5_Lib->VideoStats.ReportFrame(context->player, (int) latency);
+     }
++#ifdef AURORA_NDL_DIAGNOSTICS
++    ndl_trace_row(bufRc, renderBufferLength,
++                  context->lastFrameTime > 0 ? now - context->lastFrameTime : 0ull, pts, size);
++#endif
+     context->lastFrameTime = now;
+     return SS4S_VIDEO_FEED_OK;
+ }
+@@ -183,6 +261,27 @@ static uint64_t GetTimeUs() {
+     return (uint64_t) ts.tv_sec * 1000000 + (uint64_t) ts.tv_nsec / 1000;
+ }
+ 
++/* Place the video plane inside the 1080p display space (the same coordinate
++ * space the webOS4 module's FitVideo uses).
++ *
++ * Needed for co-op split-screen, where each stream occupies half the screen.
++ * NDL_DirectVideoSetArea is a GLOBAL call with no player/context handle, so it
++ * positions "the" video of this process — two planes in ONE process cannot be
++ * placed independently, the second call just overrides the first. That is fine
++ * for the two-process co-op architecture (each process owns its own plane) but
++ * means this is not a per-player control.
++ *
++ * A NULL dst means "restore full screen". src cropping is not exposed by NDL.
++ */
++static bool SetDisplayArea(SS4S_VideoInstance *context, const SS4S_VideoRect *src, const SS4S_VideoRect *dst) {
++    (void) context;
++    (void) src;
++    if (dst == NULL) {
++        return NDL_DirectVideoSetArea(0, 0, 1920, 1080) == 0;
++    }
++    return NDL_DirectVideoSetArea(dst->x, dst->y, dst->width, dst->height) == 0;
++}
++
+ const SS4S_VideoDriver SS4S_NDL_webOS5_VideoDriver = {
+     .Base = {
+         .PostInit = SS4S_NDL_webOS5_Driver_PostInit,
+@@ -193,5 +292,6 @@ const SS4S_VideoDriver SS4S_NDL_webOS5_VideoDriver = {
+     .Feed = FeedVideo,
+     .SizeChanged = SizeChanged,
+     .SetHDRInfo = SetHDRInfo,
++    .SetDisplayArea = SetDisplayArea,
+     .Close = CloseVideo,
+ };
+diff --git a/src/audio.c b/src/audio.c
+index 8c92fc5ff6d0b9197977bc132baad69c22309b99..d9494a5574dd8ff0a19471424aa1bb7d463a054b 100644
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -1,4 +1,5 @@
+ #include <assert.h>
++#include <string.h>
+ #include "ss4s.h"
+ #include "library.h"
+ 
+@@ -22,15 +23,47 @@ SS4S_AudioCodec SS4S_GetAudioPreferredCodecs(const SS4S_AudioInfo *info) {
+     return driver->GetPreferredCodecs(info);
+ }
+ 
++bool SS4S_AudioHasClock(void) {
++    return SS4S_GetAudioClockFunction() != NULL;
++}
++
++bool SS4S_AudioHasPull(void) {
++    return SS4S_GetAudioPullFunction() != NULL;
++}
++
++SS4S_AudioOpenResult SS4S_PlayerAudioOpenPull(SS4S_Player *player, const SS4S_AudioInfo *info,
++                                            SS4S_AudioPullRenderFunction render, void *context) {
++    SS4S_ModuleAudioOpenPullV1Function *open_pull = SS4S_GetAudioPullFunction();
++    if (!player || !info || !render || !open_pull) return SS4S_AUDIO_OPEN_ERROR;
++    SS4S_MutexLock(player->mutex);
++    if (player->audio != NULL) {
++        SS4S_MutexUnlock(player->mutex);
++        return SS4S_AUDIO_OPEN_ERROR;
++    }
++    SS4S_AudioOpenResult result = open_pull(info, &player->audio, player->context.audio, render, context);
++    if (result == SS4S_AUDIO_OPEN_OK) {
++        assert(player->audio != NULL);
++        player->audio_pull = true;
++        player->audio_generation++;
++    }
++    SS4S_MutexUnlock(player->mutex);
++    return result;
++}
++
+ SS4S_AudioOpenResult SS4S_PlayerAudioOpen(SS4S_Player *player, const SS4S_AudioInfo *info) {
+     const SS4S_AudioDriver *driver = SS4S_GetAudioDriver();
+     if (driver == NULL) {
+         return SS4S_AUDIO_OPEN_ERROR;
+     }
+     SS4S_MutexLock(player->mutex);
++    if (player->audio != NULL) {
++        SS4S_MutexUnlock(player->mutex);
++        return SS4S_AUDIO_OPEN_ERROR;
++    }
+     SS4S_AudioOpenResult result = driver->Open(info, &player->audio, player->context.audio);
+     if (result == SS4S_AUDIO_OPEN_OK) {
+         assert(player->audio != NULL);
++        player->audio_generation++;
+     }
+     SS4S_MutexUnlock(player->mutex);
+     return result;
+@@ -42,6 +75,10 @@ SS4S_AudioFeedResult SS4S_PlayerAudioFeed(SS4S_Player *player, const unsigned ch
+         SS4S_MutexUnlockEx(player->mutex, NULL);
+         return SS4S_AUDIO_FEED_NOT_READY;
+     }
++    if (player->audio_pull) {
++        SS4S_MutexUnlockEx(player->mutex, NULL);
++        return SS4S_AUDIO_FEED_ERROR;
++    }
+     const SS4S_AudioDriver *driver = SS4S_GetAudioDriver();
+     assert(driver != NULL);
+     SS4S_AudioInstance *audio = player->audio;
+@@ -49,6 +86,20 @@ SS4S_AudioFeedResult SS4S_PlayerAudioFeed(SS4S_Player *player, const unsigned ch
+     return driver->Feed(audio, data, size);
+ }
+ 
++bool SS4S_PlayerAudioGetClock(SS4S_Player *player, SS4S_AudioClock *clock) {
++    if (clock == NULL) return false;
++    memset(clock, 0, sizeof(*clock));
++    if (player == NULL) return false;
++    SS4S_MutexLockEx(player->mutex, NULL);
++    SS4S_ModuleAudioGetClockV1Function *get_clock = SS4S_GetAudioClockFunction();
++    bool available = player->audio != NULL && get_clock != NULL &&
++                     get_clock(player->audio, clock, sizeof(*clock));
++    if (available) clock->generation = player->audio_generation;
++    else memset(clock, 0, sizeof(*clock));
++    SS4S_MutexUnlockEx(player->mutex, NULL);
++    return available;
++}
++
+ bool SS4S_PlayerAudioClose(SS4S_Player *player) {
+     SS4S_MutexLock(player->mutex);
+     if (player->audio == NULL) {
+@@ -59,6 +110,7 @@ bool SS4S_PlayerAudioClose(SS4S_Player *player) {
+     assert(driver != NULL);
+     driver->Close(player->audio);
+     player->audio = NULL;
++    player->audio_pull = false;
+     SS4S_MutexUnlock(player->mutex);
+     return true;
+-}
+\ No newline at end of file
++}
+diff --git a/src/library.c b/src/library.c
+index efe5045cb795a419a274dd965513bc790ab8979a..84d71ec37b4a6c6785a43793c80945cfa3d549e3 100644
+--- a/src/library.c
++++ b/src/library.c
+@@ -1,6 +1,8 @@
+ #include <assert.h>
+ #include <stdarg.h>
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ 
+ #include "ss4s.h"
+ 
+@@ -14,6 +16,8 @@ static struct {
+     struct {
+         const char *ModuleName;
+         const SS4S_AudioDriver *Driver;
++        SS4S_ModuleAudioGetClockV1Function *GetClock;
++        SS4S_ModuleAudioOpenPullV1Function *OpenPull;
+         const SS4S_PlayerDriver *PlayerDriver;
+     } Audio;
+     struct {
+@@ -34,22 +38,37 @@ static SS4S_LibraryContext SS4S_LibContext = {
+ };
+ 
+ static SS4S_LogLevel LogLevel = SS4S_LogLevelDebug;
++static char *AudioDevice = NULL;
++
++void SS4S_SetAudioDevice(const char *device) {
++    char *copy = device != NULL ? strdup(device) : NULL;
++    free(AudioDevice);
++    AudioDevice = copy;
++    SS4S_LibContext.Audio.device = AudioDevice;
++}
+ 
+ int SS4S_Init(int argc, char *argv[], const SS4S_Config *config) {
+     assert(config != NULL);
+     if (config->loggingFunction) {
+         SS4S_SetLoggingFunction(config->loggingFunction);
+     }
++    free(AudioDevice);
++    AudioDevice = config->audioDevice != NULL ? strdup(config->audioDevice) : NULL;
++    SS4S_LibContext.Audio.device = AudioDevice;
+     SS4S_LibContext.VideoStats.BeginFrame = SS4S_VideoStatsBeginFrame;
+     SS4S_LibContext.VideoStats.EndFrame = SS4S_VideoStatsEndFrame;
+     SS4S_LibContext.VideoStats.ReportFrame = SS4S_VideoStatsReportFrame;
+     SS4S_Module module;
++    SS4S_ModuleAudioGetClockV1Function *audio_clock = NULL;
++    SS4S_ModuleAudioOpenPullV1Function *audio_pull = NULL;
+     if (config->audioDriver != NULL) {
+         SS4S_Log(SS4S_LogLevelInfo, "Audio", "Opening driver %s", config->audioDriver);
+-        if (SS4S_ModuleOpen(config->audioDriver, &module, &SS4S_LibContext)) {
++        if (SS4S_ModuleOpen(config->audioDriver, &module, &SS4S_LibContext, &audio_clock, &audio_pull)) {
+             assert(module.Name != NULL);
+             if (module.AudioDriver != NULL && SS4S_DriverInit(&module.AudioDriver->Base, argc, argv) == 0) {
+                 States.Audio.Driver = module.AudioDriver;
++                States.Audio.GetClock = audio_clock;
++                States.Audio.OpenPull = audio_pull;
+                 States.Audio.PlayerDriver = module.PlayerDriver;
+                 States.Audio.ModuleName = module.Name;
+                 SS4S_Log(SS4S_LogLevelInfo, "Audio", "Opened driver: %s", module.Name);
+@@ -58,7 +77,7 @@ int SS4S_Init(int argc, char *argv[], const SS4S_Config *config) {
+     }
+     if (config->videoDriver != NULL) {
+         SS4S_Log(SS4S_LogLevelInfo, "Video", "Opening driver %s", config->videoDriver);
+-        if (SS4S_ModuleOpen(config->videoDriver, &module, &SS4S_LibContext)) {
++        if (SS4S_ModuleOpen(config->videoDriver, &module, &SS4S_LibContext, NULL, NULL)) {
+             assert(module.Name != NULL);
+             if (module.VideoDriver != NULL && SS4S_DriverInit(&module.VideoDriver->Base, argc, argv) == 0) {
+                 States.Video.Driver = module.VideoDriver;
+@@ -86,11 +105,24 @@ void SS4S_Quit() {
+     if (States.Audio.Driver != NULL) {
+         SS4S_DriverQuit(&States.Audio.Driver->Base);
+         States.Audio.Driver = NULL;
++        States.Audio.GetClock = NULL;
++        States.Audio.OpenPull = NULL;
+     }
+     if (States.Video.Driver != NULL) {
+         SS4S_DriverQuit(&States.Video.Driver->Base);
+         States.Video.Driver = NULL;
+     }
++    free(AudioDevice);
++    AudioDevice = NULL;
++    SS4S_LibContext.Audio.device = NULL;
++}
++
++SS4S_ModuleAudioOpenPullV1Function *SS4S_GetAudioPullFunction() {
++    return States.Audio.OpenPull;
++}
++
++SS4S_ModuleAudioGetClockV1Function *SS4S_GetAudioClockFunction() {
++    return States.Audio.GetClock;
+ }
+ 
+ const SS4S_AudioDriver *SS4S_GetAudioDriver() {
+@@ -165,4 +197,4 @@ static void NullLoggingFunction(SS4S_LogLevel level, const char *tag, const char
+     (void) level;
+     (void) tag;
+     (void) fmt;
+-}
+\ No newline at end of file
++}
+diff --git a/src/library.h b/src/library.h
+index 5319a6b3e0905b5222fc7c4e6069a3ff0ef2c48c..582e11d2bfcf118de421b9eaf669064ba984f448 100644
+--- a/src/library.h
++++ b/src/library.h
+@@ -10,6 +10,8 @@ struct SS4S_Player {
+         SS4S_PlayerContext *video;
+     } context;
+     SS4S_AudioInstance *audio;
++    uint64_t audio_generation;
++    bool audio_pull;
+     SS4S_VideoInstance *video;
+     void *userdata;
+     int viewportWidth, viewportHeight;
+@@ -19,6 +21,9 @@ struct SS4S_Player {
+     } stats;
+ };
+ 
++SS4S_ModuleAudioGetClockV1Function *SS4S_GetAudioClockFunction();
++SS4S_ModuleAudioOpenPullV1Function *SS4S_GetAudioPullFunction();
++
+ const SS4S_AudioDriver *SS4S_GetAudioDriver();
+ 
+ const SS4S_VideoDriver *SS4S_GetVideoDriver();
+diff --git a/src/module.h b/src/module.h
+index d0713d3ce0d02ffbec9353d5283b392dcc798d4b..296ffe95dd8faaa014b40ec278043e3dac512037 100644
+--- a/src/module.h
++++ b/src/module.h
+@@ -3,4 +3,6 @@
+ #include "ss4s/modapi.h"
+ #include "ss4s/module.h"
+ 
+-bool SS4S_ModuleOpen(const char *name, SS4S_Module *module, const SS4S_LibraryContext *context);
++bool SS4S_ModuleOpen(const char *name, SS4S_Module *module, const SS4S_LibraryContext *context,
++                     SS4S_ModuleAudioGetClockV1Function **audio_clock,
++                     SS4S_ModuleAudioOpenPullV1Function **audio_pull);
+diff --git a/src/module_libdl.c b/src/module_libdl.c
+index 5ea5f26b5692b1a4dad54026975270770440e26b..185aced6d43b505a846b793e940722081e13423d 100644
+--- a/src/module_libdl.c
++++ b/src/module_libdl.c
+@@ -5,7 +5,11 @@
+ #include <dlfcn.h>
+ #include <string.h>
+ 
+-bool SS4S_ModuleOpen(const char *name, SS4S_Module *module, const SS4S_LibraryContext *context) {
++bool SS4S_ModuleOpen(const char *name, SS4S_Module *module, const SS4S_LibraryContext *context,
++                     SS4S_ModuleAudioGetClockV1Function **audio_clock,
++                     SS4S_ModuleAudioOpenPullV1Function **audio_pull) {
++    if (audio_clock != NULL) *audio_clock = NULL;
++    if (audio_pull != NULL) *audio_pull = NULL;
+     if (name == NULL || name[0] == '\0') {
+         return false;
+     }
+@@ -19,10 +23,24 @@ bool SS4S_ModuleOpen(const char *name, SS4S_Module *module, const SS4S_LibraryCo
+     SS4S_ModuleOpenFunction *fn = (SS4S_ModuleOpenFunction *) dlsym(lib, tmp);
+     if (fn == NULL) {
+         SS4S_Log(SS4S_LogLevelError, "Module", "Module `%s` is not valid!", name);
++        dlclose(lib);
+         return false;
+     }
+     memset(module, 0, sizeof(SS4S_Module));
+-    return fn(module, context);
++    if (!fn(module, context)) {
++        dlclose(lib);
++        return false;
++    }
++    if (audio_clock != NULL) {
++        ModuleFunctionName(tmp, sizeof(tmp), "AudioGetClockV1", name);
++        *audio_clock = (SS4S_ModuleAudioGetClockV1Function *) dlsym(lib, tmp);
++    }
++    if (audio_pull != NULL) {
++        ModuleFunctionName(tmp, sizeof(tmp), "AudioOpenPullV1", name);
++        *audio_pull = (SS4S_ModuleAudioOpenPullV1Function *) dlsym(lib, tmp);
++    }
++    /* Successful modules remain loaded for the library lifetime, as before. */
++    return true;
+ }
+ 
+ SS4S_ModuleCheckFlag SS4S_ModuleCheck(const char *id, SS4S_ModuleCheckFlag flags) {
+diff --git a/src/module_win32.c b/src/module_win32.c
+index 18ddb6cbdd10cd868053fad56f998796c50ef912..b6924a3026c31b34d0705994da04dd4b8a0cfac9 100644
+--- a/src/module_win32.c
++++ b/src/module_win32.c
+@@ -3,14 +3,46 @@
+ 
+ #include <windows.h>
+ #include <string.h>
++#include <wchar.h>
+ 
+-bool SS4S_ModuleOpen(const char *name, SS4S_Module *module, const SS4S_LibraryContext *context) {
++static HMODULE LoadModuleLibrary(const char *name) {
++    char fileName[128];
++    ModuleFileName(fileName, sizeof(fileName), name);
++
++    wchar_t modulePath[32768];
++    DWORD pathLen = GetModuleFileNameW(NULL, modulePath,
++                                      (DWORD) (sizeof(modulePath) / sizeof(modulePath[0])));
++    if (pathLen == 0 || pathLen >= sizeof(modulePath) / sizeof(modulePath[0])) {
++        return NULL;
++    }
++    wchar_t *filePart = wcsrchr(modulePath, L'\\');
++    if (filePart == NULL) {
++        return NULL;
++    }
++    filePart++;
++    size_t remaining = sizeof(modulePath) / sizeof(modulePath[0]) - (size_t) (filePart - modulePath);
++    int converted = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, fileName, -1,
++                                        filePart, (int) remaining);
++    if (converted == 0) {
++        return NULL;
++    }
++
++    /* Use an absolute path so module discovery is independent of the shell's working
++     * directory. LOAD_WITH_ALTERED_SEARCH_PATH also resolves FFmpeg/SDL dependencies
++     * from the portable application's directory before consulting system locations. */
++    return LoadLibraryExW(modulePath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
++}
++
++bool SS4S_ModuleOpen(const char *name, SS4S_Module *module, const SS4S_LibraryContext *context,
++                     SS4S_ModuleAudioGetClockV1Function **audio_clock,
++                     SS4S_ModuleAudioOpenPullV1Function **audio_pull) {
++    if (audio_clock != NULL) *audio_clock = NULL;
++    if (audio_pull != NULL) *audio_pull = NULL;
+     if (name == NULL || name[0] == '\0') {
+         return false;
+     }
+     char tmp[128];
+-    ModuleFileName(tmp, sizeof(tmp), name);
+-    HMODULE lib = LoadLibraryA(tmp);
++    HMODULE lib = LoadModuleLibrary(name);
+     if (lib == NULL) {
+         return false;
+     }
+@@ -22,7 +54,20 @@ bool SS4S_ModuleOpen(const char *name, SS4S_Module *module, const SS4S_LibraryCo
+         return false;
+     }
+     memset(module, 0, sizeof(SS4S_Module));
+-    return fn(module, context);
++    if (!fn(module, context)) {
++        FreeLibrary(lib);
++        return false;
++    }
++    if (audio_clock != NULL) {
++        ModuleFunctionName(tmp, sizeof(tmp), "AudioGetClockV1", name);
++        *audio_clock = (SS4S_ModuleAudioGetClockV1Function *) (void *) GetProcAddress(lib, tmp);
++    }
++    if (audio_pull != NULL) {
++        ModuleFunctionName(tmp, sizeof(tmp), "AudioOpenPullV1", name);
++        *audio_pull = (SS4S_ModuleAudioOpenPullV1Function *) (void *) GetProcAddress(lib, tmp);
++    }
++    /* Successful modules remain loaded for the library lifetime, as before. */
++    return true;
+ }
+ 
+ SS4S_ModuleCheckFlag SS4S_ModuleCheck(const char *id, SS4S_ModuleCheckFlag flags) {
+@@ -30,8 +75,7 @@ SS4S_ModuleCheckFlag SS4S_ModuleCheck(const char *id, SS4S_ModuleCheckFlag flags
+         return 0;
+     }
+     char tmp[128];
+-    ModuleFileName(tmp, sizeof(tmp), id);
+-    HMODULE lib = LoadLibraryA(tmp);
++    HMODULE lib = LoadModuleLibrary(id);
+     if (lib == NULL) {
+         return 0;
+     }
+diff --git a/tests/audio_clock_fixture.c b/tests/audio_clock_fixture.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..5717e2a95aaa26276d324d7bbc334351506c391d
+--- /dev/null
++++ b/tests/audio_clock_fixture.c
+@@ -0,0 +1,25 @@
++#include "ss4s/modapi.h"
++static const SS4S_AudioDriver driver = {0};
++#ifdef CLOCK_FIXTURE
++SS4S_EXPORTED SS4S_AudioOpenResult SS4S_ModuleAudioOpenPullV1_CLOCK_FIXTURE(const SS4S_AudioInfo *info,
++    SS4S_AudioInstance **instance, SS4S_PlayerContext *player_context,
++    SS4S_AudioPullRenderFunction render, void *render_context) {
++    (void)info; (void)instance; (void)player_context; (void)render; (void)render_context;
++    return SS4S_AUDIO_OPEN_ERROR; /* Capability is not an instance/open guarantee. */
++}
++SS4S_EXPORTED bool SS4S_ModuleAudioGetClockV1_CLOCK_FIXTURE(SS4S_AudioInstance *instance,
++                                                         SS4S_AudioClock *clock, size_t size) {
++    (void) instance;
++    if (!clock || size != sizeof(*clock)) return false;
++    *clock = (SS4S_AudioClock) {.sample_rate = 48000};
++    return true;
++}
++SS4S_EXPORTED bool SS4S_ModuleOpen_CLOCK_FIXTURE(SS4S_Module *module, const SS4S_LibraryContext *context) {
++#else
++SS4S_EXPORTED bool SS4S_ModuleOpen_LEGACY_FIXTURE(SS4S_Module *module, const SS4S_LibraryContext *context) {
++#endif
++    (void) context;
++    module->Name = "fixture";
++    module->AudioDriver = &driver;
++    return true;
++}
+diff --git a/tests/test_audio_clock_capability.c b/tests/test_audio_clock_capability.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..c281e96c6709620b274e5881498a9250286ffb8c
+--- /dev/null
++++ b/tests/test_audio_clock_capability.c
+@@ -0,0 +1,28 @@
++/* Uses the actual library selector and optional-symbol loader, no player/device. */
++#include <assert.h>
++#include <stdio.h>
++#include "ss4s.h"
++static void SilentLog(SS4S_LogLevel level, const char *tag, const char *fmt, ...) {
++    (void) level; (void) tag; (void) fmt;
++}
++int main(void) {
++    assert(!SS4S_AudioHasClock() && !SS4S_AudioHasPull());
++    SS4S_Config config = {.audioDriver = "legacy-fixture", .loggingFunction = SilentLog};
++    assert(SS4S_Init(0, NULL, &config) == 0);
++    assert(!SS4S_AudioHasClock() && !SS4S_AudioHasPull());
++    SS4S_Quit();
++    config.audioDriver = "clock-fixture";
++    assert(SS4S_Init(0, NULL, &config) == 0);
++    assert(SS4S_AudioHasClock() && SS4S_AudioHasPull()); /* No audio instance exists. */
++    SS4S_AudioClock clock;
++    assert(!SS4S_PlayerAudioGetClock(NULL, &clock));
++    assert(clock.sample_rate == 0 && clock.generation == 0);
++    SS4S_Quit();
++    assert(!SS4S_AudioHasClock() && !SS4S_AudioHasPull());
++    config.audioDriver = "legacy-fixture";
++    assert(SS4S_Init(0, NULL, &config) == 0);
++    assert(!SS4S_AudioHasClock() && !SS4S_AudioHasPull());
++    SS4S_Quit();
++    puts("PASS capability: old module false, new module true before open, instance still validated, quit/reselection clears capability");
++    return 0;
++}
+diff --git a/tests/test_audio_clock_core.c b/tests/test_audio_clock_core.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..51f6d981a7fd5db137c80be4031093e64cf69080
+--- /dev/null
++++ b/tests/test_audio_clock_core.c
+@@ -0,0 +1,105 @@
++#include <assert.h>
++#include <stdio.h>
++#include <SDL2/SDL.h>
++#include "ss4s.h"
++#include "library.h"
++#include "lib_logging.h"
++
++static SDL_sem *query_entered, *query_release;
++static SDL_atomic_t close_calls;
++static bool supported = true, block_query = false;
++static void SilentLog(SS4S_LogLevel level, const char *tag, const char *fmt, ...) {
++    (void) level; (void) tag; (void) fmt;
++}
++SS4S_LoggingFunction *SS4S_Log = SilentLog;
++static SS4S_AudioOpenResult FakeOpen(const SS4S_AudioInfo *info, SS4S_AudioInstance **instance,
++                                     SS4S_PlayerContext *context) {
++    (void) info; (void) context;
++    *instance = (SS4S_AudioInstance *) &close_calls;
++    return SS4S_AUDIO_OPEN_OK;
++}
++static void FakeClose(SS4S_AudioInstance *instance) {
++    assert(instance == (SS4S_AudioInstance *) &close_calls);
++    SDL_AtomicAdd(&close_calls, 1);
++}
++static bool FakeClock(SS4S_AudioInstance *instance, SS4S_AudioClock *clock, size_t size) {
++    assert(instance == (SS4S_AudioInstance *) &close_calls && size == sizeof(*clock));
++    if (block_query) {
++        SDL_SemPost(query_entered);
++        SDL_SemWait(query_release);
++        assert(SDL_AtomicGet(&close_calls) == 0);
++    }
++    clock->sample_rate = 48000;
++    return true;
++}
++static const SS4S_AudioDriver driver = {.Open = FakeOpen, .Close = FakeClose};
++const SS4S_AudioDriver *SS4S_GetAudioDriver(void) { return &driver; }
++SS4S_ModuleAudioGetClockV1Function *SS4S_GetAudioClockFunction(void) {
++    return supported ? FakeClock : NULL;
++}
++static bool pull_supported = false;
++static SS4S_AudioOpenResult FakePull(const SS4S_AudioInfo *info, SS4S_AudioInstance **instance,
++    SS4S_PlayerContext *context, SS4S_AudioPullRenderFunction render, void *render_context) {
++    (void)render; (void)render_context;
++    return FakeOpen(info, instance, context);
++}
++static unsigned FakeRender(void *context, int16_t *pcm, unsigned frames, uint64_t stamp) {
++    (void)context; (void)pcm; (void)stamp; return frames;
++}
++SS4S_ModuleAudioOpenPullV1Function *SS4S_GetAudioPullFunction(void) { return pull_supported ? FakePull : NULL; }
++static int QueryThread(void *p) {
++    SS4S_AudioClock clock;
++    assert(SS4S_PlayerAudioGetClock(p, &clock));
++    assert(clock.generation == 1);
++    return 0;
++}
++static int CloseThread(void *p) { assert(SS4S_PlayerAudioClose(p)); return 0; }
++int main(void) {
++    SS4S_Player player = {0};
++    player.mutex = SS4S_MutexCreate();
++    query_entered = SDL_CreateSemaphore(0);
++    query_release = SDL_CreateSemaphore(0);
++    SS4S_AudioClock clock;
++    memset(&clock, 0xff, sizeof(clock));
++    assert(!SS4S_PlayerAudioGetClock(&player, &clock));
++    assert(clock.generation == 0 && clock.sample_rate == 0);
++    assert(SS4S_PlayerAudioOpen(&player, NULL) == SS4S_AUDIO_OPEN_OK);
++    supported = false;
++    assert(!SS4S_PlayerAudioGetClock(&player, &clock));
++    assert(clock.generation == 0);
++    supported = true; block_query = true;
++    SDL_Thread *query = SDL_CreateThread(QueryThread, "query", &player);
++    assert(query);
++    SDL_SemWait(query_entered);
++    SDL_Thread *close = SDL_CreateThread(CloseThread, "close", &player);
++    assert(close);
++    SDL_Delay(20);
++    assert(SDL_AtomicGet(&close_calls) == 0);
++    SDL_SemPost(query_release);
++    SDL_WaitThread(query, NULL); SDL_WaitThread(close, NULL);
++    assert(SDL_AtomicGet(&close_calls) == 1);
++    assert(!SS4S_PlayerAudioGetClock(&player, &clock));
++    block_query = false;
++    assert(SS4S_PlayerAudioOpen(&player, NULL) == SS4S_AUDIO_OPEN_OK);
++    assert(SS4S_PlayerAudioGetClock(&player, &clock) && clock.generation == 2);
++    assert(SS4S_PlayerAudioClose(&player));
++    SS4S_AudioInfo info = {.codec=SS4S_AUDIO_PCM_S16LE,.sampleRate=48000,.numOfChannels=2,.samplesPerFrame=240};
++    assert(!SS4S_AudioHasPull());
++    assert(SS4S_PlayerAudioOpenPull(&player,&info,FakeRender,NULL)==SS4S_AUDIO_OPEN_ERROR);
++    assert(player.audio==NULL && player.audio_generation==2);
++    pull_supported=true;
++    assert(SS4S_AudioHasPull());
++    assert(SS4S_PlayerAudioOpenPull(&player,&info,NULL,NULL)==SS4S_AUDIO_OPEN_ERROR);
++    assert(SS4S_PlayerAudioOpenPull(&player,&info,FakeRender,NULL)==SS4S_AUDIO_OPEN_OK);
++    assert(player.audio_generation==3 && player.audio_pull);
++    assert(SS4S_PlayerAudioOpenPull(&player,&info,FakeRender,NULL)==SS4S_AUDIO_OPEN_ERROR);
++    assert(SS4S_PlayerAudioOpen(&player,&info)==SS4S_AUDIO_OPEN_ERROR);
++    assert(player.audio_generation==3);
++    assert(SS4S_PlayerAudioFeed(&player,NULL,0)==SS4S_AUDIO_FEED_ERROR);
++    assert(SS4S_PlayerAudioClose(&player) && !player.audio_pull);
++    assert(!SS4S_PlayerAudioClose(&player));
++    SDL_DestroySemaphore(query_entered); SDL_DestroySemaphore(query_release);
++    SS4S_MutexDestroy(player.mutex);
++    puts("PASS core: unsupported/closed zero snapshot, reopen generation, concurrent query serialized against close");
++    return 0;
++}
+diff --git a/tests/test_audio_clock_loader.c b/tests/test_audio_clock_loader.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..b223d3fd12c04ff2b2c760bd774b51fd6165f8cc
+--- /dev/null
++++ b/tests/test_audio_clock_loader.c
+@@ -0,0 +1,25 @@
++#include <assert.h>
++#include <stdio.h>
++#include "module.h"
++#include "lib_logging.h"
++static void SilentLog(SS4S_LogLevel level, const char *tag, const char *fmt, ...) {
++    (void) level; (void) tag; (void) fmt;
++}
++SS4S_LoggingFunction *SS4S_Log = SilentLog;
++int main(void) {
++    SS4S_Module module;
++    SS4S_LibraryContext context = {.Log = SilentLog};
++    SS4S_ModuleAudioGetClockV1Function *clock_fn = NULL;
++    SS4S_ModuleAudioOpenPullV1Function *pull_fn = NULL;
++    assert(SS4S_ModuleOpen("legacy-fixture", &module, &context, &clock_fn, &pull_fn));
++    assert(clock_fn == NULL && pull_fn == NULL);
++    assert(SS4S_ModuleOpen("clock-fixture", &module, &context, &clock_fn, &pull_fn));
++    assert(clock_fn != NULL && pull_fn != NULL);
++    SS4S_AudioClock clock;
++    assert(clock_fn(NULL, &clock, sizeof(clock)) && clock.sample_rate == 48000);
++    assert(!clock_fn(NULL, &clock, sizeof(clock) + 1));
++    assert(SS4S_ModuleOpen("legacy-fixture", &module, &context, &clock_fn, &pull_fn));
++    assert(clock_fn == NULL && pull_fn == NULL); /* Cannot retain previous module's optional export. */
++    puts("PASS loader: old module without extension, versioned export, exact-size check, no cross-module clock reuse");
++    return 0;
++}
+diff --git a/tests/test_audio_clock_open.c b/tests/test_audio_clock_open.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..561c9102b6af43014fd3ea49be545c1a8f7b9942
+--- /dev/null
++++ b/tests/test_audio_clock_open.c
+@@ -0,0 +1,59 @@
++/* Actual SS4S Open/Close with SDL device calls mocked; no device is opened. */
++#include <assert.h>
++#include <stdio.h>
++#include <stdbool.h>
++#include <SDL2/SDL.h>
++static unsigned opens, closes, pauses, waits;
++static bool retry_first;
++static SDL_AudioDeviceID FakeOpen(const char *name, int capture, const SDL_AudioSpec *want,
++                                  SDL_AudioSpec *have, int changes) {
++    assert(name && !capture);
++    assert(changes == SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
++    assert(want->freq == 48000 && want->channels == 2 && want->format == AUDIO_S16LSB);
++    assert(want->samples == 240 && want->callback);
++    ++opens;
++    if (retry_first && opens == 1) return 0;
++    *have = *want;
++    have->samples = 480; /* Mock negotiated physical demand period. */
++    return 17;
++}
++static void FakeClose(SDL_AudioDeviceID device) { assert(device == 17); ++closes; }
++static void FakePause(SDL_AudioDeviceID device, int pause) { assert(device == 17 && pause == 0); ++pauses; }
++static void FakeDelay(Uint32 ms) { assert(ms == 250); ++waits; }
++static int FakeCount(int capture) { assert(!capture); return 1; }
++static const char *FakeName(int index, int capture) { assert(index == 0 && !capture); return "Test endpoint (new)"; }
++#define SDL_OpenAudioDevice FakeOpen
++#define SDL_CloseAudioDevice FakeClose
++#define SDL_PauseAudioDevice FakePause
++#define SDL_Delay FakeDelay
++#define SDL_GetNumAudioDevices FakeCount
++#define SDL_GetAudioDeviceName FakeName
++#include "../modules/sdl/sdl.c"
++static void FakeLog(SS4S_LogLevel level, const char *tag, const char *fmt, ...) {
++    (void)level; (void)tag; (void)fmt;
++}
++int main(void) {
++    const SS4S_LibraryContext context = {.Log=FakeLog, .Audio={.device="Test endpoint (old)"}};
++    LibContext=&context;
++    const SS4S_AudioInfo info={.codec=SS4S_AUDIO_PCM_S16LE,.sampleRate=48000,.numOfChannels=2,.samplesPerFrame=240};
++    for (unsigned scenario=0; scenario<2; ++scenario) {
++        opens=closes=pauses=waits=0; retry_first=scenario != 0;
++        SS4S_AudioInstance *instance=NULL;
++        assert(Open(&info,&instance,NULL)==SS4S_AUDIO_OPEN_OK);
++        assert(opens==1+scenario && pauses==1 && waits==scenario && closes==0);
++        SS4S_AudioClock clock = {0};
++        assert(SS4S_ModuleAudioGetClockV1_SDL(instance,&clock,sizeof(clock)));
++        assert(clock.sample_rate==48000 && clock.quantum_frames==480 && clock.demand_frames==0);
++        unsigned char pcm[1920], output[1920];
++        memset(pcm,0x35,sizeof(pcm));
++        assert(Feed(instance,pcm,sizeof(pcm))==SS4S_AUDIO_FEED_OK);
++        Callback(instance,output,sizeof(output));
++        assert(!memcmp(pcm,output,sizeof(pcm)));
++        assert(SS4S_ModuleAudioGetClockV1_SDL(instance,&clock,sizeof(clock)));
++        assert(clock.quantum_frames==480 && clock.demand_frames==480 && clock.consumed_frames==480);
++        assert(clock.queued_frames==0 && clock.discarded_frames==0);
++        Close(instance); assert(closes==1);
++    }
++    puts("PASS SDL open: negotiated demand480, sample-only change initial/retry, exact PCM conservation");
++    return 0;
++}
+diff --git a/tests/test_audio_clock_sdl.c b/tests/test_audio_clock_sdl.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..57847ac2b51081f75581bb61b5ab6ff390a44184
+--- /dev/null
++++ b/tests/test_audio_clock_sdl.c
+@@ -0,0 +1,56 @@
++/* No device is opened: exercise the real SDL ring/feed/callback implementation. */
++#include <assert.h>
++#include <stdio.h>
++#include "../modules/sdl/sdl.c"
++
++int main(void) {
++    SS4S_AudioInstance instance = {0};
++    instance.ringbuf_capacity = 64;
++    instance.ringbuf = ringbuf_new(instance.ringbuf_capacity);
++    instance.ringbuf_mutex = SDL_CreateMutex();
++    instance.frame_bytes = 4;
++    instance.sample_rate = 48000;
++    instance.callback_frames = 240;
++    instance.counter_frequency = SDL_GetPerformanceFrequency();
++    assert(instance.ringbuf && instance.ringbuf_mutex && instance.counter_frequency);
++    unsigned char input[64], output[64];
++    for (unsigned i = 0; i < sizeof(input); ++i) input[i] = (unsigned char) (i + 1);
++    SS4S_AudioClock clock;
++    memset(&clock, 0x5a, sizeof(clock));
++    assert(!SS4S_ModuleAudioGetClockV1_SDL(&instance, &clock, sizeof(clock) - 1));
++    assert(((unsigned char *) &clock)[0] == 0x5a); /* Reject before writing. */
++    assert(Feed(&instance, input, 48) == SS4S_AUDIO_FEED_OK);
++    assert(Feed(&instance, input, 32) == SS4S_AUDIO_FEED_OVERFLOW);
++    assert(Feed(&instance, input, 64) == SS4S_AUDIO_FEED_OVERFLOW);
++    assert(Feed(&instance, input, 3) == SS4S_AUDIO_FEED_ERROR);
++    assert(Feed(&instance, NULL, 4) == SS4S_AUDIO_FEED_ERROR);
++    assert(SS4S_ModuleAudioGetClockV1_SDL(&instance, &clock, sizeof(clock)));
++    assert(clock.queued_frames == 12 && clock.demand_frames == 0);
++    assert(instance.submitted_bytes == 48 && instance.cleared_bytes == 0);
++    Callback(&instance, output, 20);
++    assert(memcmp(input, output, 20) == 0);
++    assert(SS4S_ModuleAudioGetClockV1_SDL(&instance, &clock, sizeof(clock)));
++    assert(clock.quantum_frames == 5 && clock.demand_frames == 5);
++    assert(clock.consumed_frames == 5 && clock.queued_frames == 7);
++    const uint64_t stamp = clock.observed_us;
++    assert(Feed(&instance, input, 16) == SS4S_AUDIO_FEED_OK); /* Wraps ring. */
++    assert(SS4S_ModuleAudioGetClockV1_SDL(&instance, &clock, sizeof(clock)));
++    assert(clock.observed_us == stamp && clock.queued_frames == 11);
++    Callback(&instance, output, 64); /* Larger than requested; partial underrun. */
++    assert(memcmp(output, input + 20, 28) == 0);
++    assert(memcmp(output + 28, input, 16) == 0);
++    for (unsigned i = 44; i < sizeof(output); ++i) assert(output[i] == 0);
++    assert(SS4S_ModuleAudioGetClockV1_SDL(&instance, &clock, sizeof(clock)));
++    assert(clock.quantum_frames == 16 && clock.demand_frames == 21);
++    assert(clock.consumed_frames == 16 && clock.queued_frames == 0);
++    assert(clock.discarded_frames == 0 && clock.observed_us >= stamp);
++    assert(instance.submitted_bytes / 4 == clock.consumed_frames + clock.queued_frames);
++    Callback(&instance, output, 12); /* Fully starved device still advances. */
++    assert(SS4S_ModuleAudioGetClockV1_SDL(&instance, &clock, sizeof(clock)));
++    assert(clock.demand_frames == 24 && clock.consumed_frames == 16);
++    assert(instance.silence_bytes == 32);
++    ringbuf_delete(instance.ringbuf);
++    SDL_DestroyMutex(instance.ringbuf_mutex);
++    puts("PASS SDL: actual callback quantum, demand including silence, accepted conservation, wrap/order, non-destructive overflow, ABI-size rejection");
++    return 0;
++}
+diff --git a/tests/test_audio_pull_pulse.c b/tests/test_audio_pull_pulse.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..53e35a6b16d0a9c5225bd25f371c72ed48e03c65
+--- /dev/null
++++ b/tests/test_audio_pull_pulse.c
+@@ -0,0 +1,93 @@
++/* PulseAudio pull mode against a REAL server (skips with exit 77 when none answers).
++ * Renders silence only, so it is inaudible on whatever sink is the default. Checks the
++ * device-paced contract: open works, Feed is refused, render is never re-entered, its
++ * timestamps never go backwards, delivery tracks real time, and Close joins the
++ * mainloop before reporting the final ledger. */
++#include <assert.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <unistd.h>
++#include <stdatomic.h>
++#include <pthread.h>
++#include "../modules/pulse/pulse.c"
++
++static atomic_int in_render, closed, have_render_thread;
++static pthread_t render_thread;
++static atomic_ullong rendered_frames, render_calls;
++static uint64_t last_begin;
++static int ledger_seen, open_seen;
++static const int token = 52817;
++
++static void CaptureLog(SS4S_LogLevel level, const char *tag, const char *fmt, ...) {
++    (void) level; (void) tag;
++    /* Logging must never happen ON the backend thread that renders. */
++    if (atomic_load(&have_render_thread)) assert(!pthread_equal(pthread_self(), render_thread));
++    char line[1024];
++    va_list ap;
++    va_start(ap, fmt);
++    vsnprintf(line, sizeof(line), fmt, ap);
++    va_end(ap);
++    if (strstr(line, "[AUDIO-OUTPUT] backend=pulse phase=opened")) open_seen = 1;
++    if (strstr(line, "[AUDIO-OUTPUT] backend=pulse phase=final")) {
++        assert(atomic_load(&closed));   /* reported only after the mainloop is joined */
++        ledger_seen = 1;
++    }
++    printf("log: %s\n", line);
++}
++
++static unsigned Render(void *context, int16_t *pcm, unsigned frames, uint64_t begin_us) {
++    assert(context == &token && pcm != NULL && frames > 0 && begin_us > 0);
++    assert(!atomic_exchange(&in_render, 1));
++    if (!atomic_load(&have_render_thread)) {
++        render_thread = pthread_self();
++        atomic_store(&have_render_thread, 1);
++    }
++    assert(begin_us >= last_begin);
++    last_begin = begin_us;
++    memset(pcm, 0, (size_t) frames * 4u);
++    atomic_fetch_add(&rendered_frames, frames);
++    atomic_fetch_add(&render_calls, 1);
++    atomic_store(&in_render, 0);
++    return frames;
++}
++
++int main(void) {
++    setvbuf(stdout, NULL, _IONBF, 0);   /* an assert must not swallow the measurements */
++    const SS4S_LibraryContext context = {.Log = CaptureLog};
++    SS4S_Module module = {0};
++    assert(SS4S_ModuleOpen_PULSE(&module, &context));
++    const SS4S_AudioInfo info = {.codec = SS4S_AUDIO_PCM_S16LE, .numOfChannels = 2, .sampleRate = 48000,
++            .samplesPerFrame = 240, .appName = "Eclipse test", .streamName = "pull test (silence)"};
++    SS4S_AudioInstance *instance = NULL;
++    const uint64_t start = ClientTimeUs();
++    const SS4S_AudioOpenResult rc = SS4S_ModuleAudioOpenPullV1_PULSE(&info, &instance, NULL, Render, (void *) &token);
++    if (rc != SS4S_AUDIO_OPEN_OK) {
++        printf("SKIP: no PulseAudio server answered (open rc=%d)\n", rc);
++        return 77;
++    }
++    assert(open_seen);
++    const unsigned char dummy[960] = {0};
++    assert(module.AudioDriver->Feed(instance, dummy, sizeof(dummy)) == SS4S_AUDIO_FEED_ERROR);
++    while (atomic_load(&render_calls) == 0 && ClientTimeUs() - start < 3000000u) usleep(1000);
++    const double startup_ms = (double) (ClientTimeUs() - start) / 1e3;
++    sleep(1);
++    const uint64_t frames_a = atomic_load(&rendered_frames), t_a = ClientTimeUs();
++    sleep(2);
++    const uint64_t frames_b = atomic_load(&rendered_frames), t_b = ClientTimeUs();
++    const double elapsed = (double) (t_b - t_a) / 1e6;
++    const PullStats snapshot = instance->pull;   /* racy copy for printing only */
++    atomic_store(&closed, 1);
++    module.AudioDriver->Close(instance);
++    assert(ledger_seen);
++    const unsigned calls_after_close = (unsigned) atomic_load(&render_calls);
++    usleep(100 * 1000);
++    assert(atomic_load(&render_calls) == calls_after_close);   /* nothing runs after Close */
++    const double delivered_s = (double) (frames_b - frames_a) / 48000.0;
++    printf("first render after %.1f ms; steady window %.3f s wall, %.3f s delivered (%+.1f ms), %llu callbacks, "
++           "underflows so far %llu\n", startup_ms, elapsed, delivered_s, (delivered_s - elapsed) * 1000.0,
++           (unsigned long long) snapshot.callbacks, (unsigned long long) snapshot.underflows);
++    /* Device-paced: the steady 2 s window must track real time within +-30 ms. */
++    assert(delivered_s > elapsed - 0.03 && delivered_s < elapsed + 0.03);
++    puts("PulseAudio pull PASS (real server, silence)");
++    return 0;
++}
+diff --git a/tests/test_audio_pull_sdl.c b/tests/test_audio_pull_sdl.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..51ede345c083fc8b115ea65643903b3a1278d8b4
+--- /dev/null
++++ b/tests/test_audio_pull_sdl.c
+@@ -0,0 +1,108 @@
++/* Actual pull callback and SDL dummy-device lifecycle; never opens a real sink. */
++#include <assert.h>
++#include <stdio.h>
++#include "../modules/sdl/sdl.c"
++static SDL_atomic_t calls, closed, in_render;
++static SDL_sem *entered, *release, *close_entered;
++static SS4S_AudioInstance *closing_instance;
++static SDL_atomic_t final_ledger_checked;
++static SDL_atomic_t block_render;
++static unsigned mode;
++static const int token=41731;
++static void SilentLog(SS4S_LogLevel level,const char *tag,const char *fmt,...) {
++    (void)level;(void)tag;(void)fmt;
++    assert(!SDL_AtomicGet(&in_render));
++    if(closing_instance && strstr(fmt,"[AUDIO-OUTPUT]")) {
++        const SS4S_AudioInstance *i=closing_instance; /* Close has joined callback. */
++        assert(i->pull_stats.publish_skips>0);
++        assert(i->callbacks==i->pull_stats.callbacks);
++        assert(i->pull_publish_skips==i->pull_stats.publish_skips);
++        assert(i->pull_frames==i->pull_stats.delivered_frames);
++        assert(i->submitted_bytes==i->consumed_bytes);
++        assert(i->consumed_bytes==i->pull_stats.delivered_frames*4);
++        assert(i->silence_bytes==(i->pull_stats.demand_frames-i->pull_stats.delivered_frames)*4);
++        SDL_AtomicSet(&final_ledger_checked,1);
++    }
++}
++static unsigned Render(void *context,int16_t *pcm,unsigned frames,uint64_t begin) {
++    assert(context==&token && begin>0 && frames>0);
++    SDL_AtomicSet(&in_render,1);
++    SDL_AtomicAdd(&calls,1);
++    for(unsigned i=0;i<frames*2;++i) pcm[i]=(int16_t)(i+1);
++    if(SDL_AtomicCAS(&block_render,1,0)) { SDL_SemPost(entered); SDL_SemWait(release); } /* Fixture only: test in-flight join. */
++    SDL_AtomicSet(&in_render,0);
++    return mode==1 ? frames/2 : mode==2 ? frames+1 : frames;
++}
++static SDL_sem *stats_held, *stats_release;
++static SDL_atomic_t stats_timed_out;
++static int HoldStats(void *value) {
++    SS4S_AudioInstance *instance=value;
++    SDL_LockMutex(instance->ringbuf_mutex);SDL_SemPost(stats_held);
++    if (SDL_SemWaitTimeout(stats_release,2000)!=0) SDL_AtomicSet(&stats_timed_out,1);
++    SDL_UnlockMutex(instance->ringbuf_mutex);return 0;
++}
++static int CloseThread(void *instance) { SDL_SemPost(close_entered);Close(instance);SDL_AtomicSet(&closed,1);return 0; }
++int main(void) {
++    const SS4S_LibraryContext context={.Log=SilentLog};LibContext=&context;
++    SS4S_AudioInstance instance={0};
++    instance.frame_bytes=4;instance.sample_rate=48000;
++    instance.counter_frequency=SDL_GetPerformanceFrequency();
++    instance.ringbuf_mutex=SDL_CreateMutex();assert(instance.ringbuf_mutex);
++    instance.pull_render=Render;instance.pull_context=(void*)&token;
++    unsigned char output[960];
++    Callback(&instance,output,sizeof(output));
++    assert(((int16_t*)output)[0]==1 && instance.pull_frames==240);
++    assert(instance.submitted_bytes==960 && instance.consumed_bytes==960 && instance.silence_bytes==0);
++    mode=1;Callback(&instance,output,sizeof(output));
++    assert(((int16_t*)output)[0]==1);
++    for(unsigned i=480;i<sizeof(output);++i)assert(output[i]==0);
++    assert(instance.pull_frames==360 && instance.pull_short_frames==120);
++    mode=2;Callback(&instance,output,sizeof(output));
++    for(unsigned i=0;i<sizeof(output);++i)assert(output[i]==0);
++    assert(instance.pull_invalid_results==1 && instance.pull_short_frames==360);
++    assert(instance.submitted_bytes==1440 && instance.consumed_bytes==1440 && instance.silence_bytes==1440);
++    assert(Feed(&instance,output,sizeof(output))==SS4S_AUDIO_FEED_ERROR);
++    SS4S_AudioClock clock={0};
++    assert(SS4S_ModuleAudioGetClockV1_SDL(&instance,&clock,sizeof(clock)));
++    assert(clock.demand_frames==720 && clock.consumed_frames==360 && clock.queued_frames==0);
++    stats_held=SDL_CreateSemaphore(0);stats_release=SDL_CreateSemaphore(0);assert(stats_held&&stats_release);
++    SDL_Thread *holder=SDL_CreateThread(HoldStats,"hold-stats",&instance);assert(holder);
++    assert(SDL_SemWaitTimeout(stats_held,2000)==0);
++    mode=0;Callback(&instance,output,sizeof(output)); /* Must RETURN while reader still holds lock. */
++    assert(!SDL_AtomicGet(&stats_timed_out));
++    assert(instance.callbacks==3 && instance.pull_stats.callbacks==4 && instance.pull_stats.publish_skips==1);
++    SDL_SemPost(stats_release);SDL_WaitThread(holder,NULL);
++    Callback(&instance,output,sizeof(output));
++    assert(instance.callbacks==5 && instance.pull_frames==840 && instance.pull_publish_skips==1);
++    assert(instance.submitted_bytes==3360 && instance.consumed_bytes==3360 && instance.silence_bytes==1440);
++    SDL_DestroySemaphore(stats_held);SDL_DestroySemaphore(stats_release);
++    SDL_DestroyMutex(instance.ringbuf_mutex);
++
++    assert(SDL_setenv("SDL_AUDIODRIVER","dummy",1)==0);
++    assert(SDL_InitSubSystem(SDL_INIT_AUDIO)==0);
++    assert(strcmp(SDL_GetCurrentAudioDriver(),"dummy")==0);
++    entered=SDL_CreateSemaphore(0);release=SDL_CreateSemaphore(0);assert(entered&&release);
++    mode=0;SDL_AtomicSet(&block_render,1);
++    /* Dummy SDL requires a power-of-two request; direct callback ledger above remains 240. */
++    SS4S_AudioInfo info={.codec=SS4S_AUDIO_PCM_S16LE,.sampleRate=48000,.numOfChannels=2,.samplesPerFrame=256};
++    SS4S_AudioInstance *opened=NULL;
++    assert(SS4S_ModuleAudioOpenPullV1_SDL(&info,&opened,NULL,NULL,(void*)&token)==SS4S_AUDIO_OPEN_ERROR);
++    assert(opened==NULL);
++    assert(SS4S_ModuleAudioOpenPullV1_SDL(&info,&opened,NULL,Render,(void*)&token)==SS4S_AUDIO_OPEN_OK);
++    assert(SDL_SemWaitTimeout(entered,2000)==0); /* Immutable context valid on FIRST callback. */
++    closing_instance=opened;close_entered=SDL_CreateSemaphore(0);assert(close_entered);
++    SDL_LockMutex(opened->ringbuf_mutex); /* Force final callback publication to skip. */
++    SDL_Thread *closer=SDL_CreateThread(CloseThread,"close-pull",opened);assert(closer);
++    assert(SDL_SemWaitTimeout(close_entered,2000)==0);
++    SDL_Delay(20);assert(!SDL_AtomicGet(&closed));
++    SDL_SemPost(release);
++    SDL_Delay(20);assert(!SDL_AtomicGet(&closed)); /* Close awaits final snapshot lock. */
++    SDL_UnlockMutex(opened->ringbuf_mutex);
++    SDL_WaitThread(closer,NULL);assert(SDL_AtomicGet(&closed));
++    assert(SDL_AtomicGet(&final_ledger_checked));closing_instance=NULL;
++    SDL_DestroySemaphore(close_entered);
++    int after=SDL_AtomicGet(&calls);SDL_Delay(20);assert(SDL_AtomicGet(&calls)==after);
++    SDL_DestroySemaphore(entered);SDL_DestroySemaphore(release);SDL_QuitSubSystem(SDL_INIT_AUDIO);
++    puts("PASS pull: full/short/invalid exact ledger, nonblocking publication and exact final flush, push rejection, immutable first context, close joins callback, no callback after close");
++    return 0;
++}

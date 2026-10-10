@@ -1,0 +1,467 @@
+diff --git a/src/AudioStream.c b/src/AudioStream.c
+index d14d57257049cddc76e63eb76a309d66c5c73683..d3f65a9a263aeba18f16d32f017e14fac122f2f7 100644
+--- a/src/AudioStream.c
++++ b/src/AudioStream.c
+@@ -243,6 +243,9 @@ static void AudioReceiveThreadProc(void* context) {
+     bool useSelect;
+     uint32_t packetsToDrop;
+     int waitingForAudioMs;
++    uint64_t receivedDataPackets = 0, startupDroppedDataPackets = 0;
++    uint64_t startupDroppedFecPackets = 0, receiveTimeouts = 0;
++    uint64_t emptyNonTimeoutReturns = 0;
+ 
+     packet = NULL;
+     packetsToDrop = 500 / AudioPacketDuration;
+@@ -267,23 +270,38 @@ static void AudioReceiveThreadProc(void* context) {
+             }
+         }
+ 
+-        packet->header.size = recvUdpSocket(rtpSocket, &packet->data[0], MAX_PACKET_SIZE, useSelect);
++        bool timedOut;
++        packet->header.size = recvUdpSocketWithTimeoutStatus(rtpSocket, &packet->data[0], MAX_PACKET_SIZE, useSelect, &timedOut);
+         if (packet->header.size < 0) {
+             Limelog("Audio Receive: recvUdpSocket() failed: %d\n", (int)LastSocketError());
+             ListenerCallbacks.connectionTerminated(LastSocketFail());
+             break;
+         }
+         else if (packet->header.size == 0) {
++            if (!timedOut) {
++                // EINTR, an empty datagram or Windows IO_PENDING is not proof
++                // that the host's queue drained, so it cannot end startup
++                // catch-up before the first packet. Otherwise this keeps the
++                // upstream handling of every zero return.
++                emptyNonTimeoutReturns++;
++                if (!receivedDataFromPeer) {
++                    waitingForAudioMs += UDP_RECV_POLL_TIMEOUT_MS;
++                }
++                else {
++                    packetsToDrop = 0;
++                }
++                continue;
++            }
+             // Receive timed out; try again
+-            
++            receiveTimeouts++;
++            // An empty receive queue ends startup catch-up, including when the
++            // host has not played its first sound yet. Keeping the budget armed
++            // during silence would discard that future sound rather than stale
++            // packets accumulated before this thread was ready.
++            packetsToDrop = 0;
+             if (!receivedDataFromPeer) {
+                 waitingForAudioMs += UDP_RECV_POLL_TIMEOUT_MS;
+             }
+-            else {
+-                // If we hit this path, there are no queued audio packets on the host PC,
+-                // so we don't need to drop anything.
+-                packetsToDrop = 0;
+-            }
+             continue;
+         }
+ 
+@@ -293,6 +311,7 @@ static void AudioReceiveThreadProc(void* context) {
+         }
+ 
+         rtp = (PRTP_PACKET)&packet->data[0];
++        if (rtp->packetType == 97) receivedDataPackets++;
+ 
+         if (!receivedDataFromPeer) {
+             receivedDataFromPeer = true;
+@@ -311,7 +330,9 @@ static void AudioReceiveThreadProc(void* context) {
+             // Only count actual audio data (not FEC) in the packets to drop calculation
+             if (rtp->packetType == 97) {
+                 packetsToDrop--;
++                startupDroppedDataPackets++;
+             }
++            else if (rtp->packetType == 127) startupDroppedFecPackets++;
+             continue;
+         }
+ 
+@@ -378,6 +399,12 @@ static void AudioReceiveThreadProc(void* context) {
+     if (packet != NULL) {
+         free(packet);
+     }
++    Limelog("[AUDIO-RECEIVE] received_data_packets=%llu startup_dropped_data_packets=%llu "
++            "startup_dropped_fec_packets=%llu receive_timeouts=%llu empty_non_timeout_returns=%llu first_packet_wait_ms=%d "
++            "remaining_startup_drop_packets=%u packet_duration_ms=%d\n",
++            (unsigned long long)receivedDataPackets, (unsigned long long)startupDroppedDataPackets,
++            (unsigned long long)startupDroppedFecPackets, (unsigned long long)receiveTimeouts,
++            (unsigned long long)emptyNonTimeoutReturns, waitingForAudioMs, packetsToDrop, AudioPacketDuration);
+ }
+ 
+ static void AudioDecoderThreadProc(void* context) {
+diff --git a/src/InputStream.c b/src/InputStream.c
+index e61e2bee8bd9999a00a1da4cf1512db8faa22924..0819e4f2845da2b11be411537a87e7bcb6e1c245 100644
+--- a/src/InputStream.c
++++ b/src/InputStream.c
+@@ -11,6 +11,11 @@ static PPLT_CRYPTO_CONTEXT cryptoContext;
+ static LINKED_BLOCKING_QUEUE packetQueue;
+ static LINKED_BLOCKING_QUEUE packetHolderFreeList;
+ static PLT_THREAD inputSendThread;
++static bool inputTraceEnabled;
++// See LiSetLocalInputBlocked(). Written by the client, read by the input send thread.
++static volatile bool localInputBlocked;
++static uint64_t inputTraceReportAt, inputTraceAgeMax, inputTraceSendMax;
++static unsigned inputTraceCount;
+ 
+ static float absCurrentPosX;
+ static float absCurrentPosY;
+@@ -67,6 +72,7 @@ typedef struct _PACKET_HOLDER {
+     LINKED_BLOCKING_QUEUE_ENTRY entry;
+     uint32_t enetPacketFlags;
+     uint8_t channelId;
++    uint64_t allocatedAtMs; // Diagnostic only, outside the serialized packet union
+ 
+     // The union must be the last member since we abuse the NV_UNICODE_PACKET
+     // text field to store variable length data which gets split before being
+@@ -94,6 +100,10 @@ typedef struct _PACKET_HOLDER {
+ 
+ // Initializes the input stream
+ int initializeInputStream(void) {
++    const char* trace = getenv("AURORA_INPUT_TRACE");
++    inputTraceEnabled = trace != NULL && strcmp(trace, "1") == 0;
++    inputTraceReportAt = PltGetMillis();
++    inputTraceAgeMax = inputTraceSendMax = inputTraceCount = 0;
+     memcpy(currentAesIv, StreamConfig.remoteInputAesIv, sizeof(currentAesIv));
+     
+     // Set a high maximum queue size limit to ensure input isn't dropped
+@@ -201,7 +211,7 @@ static void freePacketHolder(PPACKET_HOLDER holder) {
+     }
+ }
+ 
+-static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
++static PPACKET_HOLDER allocatePacketHolderUnstamped(int extraLength) {
+     PPACKET_HOLDER holder;
+     int err;
+ 
+@@ -232,8 +242,15 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
+     }
+ }
+ 
++static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
++    PPACKET_HOLDER holder = allocatePacketHolderUnstamped(extraLength);
++    if (holder != NULL) holder->allocatedAtMs = inputTraceEnabled ? PltGetMillis() : 0;
++    return holder;
++}
++
+ static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
+     SOCK_RET err;
++    const uint64_t sendStart = inputTraceEnabled ? PltGetMillis() : 0;
+ 
+     // On GFE 3.22, the entire control stream is encrypted (and support for separate RI encrypted)
+     // has been removed. We send the plaintext packet through and the control stream code will do
+@@ -303,6 +320,26 @@ static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
+         }
+     }
+ 
++    if (inputTraceEnabled) {
++        const uint64_t now = PltGetMillis();
++        const uint64_t age = now - holder->allocatedAtMs;
++        const uint64_t send = now - sendStart;
++        if (age > inputTraceAgeMax) inputTraceAgeMax = age;
++        if (send > inputTraceSendMax) inputTraceSendMax = send;
++        inputTraceCount++;
++        if (now - inputTraceReportAt >= 2000) {
++            // ENet/API return is not host receipt or OS injection. Age includes
++            // allocation, queue residence and batching; it is an upper bound
++            // for a newer motion sample coalesced into this packet holder.
++            const char* role = getenv("AURORA_INPUT_ROLE");
++            Limelog("[INPUT-SEND] role=%s t=%llu n=%u alloc_to_send_max=%llu send_call_max=%llu pending=%d\n",
++                    role != NULL ? role : "unknown", (unsigned long long)now, inputTraceCount,
++                    (unsigned long long)inputTraceAgeMax,
++                    (unsigned long long)inputTraceSendMax, LbqGetItemCount(&packetQueue));
++            inputTraceReportAt = now;
++            inputTraceAgeMax = inputTraceSendMax = inputTraceCount = 0;
++        }
++    }
+     return true;
+ }
+ 
+@@ -319,6 +356,10 @@ static void floatToNetfloat(float in, netfloat out) {
+     }
+ }
+ 
++void LiSetLocalInputBlocked(bool blocked) {
++    localInputBlocked = blocked;
++}
++
+ // Input thread proc
+ static void inputSendThreadProc(void* context) {
+     SOCK_RET err;
+@@ -345,6 +386,11 @@ static void inputSendThreadProc(void* context) {
+             return;
+         }
+ 
++        if (localInputBlocked) {
++            freePacketHolder(holder);
++            continue;
++        }
++
+         // If it's a multi-controller packet we can do batching
+         if (holder->packet.header.magic == multiControllerMagicLE) {
+             PPACKET_HOLDER controllerBatchHolder;
+diff --git a/src/Limelight.h b/src/Limelight.h
+index 3d8aded59b259f337d427693017bcb9262838ea5..bf59e6380bd3f8c690262aae61f0768a88feb697 100644
+--- a/src/Limelight.h
++++ b/src/Limelight.h
+@@ -100,6 +100,9 @@ typedef struct _STREAM_CONFIGURATION {
+     // in /launch and /resume requests.
+     char remoteInputAesKey[16];
+     char remoteInputAesIv[16];
++
++    // If non-zero, request rolling intra refresh from Sunshine/Apollo.
++    int enableIntraRefresh;
+ } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
+ 
+ // Use this function to zero the stream configuration when allocated on the stack or heap
+@@ -816,6 +819,13 @@ int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType, fl
+ #define LI_BATTERY_PERCENTAGE_UNKNOWN 0xFF
+ int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState, uint8_t batteryPercentage);
+ 
++// Drop every input packet (mouse, keyboard, controllers, touch, pen) instead of sending it.
++// For a client whose host is the SAME machine: the host would inject the input into this
++// machine's foreground window -- the client itself -- and it would come straight back as new
++// input (measured: one physical pad became four virtual ones). The host's game reads the
++// local devices natively instead. Default false; applies to packets not yet sent.
++void LiSetLocalInputBlocked(bool blocked);
++
+ // This function queues a vertical scroll event to the remote server.
+ // The number of "clicks" is multiplied by WHEEL_DELTA (120) before
+ // being sent to the PC.
+diff --git a/src/PlatformCrypto.c b/src/PlatformCrypto.c
+index 817d9bbf14d37002b7d3e2ae843874bc83f629f7..0633c1b19f4d89f365aae0c1a104ce122c1f5550 100644
+--- a/src/PlatformCrypto.c
++++ b/src/PlatformCrypto.c
+@@ -68,6 +68,21 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+             return false;
+         }
+ 
++        /* CBC here is always PKCS7-padded -- the host pads the Opus payload up to a block
++         * boundary (see ROUND_TO_PKCS7_PADDED_LEN in AudioStream.c). mbedtls 2.x applied
++         * PKCS7 by default and this call was never needed; against mbedtls 3.6 (what MSYS2
++         * ships, so what the Windows build links) the context came up with NO padding, so
++         * cipher_update consumed the padding block as ciphertext and cipher_finish returned
++         * MBEDTLS_ERR_CIPHER_FULL_BLOCK_EXPECTED (-0x6100) for EVERY audio packet. The
++         * symptom was not a crypto error but silence plus "Failed to decrypt audio packet"
++         * and a flood of "Unable to recover audio data block" -- it reads as packet loss.
++         * Measured 2026-09-22 on Windows. */
++        if (cipherMode == MBEDTLS_MODE_CBC &&
++            mbedtls_cipher_set_padding_mode(&ctx->ctx, MBEDTLS_PADDING_PKCS7) != 0) {
++            return false;
++        }
++
++
+         ctx->initialized = true;
+     }
+ 
+@@ -260,11 +275,28 @@ bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+     }
+ 
+     if (!ctx->initialized) {
+-        if (mbedtls_cipher_setup(&ctx->ctx, mbedtls_cipher_info_from_values(MBEDTLS_CIPHER_ID_AES, keyLength * 8, cipherMode)) != 0) {
++        int rc;
++        if ((rc = mbedtls_cipher_setup(&ctx->ctx, mbedtls_cipher_info_from_values(MBEDTLS_CIPHER_ID_AES, keyLength * 8, cipherMode))) != 0) {
++            Limelog("PltDecryptMessage: cipher_setup failed: -0x%x\n", -rc);
+             return false;
+         }
+ 
+-        if (mbedtls_cipher_setkey(&ctx->ctx, key, keyLength * 8, MBEDTLS_DECRYPT) != 0) {
++        if ((rc = mbedtls_cipher_setkey(&ctx->ctx, key, keyLength * 8, MBEDTLS_DECRYPT)) != 0) {
++            Limelog("PltDecryptMessage: cipher_setkey failed: -0x%x\n", -rc);
++            return false;
++        }
++
++        /* CBC here is always PKCS7-padded -- the host pads the Opus payload up to a block
++         * boundary (see ROUND_TO_PKCS7_PADDED_LEN in AudioStream.c). mbedtls 2.x applied
++         * PKCS7 by default and this call was never needed; against mbedtls 3.6 (what MSYS2
++         * ships, so what the Windows build links) the context came up with NO padding, so
++         * cipher_update consumed the padding block as ciphertext and cipher_finish returned
++         * MBEDTLS_ERR_CIPHER_FULL_BLOCK_EXPECTED (-0x6100) for EVERY audio packet. The
++         * symptom was not a crypto error but silence plus "Failed to decrypt audio packet"
++         * and a flood of "Unable to recover audio data block" -- it reads as packet loss.
++         * Measured 2026-09-22 on Windows. */
++        if (cipherMode == MBEDTLS_MODE_CBC &&
++            mbedtls_cipher_set_padding_mode(&ctx->ctx, MBEDTLS_PADDING_PKCS7) != 0) {
+             return false;
+         }
+ 
+@@ -302,22 +334,26 @@ bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+ #endif
+     }
+     else {
++        int rc;
+         if (flags & CIPHER_FLAG_RESET_IV) {
+-            if (mbedtls_cipher_set_iv(&ctx->ctx, iv, ivLength) != 0) {
++            if ((rc = mbedtls_cipher_set_iv(&ctx->ctx, iv, ivLength)) != 0) {
++                Limelog("PltDecryptMessage: set_iv(%d) failed: -0x%x\n", ivLength, -rc);
+                 return false;
+             }
+ 
+             mbedtls_cipher_reset(&ctx->ctx);
+         }
+ 
+-        if (mbedtls_cipher_update(&ctx->ctx, inputData, inputDataLength, outputData, &outLength) != 0) {
++        if ((rc = mbedtls_cipher_update(&ctx->ctx, inputData, inputDataLength, outputData, &outLength)) != 0) {
++            Limelog("PltDecryptMessage: update(%d) failed: -0x%x\n", inputDataLength, -rc);
+             return false;
+         }
+ 
+         if (flags & CIPHER_FLAG_FINISH) {
+             size_t finishLength;
+ 
+-            if (mbedtls_cipher_finish(&ctx->ctx, &outputData[outLength], &finishLength) != 0) {
++            if ((rc = mbedtls_cipher_finish(&ctx->ctx, &outputData[outLength], &finishLength)) != 0) {
++                Limelog("PltDecryptMessage: finish(in=%d out=%zu) failed: -0x%x\n", inputDataLength, outLength, -rc);
+                 return false;
+             }
+ 
+diff --git a/src/PlatformSockets.c b/src/PlatformSockets.c
+index ee49001c2f70e23d621866959fe8569307193365..f5fecd05f4831b275b2edab0ef9614c728a2f178 100644
+--- a/src/PlatformSockets.c
++++ b/src/PlatformSockets.c
+@@ -179,7 +179,12 @@ bool isSocketReadable(SOCKET s) {
+ }
+ 
+ int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect) {
++    return recvUdpSocketWithTimeoutStatus(s, buffer, size, useSelect, NULL);
++}
++
++int recvUdpSocketWithTimeoutStatus(SOCKET s, char* buffer, int size, bool useSelect, bool* timedOut) {
+     int err;
++    if (timedOut) *timedOut = false;
+ 
+     do {
+         if (useSelect) {
+@@ -191,6 +196,7 @@ int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect) {
+             err = pollSockets(&pfd, 1, UDP_RECV_POLL_TIMEOUT_MS);
+             if (err <= 0) {
+                 // Return if an error or timeout occurs
++                if (timedOut) *timedOut = err == 0;
+                 return err;
+             }
+ 
+@@ -213,7 +219,10 @@ int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect) {
+                      LastSocketError() == WSA_IO_PENDING ||
+          #endif
+                      LastSocketError() == ETIMEDOUT)) {
+-                // Return 0 for timeout
++                // Preserve legacy zero results, but don't report interruptions
++                // or the ambiguous Windows IO_PENDING result as actual timeouts.
++                if (timedOut) *timedOut = LastSocketError() == EWOULDBLOCK ||
++                    LastSocketError() == EAGAIN || LastSocketError() == ETIMEDOUT;
+                 return 0;
+             }
+         }
+diff --git a/src/PlatformSockets.h b/src/PlatformSockets.h
+index 78ae4bea27faa90be056bf58274763affe0716bc..1b721236c1c11af138e13532064fe7591186e956 100644
+--- a/src/PlatformSockets.h
++++ b/src/PlatformSockets.h
+@@ -112,6 +112,9 @@ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCK
+ int enableNoDelay(SOCKET s);
+ int setSocketNonBlocking(SOCKET s, bool enabled);
+ int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect);
++// Distinguishes actual timeouts from other legacy zero results (empty datagrams
++// or transient SO_RCVTIMEO-path interruptions). Poll errors still return -1.
++int recvUdpSocketWithTimeoutStatus(SOCKET s, char* buffer, int size, bool useSelect, bool* timedOut);
+ void shutdownTcpSocket(SOCKET s);
+ int setNonFatalRecvTimeoutMs(SOCKET s, int timeoutMs);
+ void closeSocket(SOCKET s);
+diff --git a/src/RtpAudioQueue.c b/src/RtpAudioQueue.c
+index be734d4e6fe1657b3485cb9c2790776ef7d7c413..4f06e1d11cf85d97e3627b9c40f623c3e0a14a76 100644
+--- a/src/RtpAudioQueue.c
++++ b/src/RtpAudioQueue.c
+@@ -281,9 +281,21 @@ static PRTPA_FEC_BLOCK getFecBlockForRtpPacket(PRTP_AUDIO_QUEUE queue, PRTP_PACK
+     // when the connection begins. Start on the next FEC block boundary, so we can
+     // be sure we aren't starting in the middle (which will lead to a spurious audio
+     // data block recovery warning on connection start if we miss more than 2 packets).
+-    if (queue->synchronizing && queue->oldestRtpBaseSequenceNumber == 0) {
+-        queue->nextRtpSequenceNumber = queue->oldestRtpBaseSequenceNumber = fecBlockBaseSeqNum + RTPA_DATA_SHARDS;
+-        return NULL;
++    //
++    // When the very first packet is the first data shard of its FEC block, nothing of that
++    // block was missed, so keep it: always skipping to the next boundary threw away the
++    // first RTPA_DATA_SHARDS packets (20 ms at 5 ms packets) of every stream's first sound.
++    // A dedicated flag replaces the old "oldestRtpBaseSequenceNumber == 0" marker, which a
++    // stream starting at sequence number 0 would otherwise keep re-arming.
++    if (queue->synchronizing && !queue->firstPacketSeen) {
++        queue->firstPacketSeen = true;
++        if (packet->packetType == RTP_PAYLOAD_TYPE_AUDIO && packet->sequenceNumber == fecBlockBaseSeqNum) {
++            queue->nextRtpSequenceNumber = queue->oldestRtpBaseSequenceNumber = fecBlockBaseSeqNum;
++        }
++        else {
++            queue->nextRtpSequenceNumber = queue->oldestRtpBaseSequenceNumber = fecBlockBaseSeqNum + RTPA_DATA_SHARDS;
++            return NULL;
++        }
+     }
+ 
+     // Drop packets from FEC blocks that have already been completed
+diff --git a/src/RtpAudioQueue.h b/src/RtpAudioQueue.h
+index 1c8ed09cac4d52f119e06c6495e5a95ae4eb0dd5..5bcd026ed8978070f2b7dde977473034517c78a3 100644
+--- a/src/RtpAudioQueue.h
++++ b/src/RtpAudioQueue.h
+@@ -62,6 +62,7 @@ typedef struct _RTP_AUDIO_QUEUE {
+     uint16_t lastOosSequenceNumber;
+     bool receivedOosData;
+     bool synchronizing;
++    bool firstPacketSeen;
+     bool incompatibleServer;
+ } RTP_AUDIO_QUEUE, *PRTP_AUDIO_QUEUE;
+ 
+diff --git a/src/SdpGenerator.c b/src/SdpGenerator.c
+index a2f9789fa1184e732271eb30202871c1d4454174..c2ecfa4cae7cbf2ecd3f9e61567a0c9db3ba4676 100644
+--- a/src/SdpGenerator.c
++++ b/src/SdpGenerator.c
+@@ -259,12 +259,14 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+     int audioChannelMask;
+     int err;
+     int adjustedBitrate;
++    int intraRefreshEmitted;
+ 
+     // This must have been resolved to either local or remote by now
+     LC_ASSERT(StreamConfig.streamingRemotely != STREAM_CFG_AUTO);
+ 
+     optionHead = NULL;
+     err = 0;
++    intraRefreshEmitted = 0;
+ 
+     if (IS_SUNSHINE()) {
+         // Send client feature flags to Sunshine hosts
+@@ -309,8 +311,39 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+         else {
+             err |= addAttributeString(&optionHead, "x-ss-video[0].chromaSamplingType", "0");
+         }
++
++        // ROLLING INTRA REFRESH, FOR CO-OP ONLY.
++        //
++        // WHY THE CLIENT HAS TO ASK. Apollo gates NVENC intra refresh on
++        // `client_config.enableIntraRefresh` (nvenc_base.cpp:378), which comes from THIS SDP
++        // attribute (rtsp.cpp:1023) and defaults to "0" when the client omits it
++        // (rtsp.cpp:986). The host-side `nvenc_intra_refresh` config key does NOT reach that
++        // branch -- which is why four separate attempts to test that key were recorded as
++        // VOID with "the setting never reached the encoder". The client is the only way in.
++        //
++        // WHY CO-OP NEEDS IT. The composite splices two independently-encoded panes. Damage to
++        // a pane can only be repaired by a keyframe or by intra refresh, and every keyframe
++        // mechanism was rejected on the panel: an infinite GOP lets damage persist
++        // indefinitely, while a short GOP repaints the whole pane at coarse QP, which the user
++        // reports as an unacceptable flash. Intra refresh reseeds a few macroblock slots per
++        // frame, so no frame ever repaints the pane and it cannot flash by construction.
++        // The AMD peer got the equivalent via an Apollo patch (amd_intra_refresh_mb); the
++        // NVIDIA primary had NO repair path at all -- measured 2026-09-01, damage to the
++        // primary's half persisted across a 90 s sample with nvenc_gop_length=0.
++        //
++        // GATED BY THE PER-CONNECTION CONFIG so ordinary streams retain their previous SDP
++        // and every platform uses the same path without relying on a filesystem sentinel.
++        if (StreamConfig.enableIntraRefresh) {
++            int intraRefreshErr = addAttributeString(&optionHead,
++                                                     "x-ss-video[0].intraRefresh", "1");
++            err |= intraRefreshErr;
++            intraRefreshEmitted = intraRefreshErr == 0;
++        }
+     }
+ 
++    Limelog("[SDP] enableIntraRefresh=%d emitted=%d\n",
++            StreamConfig.enableIntraRefresh != 0, intraRefreshEmitted);
++
+     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.width);
+     err |= addAttributeString(&optionHead, "x-nv-video[0].clientViewportWd", payloadStr);
+     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.height);

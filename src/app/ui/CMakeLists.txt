@@ -1,24 +1,26 @@
 target_sources(moonlight-lib PRIVATE
         root.c
         ui_input.c
+        ui_hover.c
+        ui_scroll.c
         fatal_error.c
         launcher/launcher.view.c
         launcher/launcher.controller.c
         launcher/apps.controller.c
         launcher/add.dialog.c
         launcher/pair.dialog.c
+        launcher/pin.dialog.c
         launcher/appitem.view.c
         launcher/server.context_menu.c
         launcher/server.popup.c
+        launcher/coop.dialog.c
         launcher/coverloader.c
         streaming/streaming.view.c
         streaming/streaming.controller.c
         streaming/soft_keyboard.c
+        streaming/pin_autoentry.c
         streaming/hints.c
         help/help.dialog.c
         common/progress_dialog.c
         )
-if (TARGET_WEBOS)
-    target_sources(moonlight-lib PRIVATE streaming/hid_passthrough_panel.c)
-endif()
 add_subdirectory(settings)

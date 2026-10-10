@@ -1,0 +1,22 @@
+This project is a modified version of Aurora, itself based on Moonlight TV.
+Modifications in this repository began on 22 July 2026. The Git history
+records the authors and dates of those modifications.
+
+Aurora (Moonlight TV for LG webOS)
+Copyright (C) 2024-2026 GuiDev1994 and contributors
+
+Based on moonlight-tv (C) mariotaku and contributors.
+https://github.com/mariotaku/moonlight-tv
+
+Aurora source:
+https://github.com/GuiDev1994/aurora-tv
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+See LICENSE.txt for the full license text.
+
+Individual files and third-party components may carry additional copyright
+and licence notices. Those notices and terms remain in force.

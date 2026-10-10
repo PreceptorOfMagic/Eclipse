@@ -13,6 +13,11 @@ void app_input_init(app_input_t *input, app_t *app) {
         SDL_SetHint(SDL_HINT_GAMECONTROLLERCONFIG_FILE, app->settings.condb_path);
 #endif
     }
+#ifdef SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS
+    /* SDL's A is the button PRINTED A on a Nintendo pad (SDL's own default, pinned against an environment
+     * override): nintendo_layout decides from there whether that pad is swapped (input_gamepad.c). */
+    SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "1");
+#endif
     SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
     input->max_num_gamepads = 4;
     input->gamepads_count = 0;
@@ -42,8 +47,20 @@ void app_input_deinit(app_input_t *input) {
 }
 
 void app_set_mouse_grab(app_input_t *input, bool grab) {
+    input->grabbed = grab;
+    bool absolute = app_configuration->absmouse;
+#if !defined(TARGET_WEBOS)
+    /* Ctrl+Alt+Shift+Z released the mouse: it stays released through focus changes until a click in the
+     * stream or the combo again, as in moonlight-qt. */
+    if (input->capture_released) {
+        grab = false;
+    }
+    if (input->mouse_mode != APP_MOUSE_MODE_SETTING) {
+        absolute = input->mouse_mode == APP_MOUSE_MODE_ABSOLUTE;
+    }
+#endif
     if (!app_configuration->hardware_mouse) {
-        SDL_SetRelativeMouseMode(grab && !app_configuration->absmouse ? SDL_TRUE : SDL_FALSE);
+        SDL_SetRelativeMouseMode(grab && !absolute ? SDL_TRUE : SDL_FALSE);
     }
 #ifdef TARGET_WEBOS
     // Temporary workaround for webOS 9: https://github.com/mariotaku/moonlight-tv/issues/466
@@ -51,8 +68,51 @@ void app_set_mouse_grab(app_input_t *input, bool grab) {
         return;
     }
 #endif
-    SDL_ShowCursor(grab ? SDL_FALSE : SDL_TRUE);
+    SDL_ShowCursor(grab && !input->show_local_cursor ? SDL_FALSE : SDL_TRUE);
 }
+
+void app_input_reset_stream_overrides(app_input_t *input) {
+    input->capture_released = false;
+    input->window_grab_saved = false;
+    input->mouse_mode = APP_MOUSE_MODE_SETTING;
+    input->show_local_cursor = false;
+}
+
+#if !defined(TARGET_WEBOS)
+void app_input_set_capture(app_input_t *input, bool captured) {
+    SDL_Window *window = input->app->ui.window;
+    if (!captured && !input->capture_released) {
+        input->window_grab_saved = SDL_GetWindowGrab(window) == SDL_TRUE;
+        SDL_SetWindowGrab(window, SDL_FALSE);
+    } else if (captured && input->capture_released) {
+        SDL_SetWindowGrab(window, input->window_grab_saved ? SDL_TRUE : SDL_FALSE);
+    }
+    input->capture_released = !captured;
+    app_set_mouse_grab(input, captured ? true : input->grabbed);
+}
+
+bool app_input_toggle_mouse_mode(app_input_t *input) {
+    /* Flip what is in force now, whichever of the setting or an earlier toggle decided it. */
+    const bool relative = !(app_configuration->absmouse ? input->mouse_mode == APP_MOUSE_MODE_RELATIVE
+                                                        : input->mouse_mode != APP_MOUSE_MODE_ABSOLUTE);
+    input->mouse_mode = relative ? APP_MOUSE_MODE_RELATIVE : APP_MOUSE_MODE_ABSOLUTE;
+    app_set_mouse_grab(input, input->grabbed);
+    return relative;
+}
+
+bool app_input_toggle_local_cursor(app_input_t *input) {
+    input->show_local_cursor = !input->show_local_cursor;
+    app_set_mouse_grab(input, input->grabbed);
+    return input->show_local_cursor;
+}
+
+bool app_input_toggle_pointer_lock(app_input_t *input) {
+    SDL_Window *window = input->app->ui.window;
+    const bool lock = SDL_GetWindowGrab(window) != SDL_TRUE;
+    SDL_SetWindowGrab(window, lock ? SDL_TRUE : SDL_FALSE);
+    return lock;
+}
+#endif
 
 bool app_get_mouse_relative() {
     return SDL_GetRelativeMouseMode() == SDL_TRUE;

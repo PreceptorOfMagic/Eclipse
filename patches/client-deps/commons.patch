@@ -1,0 +1,606 @@
+diff --git a/device/gcdb-updater/CMakeLists.txt b/device/gcdb-updater/CMakeLists.txt
+index 3783643..7661022 100644
+--- a/device/gcdb-updater/CMakeLists.txt
++++ b/device/gcdb-updater/CMakeLists.txt
+@@ -18,4 +18,8 @@ endif ()
+ 
+ add_executable(test_gcdb_update test_gcdb_update.c)
+ target_link_libraries(test_gcdb_update PRIVATE commons-gamecontrollerdb-updater commons-logging)
+-add_test(test_gcdb_update test_gcdb_update)
+\ No newline at end of file
++add_test(test_gcdb_update test_gcdb_update)
++
++add_executable(test_gcdb_atomic test_gcdb_atomic.c)
++target_link_libraries(test_gcdb_atomic PRIVATE commons-gamecontrollerdb-updater)
++add_test(test_gcdb_atomic test_gcdb_atomic)
+diff --git a/device/gcdb-updater/gamecontrollerdb_updater.c b/device/gcdb-updater/gamecontrollerdb_updater.c
+index d013849..8b5137a 100644
+--- a/device/gcdb-updater/gamecontrollerdb_updater.c
++++ b/device/gcdb-updater/gamecontrollerdb_updater.c
+@@ -2,12 +2,19 @@
+ 
+ #include <string.h>
+ #include <stdlib.h>
+-#include <unistd.h>
+ #include <assert.h>
+ #include <errno.h>
+ #include <curl/curl.h>
+ 
++#if defined(_WIN32)
++#include <windows.h>
++#include <process.h>
++#else
++#include <unistd.h>
++#endif
++
+ #include "executor.h"
++#include "gamecontrollerdb_updater_internal.h"
+ #include "logging.h"
+ 
+ typedef struct write_context {
+@@ -16,6 +23,8 @@ typedef struct write_context {
+     char *buf;
+     size_t size;
+     FILE *fp;
++    char *temp_path;
++    size_t mappings_written;
+     int status;
+ } task_context;
+ 
+@@ -29,6 +38,18 @@ static void write_mapping_lines(task_context *ctx);
+ 
+ static void setup_headers(commons_gcdb_updater_t *updater, struct curl_slist **headers);
+ 
++static FILE *open_file(const char *path, const char *mode);
++
++static char *make_temp_path(const char *path);
++
++static void discard_temp_file(task_context *ctx);
++
++static bool configure_ca_bundle(CURL *curl, const char *path);
++
++#if defined(_WIN32)
++static wchar_t *utf8_to_wide(const char *value);
++#endif
++
+ void commons_gcdb_updater_init(commons_gcdb_updater_t *updater, executor_t *executor) {
+     assert(updater != NULL);
+     assert(updater->platform != NULL);
+@@ -94,8 +115,14 @@ static size_t body_cb(void *buffer, size_t size, size_t nitems, task_context *ct
+         return 0;
+     }
+     size_t realsize = size * nitems;
++    if (ctx->status != 200) {
++        return realsize;
++    }
+     void *allocated = realloc(ctx->buf, ctx->size + realsize + 1);
+-    assert(allocated != NULL);
++    if (allocated == NULL) {
++        ctx->status = -1;
++        return 0;
++    }
+     ctx->buf = allocated;
+ 
+     memcpy(&(ctx->buf[ctx->size]), buffer, realsize);
+@@ -119,7 +146,10 @@ static void write_header_lines(task_context *ctx) {
+             }
+             char *headerValue = strstr(curLine, ": ");
+             if (headerValue && strncasecmp(curLine, "etag", headerValue - curLine) == 0) {
+-                fprintf(ctx->fp, "# etag: %s\n", headerValue + 2);
++                if (fprintf(ctx->fp, "# etag: %s\n", headerValue + 2) < 0) {
++                    ctx->status = -1;
++                    return;
++                }
+             }
+             curLine = nextLine + 1;
+         } else {
+@@ -132,38 +162,46 @@ static void write_header_lines(task_context *ctx) {
+ }
+ 
+ static size_t header_cb(char *buffer, size_t size, size_t nitems, task_context *ctx) {
+-    if (ctx->status == 0) {
+-        int status = 0;
+-        curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &status);
+-        if (status == 301 || status == 302) {
+-            return size * nitems;
++    size_t realsize = size * nitems;
++    if (ctx->status < 0) {
++        return 0;
++    }
++    if (realsize >= 5 && memcmp(buffer, "HTTP/", 5) == 0) {
++        if (ctx->fp != NULL) {
++            fclose(ctx->fp);
++            ctx->fp = NULL;
+         }
+-        ctx->status = status;
+-        if (status != 200) {
++        discard_temp_file(ctx);
++        ctx->size = 0;
++        ctx->mappings_written = 0;
++
++        long status = 0;
++        if (curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &status) != CURLE_OK) {
++            ctx->status = -1;
+             return 0;
+         }
++        ctx->status = (int) status;
++        if (status != 200) {
++            return realsize;
++        }
+ 
+-        const char *condb = ctx->updater->path;
+-        ctx->fp = fopen(condb, "w");
+-        if (ctx->fp != NULL) {
+-            commons_log_debug("GameControllerDB", "Locking controller db file %s", condb);
+-#ifndef __WIN32
+-            if (lockf(fileno(ctx->fp), F_LOCK, 0) != 0) {
+-                ctx->status = -1;
+-            }
+-#endif
+-        } else {
+-            commons_log_error("GameControllerDB", "Failed to open file %s: %s", condb, strerror(errno));
++        ctx->temp_path = make_temp_path(ctx->updater->path);
++        if (ctx->temp_path == NULL || (ctx->fp = open_file(ctx->temp_path, "wb")) == NULL) {
++            commons_log_error("GameControllerDB", "Failed to open temporary controller db file: %s", strerror(errno));
+             ctx->status = -1;
+             return 0;
+         }
+     }
+-    assert(ctx->status == 200);
++    if (ctx->status != 200) {
++        return realsize;
++    }
+     /* received header is nitems * size long in 'buffer' NOT ZERO TERMINATED */
+     /* 'userdata' is set with CURLOPT_HEADERDATA */
+-    size_t realsize = size * nitems;
+     void *allocated = realloc(ctx->buf, ctx->size + realsize + 1);
+-    assert(allocated != NULL);
++    if (allocated == NULL) {
++        ctx->status = -1;
++        return 0;
++    }
+     ctx->buf = allocated;
+ 
+     memcpy(&(ctx->buf[ctx->size]), buffer, realsize);
+@@ -178,10 +216,10 @@ static int update_task(void *arg) {
+     CURL *curl = ctx->curl;
+     static char *const url = "https://github.com/gabomdq/SDL_GameControllerDB/raw/master/gamecontrollerdb.txt";
+     curl_easy_setopt(curl, CURLOPT_URL, url);
+-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
++    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
+     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, body_cb);
+-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10);
++    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+     struct curl_slist *headers = NULL;
+     setup_headers(ctx->updater, &headers);
+     if (headers != NULL) {
+@@ -190,31 +228,43 @@ static int update_task(void *arg) {
+ 
+     curl_easy_setopt(curl, CURLOPT_WRITEDATA, ctx);
+     curl_easy_setopt(curl, CURLOPT_HEADERDATA, ctx);
+-    CURLcode code = curl_easy_perform(curl);
+-    commons_gcdb_status_t result;
+-    if (ctx->status == 200) {
+-        commons_log_debug("GameControllerDB", "Updated controller db");
+-        result = COMMONS_GCDB_UPDATER_UPDATED;
+-    } else if (ctx->status == 304) {
+-        commons_log_debug("GameControllerDB", "Controller db has no update");
+-        result = COMMONS_GCDB_UPDATER_NO_UPDATE;
+-    } else if (ctx->status >= 400) {
+-        commons_log_warn("GameControllerDB", "Failed to fetch %s: (HTTP %d)", url, ctx->status);
+-        result = COMMONS_GCDB_UPDATER_HTTP_ERROR;
+-    } else if (code != CURLE_OK) {
+-        commons_log_warn("GameControllerDB", "Failed to fetch %s: (%d, curl %d)", url, ctx->status, code);
+-        result = COMMONS_GCDB_UPDATER_CURL_ERROR;
++    CURLcode code;
++    if (!configure_ca_bundle(curl, ctx->updater->ca_path)) {
++        commons_log_warn("GameControllerDB", "Failed to load the configured TLS CA bundle");
++        code = CURLE_SSL_CACERT_BADFILE;
++        ctx->status = -1;
+     } else {
+-        result = COMMONS_GCDB_UPDATER_NO_UPDATE;
++        code = curl_easy_perform(curl);
+     }
++    bool staged_file_ok = true;
+     if (ctx->fp) {
+-        commons_log_debug("GameControllerDB", "Unlocking controller db file");
+-#ifndef __WIN32
+-        lockf(fileno(ctx->fp), F_ULOCK, 0);
+-#endif
+-        fclose(ctx->fp);
++        if (fflush(ctx->fp) != 0) {
++            staged_file_ok = false;
++        }
++        if (fclose(ctx->fp) != 0) {
++            staged_file_ok = false;
++        }
++        ctx->fp = NULL;
+     }
+ 
++    commons_gcdb_status_t result = commons_gcdb_classify_response(code, ctx->status);
++    if (result == COMMONS_GCDB_UPDATER_UPDATED) {
++        if (!staged_file_ok || ctx->mappings_written == 0 || ctx->size != 0 ||
++            !commons_gcdb_replace_staged_file(ctx->temp_path, ctx->updater->path)) {
++            commons_log_warn("GameControllerDB", "Downloaded controller db failed validation or replacement; keeping existing file");
++            result = COMMONS_GCDB_UPDATER_CURL_ERROR;
++        } else {
++            commons_log_debug("GameControllerDB", "Updated controller db");
++        }
++    } else if (result == COMMONS_GCDB_UPDATER_NO_UPDATE && ctx->status == 304) {
++        commons_log_debug("GameControllerDB", "Controller db has no update");
++    } else if (result == COMMONS_GCDB_UPDATER_HTTP_ERROR) {
++        commons_log_warn("GameControllerDB", "Failed to fetch %s: (HTTP %d)", url, ctx->status);
++    } else if (result == COMMONS_GCDB_UPDATER_CURL_ERROR) {
++        commons_log_warn("GameControllerDB", "Failed to fetch %s: (%d, curl %d)", url, ctx->status, code);
++    }
++    discard_temp_file(ctx);
++
+     if (headers) {
+         curl_slist_free_all(headers);
+     }
+@@ -229,13 +279,18 @@ static void update_finalizer(void *arg, int result) {
+             ctx->updater->callback((commons_gcdb_status_t) result, ctx->updater->callback_ctx);
+         }
+     }
++    if (ctx->fp != NULL) {
++        fclose(ctx->fp);
++        ctx->fp = NULL;
++    }
++    discard_temp_file(ctx);
+     free(ctx->buf);
+     curl_easy_cleanup(ctx->curl);
+     free(ctx);
+ }
+ 
+ void setup_headers(commons_gcdb_updater_t *updater, struct curl_slist **headers) {
+-    FILE *fp = fopen(updater->path, "r");
++    FILE *fp = open_file(updater->path, "r");
+     if (fp == NULL) {
+         return;
+     }
+@@ -276,7 +331,11 @@ void write_mapping_lines(task_context *ctx) {
+                 } else {
+                     *plat = '\0';
+                 }
+-                fprintf(ctx->fp, "%splatform:%s,\n", curLine, updater->platform);
++                if (fprintf(ctx->fp, "%splatform:%s,\n", curLine, updater->platform) < 0) {
++                    ctx->status = -1;
++                    return;
++                }
++                ctx->mappings_written++;
+             }
+             curLine = nextLine + 1;
+         } else {
+@@ -287,3 +346,146 @@ void write_mapping_lines(task_context *ctx) {
+         }
+     }
+ }
++
++commons_gcdb_status_t commons_gcdb_classify_response(CURLcode code, int status) {
++    if (code != CURLE_OK || status < 0) {
++        return COMMONS_GCDB_UPDATER_CURL_ERROR;
++    }
++    if (status == 200) {
++        return COMMONS_GCDB_UPDATER_UPDATED;
++    }
++    if (status == 304) {
++        return COMMONS_GCDB_UPDATER_NO_UPDATE;
++    }
++    if (status >= 400) {
++        return COMMONS_GCDB_UPDATER_HTTP_ERROR;
++    }
++    return COMMONS_GCDB_UPDATER_NO_UPDATE;
++}
++
++bool commons_gcdb_replace_staged_file(const char *temp_path, const char *destination_path) {
++    if (temp_path == NULL || destination_path == NULL) {
++        return false;
++    }
++#if defined(_WIN32)
++    wchar_t *wide_temp = utf8_to_wide(temp_path);
++    wchar_t *wide_destination = utf8_to_wide(destination_path);
++    bool replaced = wide_temp != NULL && wide_destination != NULL &&
++                    MoveFileExW(wide_temp, wide_destination, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
++    free(wide_temp);
++    free(wide_destination);
++    return replaced;
++#else
++    return rename(temp_path, destination_path) == 0;
++#endif
++}
++
++static FILE *open_file(const char *path, const char *mode) {
++#if defined(_WIN32)
++    wchar_t *wide_path = utf8_to_wide(path);
++    wchar_t *wide_mode = utf8_to_wide(mode);
++    FILE *fp = NULL;
++    if (wide_path != NULL && wide_mode != NULL) {
++        fp = _wfopen(wide_path, wide_mode);
++    }
++    free(wide_path);
++    free(wide_mode);
++    return fp;
++#else
++    return fopen(path, mode);
++#endif
++}
++
++static bool configure_ca_bundle(CURL *curl, const char *path) {
++    if (path == NULL || path[0] == '\0') {
++        return true;
++    }
++#if LIBCURL_VERSION_NUM >= 0x074700
++    FILE *file = open_file(path, "rb");
++    if (file == NULL || fseek(file, 0, SEEK_END) != 0) {
++        if (file != NULL) {
++            fclose(file);
++        }
++        return false;
++    }
++    const long end = ftell(file);
++    if (end <= 0 || fseek(file, 0, SEEK_SET) != 0) {
++        fclose(file);
++        return false;
++    }
++    unsigned char *data = malloc((size_t) end);
++    if (data == NULL) {
++        fclose(file);
++        return false;
++    }
++    bool read_ok = fread(data, 1, (size_t) end, file) == (size_t) end;
++    if (fclose(file) != 0) {
++        read_ok = false;
++    }
++    if (!read_ok) {
++        free(data);
++        return false;
++    }
++    const struct curl_blob blob = {
++            .data = data,
++            .len = (size_t) end,
++            .flags = CURL_BLOB_COPY,
++    };
++    const CURLcode result = curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &blob);
++    free(data);
++    return result == CURLE_OK;
++#else
++    (void) curl;
++    commons_log_warn("GameControllerDB", "libcurl is too old for UTF-8-safe CA bundle loading");
++    return false;
++#endif
++}
++
++static char *make_temp_path(const char *path) {
++#if defined(_WIN32)
++    unsigned long process_id = (unsigned long) _getpid();
++#else
++    unsigned long process_id = (unsigned long) getpid();
++#endif
++    size_t length = strlen(path) + 32;
++    char *temp_path = malloc(length);
++    if (temp_path != NULL) {
++        snprintf(temp_path, length, "%s.download.%lu", path, process_id);
++    }
++    return temp_path;
++}
++
++static void discard_temp_file(task_context *ctx) {
++    if (ctx->temp_path == NULL) {
++        return;
++    }
++#if defined(_WIN32)
++    wchar_t *wide_path = utf8_to_wide(ctx->temp_path);
++    if (wide_path != NULL) {
++        DeleteFileW(wide_path);
++    }
++    free(wide_path);
++#else
++    unlink(ctx->temp_path);
++#endif
++    free(ctx->temp_path);
++    ctx->temp_path = NULL;
++}
++
++#if defined(_WIN32)
++static wchar_t *utf8_to_wide(const char *value) {
++    if (value == NULL) {
++        return NULL;
++    }
++    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0);
++    if (length == 0) {
++        return NULL;
++    }
++    wchar_t *wide = malloc((size_t) length * sizeof(wchar_t));
++    if (wide == NULL || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide, length) == 0) {
++        free(wide);
++        return NULL;
++    }
++    return wide;
++}
++#endif
+diff --git a/device/gcdb-updater/gamecontrollerdb_updater.h b/device/gcdb-updater/gamecontrollerdb_updater.h
+index bc5eed0..08fa18f 100644
+--- a/device/gcdb-updater/gamecontrollerdb_updater.h
++++ b/device/gcdb-updater/gamecontrollerdb_updater.h
+@@ -22,6 +22,10 @@ typedef struct commons_gcdb_updater_t {
+     const char *path;
+     const char *platform;
+     const char *platform_use;
++    /* Optional PEM CA bundle. The updater reads this UTF-8 path itself and
++     * passes the contents to libcurl, avoiding narrow-path handling in TLS
++     * backends on Windows. The caller retains ownership. */
++    const char *ca_path;
+ 
+     commons_gcdb_callback *callback;
+     void *callback_ctx;
+diff --git a/device/gcdb-updater/gamecontrollerdb_updater_internal.h b/device/gcdb-updater/gamecontrollerdb_updater_internal.h
+new file mode 100644
+index 0000000..911d9d6
+--- /dev/null
++++ b/device/gcdb-updater/gamecontrollerdb_updater_internal.h
+@@ -0,0 +1,11 @@
++#pragma once
++
++#include <stdbool.h>
++#include <curl/curl.h>
++
++#include "gamecontrollerdb_updater.h"
++
++/* Internal helpers exposed only so deterministic tests can cover failure ordering and replacement. */
++commons_gcdb_status_t commons_gcdb_classify_response(CURLcode code, int status);
++
++bool commons_gcdb_replace_staged_file(const char *temp_path, const char *destination_path);
+diff --git a/device/gcdb-updater/test_gcdb_atomic.c b/device/gcdb-updater/test_gcdb_atomic.c
+new file mode 100644
+index 0000000..2d09db1
+--- /dev/null
++++ b/device/gcdb-updater/test_gcdb_atomic.c
+@@ -0,0 +1,46 @@
++#include <assert.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "gamecontrollerdb_updater_internal.h"
++
++static const char *const destination_path = "test_gcdb_atomic_destination.txt";
++static const char *const staged_path = "test_gcdb_atomic_staged.txt";
++
++static void write_text(const char *path, const char *text) {
++    FILE *fp = fopen(path, "wb");
++    assert(fp != NULL);
++    assert(fwrite(text, 1, strlen(text), fp) == strlen(text));
++    assert(fclose(fp) == 0);
++}
++
++static void assert_text(const char *path, const char *expected) {
++    char actual[64] = {0};
++    FILE *fp = fopen(path, "rb");
++    assert(fp != NULL);
++    assert(fread(actual, 1, sizeof(actual) - 1, fp) == strlen(expected));
++    assert(feof(fp));
++    assert(fclose(fp) == 0);
++    assert(strcmp(actual, expected) == 0);
++}
++
++int main(void) {
++    remove(destination_path);
++    remove(staged_path);
++
++    write_text(destination_path, "last-good");
++    assert(!commons_gcdb_replace_staged_file(staged_path, destination_path));
++    assert_text(destination_path, "last-good");
++
++    write_text(staged_path, "complete-update");
++    assert(commons_gcdb_replace_staged_file(staged_path, destination_path));
++    assert_text(destination_path, "complete-update");
++
++    assert(commons_gcdb_classify_response(CURLE_PARTIAL_FILE, 200) == COMMONS_GCDB_UPDATER_CURL_ERROR);
++    assert(commons_gcdb_classify_response(CURLE_OK, 200) == COMMONS_GCDB_UPDATER_UPDATED);
++    assert(commons_gcdb_classify_response(CURLE_OK, 304) == COMMONS_GCDB_UPDATER_NO_UPDATE);
++    assert(commons_gcdb_classify_response(CURLE_OK, 404) == COMMONS_GCDB_UPDATER_HTTP_ERROR);
++
++    assert(remove(destination_path) == 0);
++    return 0;
++}
+diff --git a/io/copyfile/CMakeLists.txt b/io/copyfile/CMakeLists.txt
+index 5237370..a82bdbf 100644
+--- a/io/copyfile/CMakeLists.txt
++++ b/io/copyfile/CMakeLists.txt
+@@ -9,4 +9,11 @@ if (HAVE_SENDFILE)
+     target_sources(commons-copyfile PRIVATE copyfile_sendfile.c)
+ else()
+     target_sources(commons-copyfile PRIVATE copyfile_std.c)
+-endif ()
+\ No newline at end of file
++endif ()
++
++if (CMAKE_TESTING_ENABLED)
++    # Exercise the portable implementation even on platforms that have sendfile.
++    add_executable(test_copyfile_std test_copyfile_std.c copyfile_std.c)
++    target_include_directories(test_copyfile_std PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
++    add_test(test_copyfile_std test_copyfile_std)
++endif ()
+diff --git a/io/copyfile/copyfile_std.c b/io/copyfile/copyfile_std.c
+index 813d437..cb3d327 100644
+--- a/io/copyfile/copyfile_std.c
++++ b/io/copyfile/copyfile_std.c
+@@ -22,13 +22,23 @@ int copyfile(const char *source, const char *dest) {
+     int ret = 0;
+     unsigned char buf[BUFFER_SIZE];
+     size_t n;
+-    while ((n = fread(buf, 1, BUFFER_SIZE, dest_f)) > 0) {
++    while ((n = fread(buf, 1, BUFFER_SIZE, src_f)) > 0) {
+         if (fwrite(buf, 1, n, dest_f) < n) {
+             ret = -1;
+             break;
+         }
+     }
+-    fclose(dest_f);
+-    fclose(src_f);
++    if (ferror(src_f)) {
++        ret = -1;
++    }
++    if (fflush(dest_f) != 0) {
++        ret = -1;
++    }
++    if (fclose(dest_f) != 0) {
++        ret = -1;
++    }
++    if (fclose(src_f) != 0) {
++        ret = -1;
++    }
+     return ret;
+-}
+\ No newline at end of file
++}
+diff --git a/io/copyfile/test_copyfile_std.c b/io/copyfile/test_copyfile_std.c
+new file mode 100644
+index 0000000..1b5e7cb
+--- /dev/null
++++ b/io/copyfile/test_copyfile_std.c
+@@ -0,0 +1,36 @@
++#include "copyfile.h"
++
++#include <assert.h>
++#include <stdio.h>
++#include <string.h>
++
++static const char *const source_path = "test_copyfile_std_source.bin";
++static const char *const destination_path = "test_copyfile_std_destination.bin";
++
++int main(void) {
++    static const unsigned char expected[] = {
++            0x00, 0x01, 0x02, 0x7f, 0x80, 0xfe, 0xff, 'A', 'u', 'r', 'o', 'r', 'a', '\n',
++    };
++
++    remove(source_path);
++    remove(destination_path);
++
++    FILE *source = fopen(source_path, "wb");
++    assert(source != NULL);
++    assert(fwrite(expected, 1, sizeof(expected), source) == sizeof(expected));
++    assert(fclose(source) == 0);
++
++    assert(copyfile(source_path, destination_path) == 0);
++
++    unsigned char actual[sizeof(expected) + 1] = {0};
++    FILE *destination = fopen(destination_path, "rb");
++    assert(destination != NULL);
++    assert(fread(actual, 1, sizeof(actual), destination) == sizeof(expected));
++    assert(feof(destination));
++    assert(fclose(destination) == 0);
++    assert(memcmp(actual, expected, sizeof(expected)) == 0);
++
++    assert(remove(source_path) == 0);
++    assert(remove(destination_path) == 0);
++    return 0;
++}
+diff --git a/cmake/ExternalMbedTLS.cmake b/cmake/ExternalMbedTLS.cmake
+index e801d7d..98f9ec0 100644
+--- a/cmake/ExternalMbedTLS.cmake
++++ b/cmake/ExternalMbedTLS.cmake
+@@ -12,2 +12,3 @@ ExternalProject_Add(ext_mbedtls
+         URL https://github.com/Mbed-TLS/mbedtls/archive/refs/tags/v3.4.0.tar.gz
++        URL_HASH SHA256=1b899f355022e8d02c4d313196a0a16af86c5a692456fa99d302915b8cf0320a
+         CMAKE_ARGS ${EXT_MBEDTLS_TOOLCHAIN_ARGS}

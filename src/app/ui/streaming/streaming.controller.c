@@ -2,10 +2,13 @@
 #include "app_session.h"
 #include "streaming.controller.h"
 #include "soft_keyboard.h"
-#include "hid_passthrough_panel.h"
 
 #include <SDL.h>
 #include "stream/video/session_video.h"
+#include "stream/video/coop_trace.h"
+#include "app_launch.h"
+#include "pin_autoentry.h"
+#include "ui/launcher/apps.controller.h"
 #include "ui/root.h"
 #include "ui/common/progress_dialog.h"
 #include "lvgl/lv_ext_utils.h"
@@ -27,10 +30,6 @@ static void suspend_streaming(lv_event_t *event);
 static void open_keyboard(lv_event_t *event);
 
 static void toggle_vmouse(lv_event_t *event);
-
-static void open_hid_devices(lv_event_t *event);
-
-static void hid_panel_close_cb(void *userdata);
 
 static void stream_fragment_del_timer_cb(lv_timer_t *timer);
 
@@ -118,7 +117,14 @@ static float streaming_render_fps(float decodedFps) {
     }
 #else
     SDL_DisplayMode mode;
-    if (SDL_GetCurrentDisplayMode(0, &mode) == 0 && mode.refresh_rate > 0
+    int display = 0;
+    if (global != NULL && global->ui.window != NULL) {
+        const int current = SDL_GetWindowDisplayIndex(global->ui.window);
+        if (current >= 0) {
+            display = current;
+        }
+    }
+    if (SDL_GetCurrentDisplayMode(display, &mode) == 0 && mode.refresh_rate > 0
         && renderFps > (float) mode.refresh_rate) {
         renderFps = (float) mode.refresh_rate;
     }
@@ -197,6 +203,34 @@ const lv_fragment_class_t streaming_controller_class = {
 };
 
 static bool overlay_showing = false, overlay_pinned = false;
+
+/* Poll cadence and backstop for holding the loading dialog until the co-op composite emits.
+   250ms is imperceptible against a startup that already takes seconds; 15s is far longer than
+   any measured bootstrap (the live horizontal session spliced within ~1s of stream open) and
+   exists only so a composite that never starts cannot pin the dialog and trap the user. */
+#define COOP_FIRST_PICTURE_POLL_MS 250
+#define COOP_FIRST_PICTURE_TIMEOUT_MS 15000
+
+static void coop_first_picture_cb(lv_timer_t *timer) {
+    streaming_controller_t *controller = (streaming_controller_t *) timer->user_data;
+    if (controller == NULL) {
+        lv_timer_del(timer);
+        return;
+    }
+    controller->coop_wait_ms += COOP_FIRST_PICTURE_POLL_MS;
+    const bool started = coop_composite_started();
+    if (!started && controller->coop_wait_ms < COOP_FIRST_PICTURE_TIMEOUT_MS) {
+        return;
+    }
+    commons_log_info("Streaming", "Co-op loading dialog released after %u ms (%s)",
+                     controller->coop_wait_ms, started ? "composite anchored" : "backstop");
+    if (controller->progress != NULL) {
+        lv_msgbox_close(controller->progress);
+        controller->progress = NULL;
+    }
+    controller->coop_wait_timer = NULL;
+    lv_timer_del(timer);
+}
 static streaming_controller_t *current_controller = NULL;
 
 bool streaming_overlay_shown() {
@@ -207,11 +241,6 @@ bool streaming_soft_keyboard_shown() {
     return current_controller != NULL && current_controller->soft_kbd != NULL;
 }
 
-#if defined(TARGET_WEBOS)
-bool streaming_hid_panel_shown() {
-    return current_controller != NULL && current_controller->hid_panel != NULL;
-}
-#endif
 
 bool streaming_stats_shown() {
     return overlay_showing || overlay_pinned;
@@ -258,7 +287,13 @@ bool streaming_refresh_stats() {
                 have_decode = true;
             }
         }
+#ifdef _WIN32
+        /* On Windows the decode runs inside the submit call (#32), so it is already in submitMs --
+         * adding it again would turn the quality dot yellow on a healthy stream. */
+        float totalMs = (float) dst->rtt + hostMs + submitMs;
+#else
         float totalMs = (float) dst->rtt + hostMs + submitMs + decOnlyMs;
+#endif
 
         int len = snprintf(stats_line, sizeof(stats_line),
                            "%dx%d %s%s FPS %.1f Rx \xb7 %.1f De \xb7 %.1f Rd "
@@ -276,13 +311,45 @@ bool streaming_refresh_stats() {
                 first = false;
             }
             if (have_decode && len > 0 && (size_t) len < sizeof(stats_line)) {
+#ifdef _WIN32
+                /* Part of S, not a further term (#32): "S 4.10ms (D 3.20ms)". */
+                if (have_render) {
+                    len += snprintf(stats_line + len, sizeof(stats_line) - (size_t) len, " (D %.2fms)", decOnlyMs);
+                } else {
+                    len += snprintf(stats_line + len, sizeof(stats_line) - (size_t) len,
+                                    "%sD %.2fms", first ? "" : " \xb7 ", decOnlyMs);
+                }
+#else
                 len += snprintf(stats_line + len, sizeof(stats_line) - (size_t) len,
                                 "%sD %.2fms", first ? "" : " \xb7 ", decOnlyMs);
+#endif
                 first = false;
             }
             if (have_encode && len > 0 && (size_t) len < sizeof(stats_line)) {
                 snprintf(stats_line + len, sizeof(stats_line) - (size_t) len,
                          "%sEn %.1fms", first ? "" : " \xb7 ", hostMs);
+            }
+        }
+        /* CO-OP IDENTITY SEGMENT -- passover 07 §3.4's TV-local overlay. Appended to the
+         * compact line rather than given its own widget so there is exactly one thing to
+         * point a camera at, and so it inherits the overlay's existing show/pin controls.
+         *   P    the primary frame number just fed
+         *   x    the peer frame number last ACCEPTED into a composite
+         *   /    the peer frame number last RECEIVED by the coordinator
+         *   t    CLOCK_MONOTONIC ms -- THE SAME CLOCK the per-picture trace stamps with, so a
+         *        photograph of this line can be aligned to a trace row exactly.
+         * A widening gap between accepted and received is the reading that decides passover
+         * 07 §2B; a frozen accepted identity under a climbing t is the reading that decides
+         * whether a held pane is being mistaken for latency. */
+        {
+            uint32_t idp = 0, ida = 0, idr = 0;
+            unsigned long idt = 0;
+            if (coop_trace_identity_get(&idp, &ida, &idr, &idt)) {
+                size_t at = strlen(stats_line);
+                if (at < sizeof(stats_line)) {
+                    snprintf(stats_line + at, sizeof(stats_line) - at,
+                             " | P%u x%u/%u t%lu", idp, ida, idr, idt);
+                }
             }
         }
         lv_label_set_text(controller->stats_compact_label, stats_line);
@@ -324,8 +391,16 @@ bool streaming_refresh_stats() {
             }
             if (vdec_stream_info.has_decoder_latency) {
                 float avgSubmitTime = (float) dst->totalSubmitTime / (float) dst->submittedFrames;
+#ifdef _WIN32
+                /* The Windows decoder runs INSIDE the submit call (ss4s ffmpegvid.c Feed decodes,
+                 * reads back and converts before returning), so "submit" already contains
+                 * "decode": show it as a part, not a sum (#32). */
+                lv_label_set_text_fmt(controller->stats_items.vdec_latency, "submit %.2f ms (decode %.2f ms)",
+                                      avgSubmitTime, dst->avgDecoderLatency);
+#else
                 lv_label_set_text_fmt(controller->stats_items.vdec_latency, "submit %.2f ms + decode %.2f ms",
                                       avgSubmitTime, dst->avgDecoderLatency);
+#endif
             } else {
                 lv_label_set_text_fmt(controller->stats_items.vdec_latency, "not available");
             }
@@ -358,6 +433,7 @@ static void constructor(lv_fragment_t *self, void *args) {
 
     const streaming_scene_arg_t *arg = (streaming_scene_arg_t *) args;
     controller->global = arg->global;
+    controller->uuid = arg->uuid;
     controller->network_test = arg->network_test;
     controller->network_test_duration = arg->network_test_duration ? arg->network_test_duration : 10;
     controller->network_test_timer = NULL;
@@ -373,11 +449,13 @@ static void controller_dtor(lv_fragment_t *self) {
         lv_timer_del(fragment->network_test_timer);
         fragment->network_test_timer = NULL;
     }
-#if defined(TARGET_WEBOS)
-    if (fragment->hid_panel) {
-        hid_panel_close_cb(fragment);
+    /* The co-op first-picture poll holds a pointer to this fragment; a session torn down
+       before the composite ever emitted (a failed launch, or the user backing out) would
+       otherwise leave it firing into freed memory. */
+    if (fragment->coop_wait_timer) {
+        lv_timer_del(fragment->coop_wait_timer);
+        fragment->coop_wait_timer = NULL;
     }
-#endif
     streaming_styles_reset(fragment);
     if (current_controller == fragment) {
         current_controller = NULL;
@@ -401,12 +479,49 @@ static bool on_event(lv_fragment_t *self, int code, void *userdata) {
             return true;
         }
         case USER_STREAM_OPEN: {
+            /* HOLD THE LOADING DIALOG UNTIL A PICTURE EXISTS, in co-op only.
+             *
+             * USER_STREAM_OPEN means the STREAM opened, not that anything is on screen. The
+             * horizontal composite suppresses its own pictures until it can splice ("[COOP-HH]
+             * suppressing picture #N before the FIRST composite"), so closing the dialog here
+             * hands the user a blank black panel with nothing to say it is still working --
+             * user-reported as an awkward pause, then a correction. Vertical hides it by
+             * bootstrap-mirroring the primary into both tiles (mirrored=291 live) where
+             * horizontal has mirrored=0, which is exactly why the oddity is horizontal-only.
+             *
+             * Keeping the loader up is better than porting the mirror: the mirror briefly
+             * shows one host's desktop in BOTH halves, which is its own kind of wrong, and the
+             * dialog is honest about what is happening. The poll is cheap and self-limiting --
+             * COOP_FIRST_PICTURE_TIMEOUT_MS is a backstop so a composite that never starts
+             * cannot pin the dialog forever; the stream is up either way and the user must be
+             * able to reach the overlay to quit. */
+            if (app_launch_coop_requested() && controller->progress != NULL &&
+                !coop_composite_started() && controller->coop_wait_timer == NULL) {
+                controller->coop_wait_ms = 0;
+                controller->coop_wait_timer =
+                        lv_timer_create(coop_first_picture_cb, COOP_FIRST_PICTURE_POLL_MS,
+                                        controller);
+                lv_obj_add_flag(controller->overlay, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(controller->hint, LV_OBJ_FLAG_HIDDEN);
+                apps_controller_hdr_relaunch_succeeded();
+                pin_autoentry_on_stream_open(controller->global, &controller->uuid);
+                if (app_configuration->show_stats_on_start || controller->network_test) {
+                    streaming_set_stats_pinned(controller, true);
+                }
+                break;
+            }
             if (controller->progress) {
                 lv_msgbox_close(controller->progress);
                 controller->progress = NULL;
             }
             lv_obj_add_flag(controller->overlay, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(controller->hint, LV_OBJ_FLAG_HIDDEN);
+
+            /* A stream opened successfully — clear any pending HDR reconnect/retry. */
+            apps_controller_hdr_relaunch_succeeded();
+
+            /* If the user pressed Wake for this host, auto-type the login PIN. */
+            pin_autoentry_on_stream_open(controller->global, &controller->uuid);
 
             if (app_configuration->show_stats_on_start || controller->network_test) {
                 streaming_set_stats_pinned(controller, true);
@@ -422,6 +537,16 @@ static bool on_event(lv_fragment_t *self, int code, void *userdata) {
             break;
         }
         case USER_STREAM_CLOSE: {
+            /* Stop waiting for a first picture that is no longer coming, and drop the
+               loading dialog so "Disconnecting..." replaces it rather than stacking. */
+            if (controller->coop_wait_timer) {
+                lv_timer_del(controller->coop_wait_timer);
+                controller->coop_wait_timer = NULL;
+            }
+            if (controller->progress) {
+                lv_msgbox_close(controller->progress);
+                controller->progress = NULL;
+            }
             controller->progress = progress_dialog_create(locstr("Disconnecting..."));
             lv_obj_add_flag(controller->overlay, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(controller->stats, LV_OBJ_FLAG_HIDDEN);
@@ -433,11 +558,6 @@ static bool on_event(lv_fragment_t *self, int code, void *userdata) {
                 lv_msgbox_close(controller->progress);
                 controller->progress = NULL;
             }
-#if defined(TARGET_WEBOS)
-            if (streaming_hid_panel_shown()) {
-                hid_panel_close_cb(controller);
-            }
-#endif
             if (streaming_errno != 0) {
                 lv_timer_create(stream_fragment_del_timer_cb, 50, controller);
             } else {
@@ -452,12 +572,6 @@ static bool on_event(lv_fragment_t *self, int code, void *userdata) {
         case USER_CLOSE_SOFT_KEYBOARD: {
             if (streaming_soft_keyboard_shown()) {
                 soft_keyboard_close_cb(controller);
-            }
-            return true;
-        }
-        case USER_CLOSE_HID_PANEL: {
-            if (streaming_hid_panel_shown()) {
-                hid_panel_close_cb(controller);
             }
             return true;
         }
@@ -502,11 +616,6 @@ static void on_view_created(lv_fragment_t *self, lv_obj_t *view) {
     lv_obj_add_event_cb(controller->suspend_btn, suspend_streaming, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->kbd_btn, open_keyboard, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->vmouse_btn, toggle_vmouse, LV_EVENT_CLICKED, self);
-#if defined(TARGET_WEBOS)
-    if (controller->hid_devices_btn) {
-        lv_obj_add_event_cb(controller->hid_devices_btn, open_hid_devices, LV_EVENT_CLICKED, self);
-    }
-#endif
     lv_obj_add_event_cb(controller->base.obj, hide_overlay, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->overlay, overlay_key_cb, LV_EVENT_KEY, controller);
     lv_obj_add_event_cb(controller->base.obj, on_cancel_key, LV_EVENT_CANCEL, controller);
@@ -613,52 +722,15 @@ static void toggle_vmouse(lv_event_t *event) {
     session_toggle_vmouse(app->session);
 }
 
-#if defined(TARGET_WEBOS)
+/* MOVED OUT OF #if TARGET_WEBOS: this deletes a fragment on a timer and has nothing
+ * platform-specific in it, but it was defined inside the guard while its only caller --
+ * the streaming_errno path below -- is outside one. Fine on webOS, an undefined reference
+ * at link time anywhere else. */
 static void stream_fragment_del_timer_cb(lv_timer_t *timer) {
     lv_fragment_t *fragment = timer->user_data;
     lv_timer_del(timer);
     lv_fragment_del(fragment);
 }
-
-static void hid_panel_close_cb(void *userdata) {
-    streaming_controller_t *controller = userdata;
-    if (!controller || !controller->hid_panel) {
-        return;
-    }
-    lv_group_t *group = hid_passthrough_panel_get_group(controller->hid_panel);
-    if (group) {
-        app_input_remove_modal_group(&controller->global->ui.input, group);
-    }
-    lv_obj_t *panel = controller->hid_panel;
-    controller->hid_panel = NULL;
-    lv_obj_del(panel);
-    lv_indev_reset(NULL, NULL);
-    if (controller->group) {
-        app_input_set_group(&controller->global->ui.input, controller->group);
-    }
-}
-
-static void open_hid_devices(lv_event_t *event) {
-    streaming_controller_t *controller = lv_event_get_user_data(event);
-    if (!controller->global->session || controller->hid_panel) {
-        return;
-    }
-    hide_overlay_impl(controller);
-    controller->hid_panel = hid_passthrough_panel_create(
-            lv_layer_top(),
-            controller->global->session,
-            hid_panel_close_cb,
-            controller);
-    if (!controller->hid_panel) {
-        return;
-    }
-    lv_group_t *group = hid_passthrough_panel_get_group(controller->hid_panel);
-    if (group) {
-        app_input_push_modal_group(&controller->global->ui.input, group);
-    }
-    hid_passthrough_panel_focus_initial(controller->hid_panel);
-}
-#endif
 
 bool show_overlay(streaming_controller_t *controller) {
     if (overlay_showing) {
@@ -679,15 +751,11 @@ bool show_overlay(streaming_controller_t *controller) {
     return true;
 }
 
-/* B/Back: close keyboard or HID panel if shown, else hide overlay */
+/* B/Back: close keyboard if shown, else hide overlay */
 static void on_cancel_key(lv_event_t *event) {
     streaming_controller_t *controller = lv_event_get_user_data(event);
     if (streaming_soft_keyboard_shown()) {
         soft_keyboard_close_cb(controller);
-#if defined(TARGET_WEBOS)
-    } else if (streaming_hid_panel_shown()) {
-        bus_pushevent(USER_CLOSE_HID_PANEL, NULL, NULL);
-#endif
     } else {
         hide_overlay(event);
     }
@@ -731,12 +799,6 @@ static void update_buttons_layout(streaming_controller_t *controller) {
     lv_area_center(&coords, &controller->button_points[3]);
     lv_obj_get_coords(controller->kbd_btn, &coords);
     lv_area_center(&coords, &controller->button_points[4]);
-#if defined(TARGET_WEBOS)
-    if (controller->hid_devices_btn) {
-        lv_obj_get_coords(controller->hid_devices_btn, &coords);
-        lv_area_center(&coords, &controller->button_points[5]);
-    }
-#endif
     app_input_set_button_points(&controller->global->ui.input, controller->button_points);
 }
 

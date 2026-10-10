@@ -18,8 +18,11 @@ static void dropdown_delete_cb(lv_event_t *e);
 
 static void cus_fps_dialog_cb(lv_event_t *e);
 
+static void cus_fps_dialog_deleted_cb(lv_event_t *e);
+
 typedef struct pref_dropdown_fps_ctx {
     lv_obj_t *dropdown;
+    lv_obj_t *dialog;
     pref_dropdown_int_entry_t *entries;
     int num_entries;
     int *value_ref;
@@ -27,7 +30,20 @@ typedef struct pref_dropdown_fps_ctx {
     char custom_fps_text[32];
     uint16_t selected_index;
     bool cus_value_set;
+    bool dialog_committed;
+    bool current_is_custom;
+    bool restore_custom_on_cancel;
 } pref_dropdown_fps_ctx_t;
+
+static void fps_show_custom_value(pref_dropdown_fps_ctx_t *ctx) {
+    if (ctx->refresh_rate_x100_ref != NULL && *ctx->refresh_rate_x100_ref > 0) {
+        snprintf(ctx->custom_fps_text, sizeof(ctx->custom_fps_text), locstr("%.2f FPS (Custom)"),
+                 *ctx->refresh_rate_x100_ref / 100.0);
+    } else {
+        snprintf(ctx->custom_fps_text, sizeof(ctx->custom_fps_text), locstr("%d FPS (Custom)"), *ctx->value_ref);
+    }
+    lv_dropdown_set_text(ctx->dropdown, ctx->custom_fps_text);
+}
 
 static bool pref_fps_is_custom_rate(int fps, int refresh_rate_x100)
 {
@@ -98,13 +114,8 @@ lv_obj_t *pref_dropdown_fps(lv_obj_t *parent, const int *options, int max, int *
 
     if (has_custom_fps || (refresh_rate_x100 != NULL &&
                            pref_fps_is_custom_rate(*value, *refresh_rate_x100))) {
-        if (refresh_rate_x100 != NULL && *refresh_rate_x100 > 0) {
-            snprintf(ctx->custom_fps_text, sizeof(ctx->custom_fps_text), locstr("%.2f FPS (Custom)"),
-                     *refresh_rate_x100 / 100.0);
-        } else {
-            snprintf(ctx->custom_fps_text, sizeof(ctx->custom_fps_text), locstr("%d FPS (Custom)"), *value);
-        }
-        lv_dropdown_set_text(fps_dropdown, ctx->custom_fps_text);
+        fps_show_custom_value(ctx);
+        ctx->current_is_custom = true;
     }
 
     lv_obj_add_event_cb(fps_dropdown, dropdown_fps_select_cb, LV_EVENT_VALUE_CHANGED, ctx);
@@ -117,18 +128,16 @@ void dropdown_fps_select_cb(lv_event_t *e) {
     pref_dropdown_fps_ctx_t *ctx = (pref_dropdown_fps_ctx_t *) lv_event_get_user_data(e);
     uint16_t index = lv_dropdown_get_selected(lv_event_get_current_target(e));
     if (ctx->cus_value_set) {
-        if (ctx->refresh_rate_x100_ref != NULL && *ctx->refresh_rate_x100_ref > 0) {
-            snprintf(ctx->custom_fps_text, sizeof(ctx->custom_fps_text), locstr("%.2f FPS (Custom)"),
-                     *ctx->refresh_rate_x100_ref / 100.0);
-        } else {
-            snprintf(ctx->custom_fps_text, sizeof(ctx->custom_fps_text), locstr("%d FPS (Custom)"), *ctx->value_ref);
-        }
-        lv_dropdown_set_text(ctx->dropdown, ctx->custom_fps_text);
+        fps_show_custom_value(ctx);
+        ctx->selected_index = index;
+        ctx->current_is_custom = true;
         ctx->cus_value_set = false;
         return;
     }
     lv_dropdown_set_text(ctx->dropdown, NULL);
     if (index != ctx->num_entries - 1) {
+        ctx->selected_index = index;
+        ctx->current_is_custom = false;
 #if defined(TARGET_WEBOS)
         settings_apply_ntsc_preset_refresh(app_configuration, *ctx->value_ref);
 #else
@@ -143,6 +152,9 @@ void dropdown_fps_select_cb(lv_event_t *e) {
 
     const static char *btn_texts[] = {translatable("Cancel"), translatable("OK"), ""};
     lv_obj_t *msgbox = lv_msgbox_create_i18n(NULL, locstr("Custom FPS"), NULL, btn_texts, false);
+    ctx->dialog = msgbox;
+    ctx->dialog_committed = false;
+    ctx->restore_custom_on_cancel = ctx->current_is_custom;
     lv_obj_set_user_data(msgbox, ctx);
     lv_obj_t *content = lv_msgbox_get_content(msgbox);
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
@@ -171,12 +183,18 @@ void dropdown_fps_select_cb(lv_event_t *e) {
     lv_obj_set_width(ta, LV_PCT(100));
 
     lv_obj_add_event_cb(msgbox, cus_fps_dialog_cb, LV_EVENT_VALUE_CHANGED, ta);
+    lv_obj_add_event_cb(msgbox, cus_fps_dialog_deleted_cb, LV_EVENT_DELETE, ctx);
 
     lv_obj_center(msgbox);
 }
 
 void dropdown_delete_cb(lv_event_t *e) {
     pref_dropdown_fps_ctx_t *ctx = (pref_dropdown_fps_ctx_t *) lv_event_get_user_data(e);
+    if (ctx->dialog != NULL && lv_obj_is_valid(ctx->dialog)) {
+        lv_obj_remove_event_cb(ctx->dialog, cus_fps_dialog_deleted_cb);
+        lv_msgbox_close(ctx->dialog);
+        ctx->dialog = NULL;
+    }
     for (int i = 0; i < ctx->num_entries; i++) {
         free((void *) ctx->entries[i].name);
     }
@@ -188,7 +206,6 @@ static void cus_fps_dialog_cb(lv_event_t *e) {
     lv_obj_t *mbox = lv_event_get_current_target(e);
     pref_dropdown_fps_ctx_t *ctx = (pref_dropdown_fps_ctx_t *) lv_obj_get_user_data(mbox);
     if (lv_msgbox_get_active_btn(mbox) != 1) {
-        lv_dropdown_set_selected(ctx->dropdown, ctx->selected_index);
         lv_msgbox_close_async(mbox);
         return;
     }
@@ -220,8 +237,22 @@ static void cus_fps_dialog_cb(lv_event_t *e) {
         *ctx->refresh_rate_x100_ref = x100;
     }
     settings_sync_refresh_rate(app_configuration);
+    ctx->dialog_committed = true;
     ctx->cus_value_set = true;
     lv_event_send(ctx->dropdown, LV_EVENT_VALUE_CHANGED, NULL);
     lv_msgbox_close_async(mbox);
 }
 
+static void cus_fps_dialog_deleted_cb(lv_event_t *e) {
+    pref_dropdown_fps_ctx_t *ctx = lv_event_get_user_data(e);
+    ctx->dialog = NULL;
+    if (ctx->dialog_committed || !lv_obj_is_valid(ctx->dropdown)) {
+        return;
+    }
+    lv_dropdown_set_selected(ctx->dropdown, ctx->selected_index);
+    if (ctx->restore_custom_on_cancel) {
+        fps_show_custom_value(ctx);
+    } else {
+        lv_dropdown_set_text(ctx->dropdown, NULL);
+    }
+}

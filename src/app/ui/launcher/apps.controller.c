@@ -6,15 +6,24 @@
 #include "appitem.view.h"
 #include "apps.controller.h"
 #include "launcher.controller.h"
+#include "coop.dialog.h"
+#include "app_launch.h"
+#include "backend/aurora_host_caps.h"
+#include "stream/video/coop_session.h"
 #include "ui/streaming/streaming.controller.h"
+#include "ui/streaming/pin_autoentry.h"
+#include "stream/session.h"
+#include "logging.h"
 
 #include "coverloader.h"
 #include "backend/apploader/apploader.h"
 #include <errors.h>
 #include <assert.h>
+#include <string.h>
 
 #include "lvgl/lv_ext_utils.h"
 #include "lvgl/util/lv_app_utils.h"
+#include "lvgl/theme/lv_theme_moonlight.h"
 #include "lv_gridview.h"
 
 #include "util/user_event.h"
@@ -47,6 +56,18 @@ static void item_click_cb(lv_event_t *event);
 static void item_longpress_cb(lv_event_t *event);
 
 static void launcher_launch_game(apps_fragment_t *controller, const apploader_item_t *app);
+
+/** The context menu's "host monitor off" start (app_settings.h host_monitor_mode); a marker, never called. */
+static void launcher_launch_game_monitor_off(apps_fragment_t *controller, const apploader_item_t *app);
+
+/** Set by that button for the ONE launch it starts; launcher_launch_game consumes it. */
+static bool g_launch_monitor_off = false;
+
+/** CHOOSE mode and a host that can switch its monitor off: starting a stream offers both start buttons. */
+static bool host_monitor_choice_here(const apps_fragment_t *controller) {
+    uuidstr_t host = controller->uuid;
+    return app_launch_host_monitor_choice_offered() && umbra_monitor_off_on_host(&host);
+}
 
 static void launcher_toggle_fav(apps_fragment_t *controller, const apploader_item_t *app);
 
@@ -81,6 +102,10 @@ static void appload_loaded(apploader_list_t *apps, void *userdata);
 static void appload_errored(int code, const char *error, void *userdata);
 
 static void quit_dialog_cb(lv_event_t *event);
+
+static void switch_app_dialog(apps_fragment_t *controller, int running_app, const apploader_item_t *app);
+
+static void switch_app_dialog_cb(lv_event_t *event);
 
 static void actions_click_cb(lv_event_t *event);
 
@@ -121,6 +146,70 @@ static void show_ok(apps_fragment_t *fragment);
 static void show_error(apps_fragment_t *fragment, const char *title, const char *hint, const char *detail);
 
 static apps_fragment_t *current_instance = NULL;
+
+/* App id to relaunch fresh after a PIN HDR reconnect. File-static (not on the
+ * fragment) so it survives the apps-controller obj teardown that starting a
+ * stream causes. Consumed by appload_loaded when the apps view is recreated. */
+static int g_pending_hdr_relaunch_app = 0;
+/* Was the quit that armed the relaunch a CO-OP session? Captured at quit time rather than
+ * read back later, because the relaunch must not depend on when the flag happens to change
+ * -- and relaunching a co-op run as a single app id is exactly the bug this exists to fix
+ * (it tore both halves down and brought neither back, nine seconds into every woken co-op
+ * session).
+ *
+ * This comment used to claim app_launch_coop_requested() "is cleared during teardown". It
+ * was not, anywhere -- until 2026-08-12 NOTHING in the tree ever passed false, so the flag
+ * survived for the life of the process. Believing that stale sentence costs about ten
+ * minutes; see the black-screen note in launcher_launch_game() for what the leak did. */
+static bool g_pending_hdr_relaunch_coop = false;
+/* How many fresh-launch attempts we've made for the pending reconnect. The first
+ * launch right after the quit — and each retry — can hit Apollo's 503 "is a display
+ * connected" while its display/encoder reinit after the HDR mode change, so we retry
+ * a few times with a settle delay before giving up and surfacing the error. */
+static int g_hdr_relaunch_attempts = 0;
+#define HDR_RELAUNCH_MAX_ATTEMPTS 4
+static lv_timer_t *g_hdr_relaunch_timer = NULL;
+
+static void hdr_relaunch_timer_cb(lv_timer_t *timer) {
+    g_hdr_relaunch_timer = NULL;
+    lv_timer_del(timer);
+    apps_fragment_t *controller = current_instance;
+    /* Only launch if the apps view is back and no stream is currently active. */
+    if (controller == NULL || controller->global->session != NULL || g_pending_hdr_relaunch_app == 0) {
+        return;
+    }
+    if (g_pending_hdr_relaunch_coop) {
+        /* A co-op session comes back through the co-op path, not the app list: it is
+         * two hosts and an orientation, none of which an apploader item carries. */
+        g_hdr_relaunch_attempts++;
+        commons_log_info("PIN", "HDR reconnect: relaunching CO-OP session (attempt %d/%d)",
+                         g_hdr_relaunch_attempts, HDR_RELAUNCH_MAX_ATTEMPTS);
+        if (coop_dialog_relaunch_last(controller->global)) {
+            g_pending_hdr_relaunch_app = 0;
+            g_pending_hdr_relaunch_coop = false;
+        } else {
+            /* The remembered hosts are gone. Say so and stop, rather than falling
+             * through to launch half a co-op session as an ordinary stream. */
+            commons_log_warn("PIN", "HDR reconnect: co-op hosts no longer available, giving up");
+            g_pending_hdr_relaunch_app = 0;
+            g_pending_hdr_relaunch_coop = false;
+        }
+        return;
+    }
+    if (controller->apploader_apps == NULL) {
+        return;
+    }
+    const apploader_item_t *app = apploader_list_item_by_id(controller->apploader_apps,
+                                                            g_pending_hdr_relaunch_app);
+    if (app == NULL) {
+        g_pending_hdr_relaunch_app = 0; /* app vanished from the list; give up */
+        return;
+    }
+    g_hdr_relaunch_attempts++;
+    commons_log_info("PIN", "HDR reconnect: launching app %d fresh (attempt %d/%d)",
+                     g_pending_hdr_relaunch_app, g_hdr_relaunch_attempts, HDR_RELAUNCH_MAX_ATTEMPTS);
+    launcher_launch_game(controller, app);
+}
 
 const static lv_gridview_adapter_t apps_adapter = {
         .item_count = adapter_item_count,
@@ -185,7 +274,11 @@ static lv_obj_t *apps_view(lv_fragment_t *self, lv_obj_t *container) {
     lv_obj_t *applist = controller->applist = lv_gridview_create(view);
     lv_obj_add_flag(applist, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_set_scroll_dir(applist, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(applist, LV_SCROLLBAR_MODE_ACTIVE);
+    /* AUTO, not ACTIVE: ACTIVE shows the bar only DURING a drag, so with a mouse wheel or
+     * the d-pad it never appeared at all, and nothing said the list went further. The
+     * gridview is its own class, which the default theme never gives a bar style. */
+    lv_obj_set_scrollbar_mode(applist, LV_SCROLLBAR_MODE_AUTO);
+    lv_theme_moonlight_add_scrollbar(applist);
     lv_obj_set_style_pad_hor(applist, lv_dpx(32), 0);
     lv_obj_set_style_pad_ver(applist, lv_dpx(28), 0);
     lv_obj_set_style_pad_gap(applist, lv_dpx(20), 0);
@@ -288,8 +381,17 @@ static void update_grid_config(apps_fragment_t *controller) {
     controller->col_height = row_height;
     lv_gridview_set_config(applist, col_count, row_height, LV_GRID_ALIGN_CENTER, LV_GRID_ALIGN_CENTER);
 
-    controller->appitem_style.defcover_src.header.w = col_width;
-    controller->appitem_style.defcover_src.header.h = row_height;
+    appitem_styles_t *styles = &controller->appitem_style;
+    if (!coverloader_default_cover_build(&styles->defcover_src, &styles->defcover_data, col_width, row_height,
+                                         styles->radius)) {
+        /* The plain placeholder, square corners and all, beats an empty tile -- but say so: it is
+         * exactly what issue #23 looked like. */
+        commons_log_warn("Apps", "Rounded placeholder cover not built; tiles without art use the plain one");
+        styles->defcover_src.header.w = col_width;
+        styles->defcover_src.header.h = row_height;
+    }
+    commons_log_debug("Apps", "Grid re-measured: list %dpx -> %d columns of %dx%d",
+                      applist_width, col_count, col_width, row_height);
 }
 
 static void on_destroy_view(lv_fragment_t *self, lv_obj_t *view) {
@@ -474,6 +576,15 @@ static void show_ok(apps_fragment_t *fragment) {
     if (lv_group_get_focused(lv_obj_get_group(fragment->applist)) != fragment->applist) {
         lv_group_focus_obj(fragment->applist);
     }
+    /* KEEP THE USER'S PLACE. show_ok runs on every host status update (on_host_updated ->
+     * update_view_state, every few seconds while the host is polled), and it used to focus
+     * focus_backup unconditionally -- which only changes when the grid LOSES focus, so it was
+     * nearly always 0. The focus jumped back to the first app every few seconds, and OK then
+     * launched THAT app: measured 2026-09-26, the ring drawn on "Desktop" and OK starting
+     * "Co-op Pane", the first tile. Only a grid with nothing focused gets a focus here. */
+    if (lv_gridview_get_focused_index(fragment->applist) >= 0) {
+        return;
+    }
     int idx = fragment->focus_backup >= 0 ? fragment->focus_backup : 0;
     lv_gridview_focus(fragment->applist, idx);
 }
@@ -495,11 +606,42 @@ static void appload_started(void *userdata) {
     update_view_state(fragment);
 }
 
+/**
+ * THE CO-OP PANE IS NOT A GAME ON THIS PC, so it is not a tile -- except while it RUNS here.
+ *
+ * Co-op spans two PCs and starts from the co-op screen; the "Co-op Pane" each host runs is only
+ * its half. Listed as a tile it read as a game and launched a lone half-picture (09-26: OK on the
+ * first tile started it). Eclipse asks hosts to list it (umbraCoop=1, for the co-op screen's
+ * resolver), so the grid drops it here unless it is THIS host's running app -- a co-op session
+ * to resume or quit -- or the launch payload names it (the scripted co-op harness). Names freed
+ * here, so apploader_list_free() still frees exactly what is left.
+ */
+static void apps_hide_idle_coop_pane(const apps_fragment_t *fragment, apploader_list_t *apps) {
+    const int running = pcmanager_server_current_app(pcmanager, &fragment->uuid);
+    size_t out = 0;
+    for (size_t i = 0; i < apps->count; ++i) {
+        apploader_item_t *item = &apps->items[i];
+        const bool pane = item->base.name != NULL && strcmp(item->base.name, COOP_SESSION_APP_NAME) == 0;
+        const bool shown = !pane || (running != 0 && item->base.id == running) ||
+                          (fragment->def_app == item->base.id && !fragment->def_app_launched);
+        if (!shown) {
+            free(item->base.name);
+            continue;
+        }
+        if (out != i) {
+            apps->items[out] = *item;
+        }
+        out++;
+    }
+    apps->count = out;
+}
+
 static void appload_loaded(apploader_list_t *apps, void *userdata) {
     apps_fragment_t *fragment = userdata;
     if (!fragment->base.managed->obj_created || fragment->base.managed->destroying_obj) {
         return;
     }
+    apps_hide_idle_coop_pane(fragment, apps);
     int num_changes = -1;
     lv_gridview_data_change_t *changes = apps_list_detect_change(fragment->apploader_apps, apps, &num_changes);
     if (num_changes != 0) {
@@ -524,7 +666,32 @@ static void appload_loaded(apploader_list_t *apps, void *userdata) {
             }
         }
         if (app != NULL) {
+            /* Mark it BEFORE the call, not around it: launcher_launch_game pushes the
+             * streaming fragment, which starts reading the co-op globals synchronously,
+             * so anything restored after the call is restored too late. */
+            fragment->def_app_from_payload = true;
             launcher_launch_game(fragment, app);
+        }
+    }
+
+    /* PIN HDR reconnect: after the wake stream was quit (to force a fresh, HDR-
+     * capable launch), relaunch the same app once the apps view is back and no
+     * session is active. The pending id lives in a file-static, not the fragment,
+     * because pushing the stream deleted this controller's obj and wiped def_app.
+     * The actual launch is deferred by a settle delay (and retried) via a timer so
+     * Apollo's display/encoder has time to reinit after the HDR mode change. */
+    if (g_pending_hdr_relaunch_app > 0 && fragment->global->session == NULL) {
+        if (g_hdr_relaunch_attempts >= HDR_RELAUNCH_MAX_ATTEMPTS) {
+            /* Out of retries — stop; the last failure's error dialog was shown. */
+            commons_log_info("PIN", "HDR reconnect: giving up on app %d after %d attempts",
+                             g_pending_hdr_relaunch_app, g_hdr_relaunch_attempts);
+            g_pending_hdr_relaunch_app = 0;
+            g_pending_hdr_relaunch_coop = false;
+            g_hdr_relaunch_attempts = 0;
+        } else if (g_hdr_relaunch_timer == NULL) {
+            int settle = app_configuration->pin_relaunch_settle_ms > 0
+                             ? app_configuration->pin_relaunch_settle_ms : 3000;
+            g_hdr_relaunch_timer = lv_timer_create(hdr_relaunch_timer_cb, settle, NULL);
         }
     }
 }
@@ -538,6 +705,16 @@ static void appload_errored(int code, const char *error, void *userdata) {
 
 static void appitem_bind(apps_fragment_t *controller, lv_obj_t *item, apploader_item_t *app) {
     appitem_viewholder_t *holder = lv_obj_get_user_data(item);
+
+    /* The grid centres items at their own size instead of stretching them (both axes are
+     * LV_GRID_ALIGN_CENTER), and appitem_view_create() sizes an item exactly once. Recycled
+     * items therefore kept whatever the column measured when they were first created: after a
+     * re-layout they sat smaller than their cell, so clicks between them landed on the grid and
+     * did nothing, and once the cover was reloaded at the new size an object larger than its
+     * source got tiled by lv_img (lv_img.c:665) into a mosaic. Re-apply the geometry per bind. */
+    lv_obj_set_size(item, controller->col_width, controller->col_height);
+    lv_obj_set_style_transform_pivot_x(item, controller->col_width / 2, 0);
+    lv_obj_set_style_transform_pivot_y(item, controller->col_height / 2, 0);
 
     coverloader_display(controller->coverloader, &controller->uuid, app->base.id, item,
                         controller->col_width, controller->col_height);
@@ -562,15 +739,69 @@ static void item_click_cb(lv_event_t *event) {
     }
     appitem_viewholder_t *holder = (appitem_viewholder_t *) lv_obj_get_user_data(target);
     int current_app = pcmanager_server_current_app(pcmanager, &controller->uuid);
+    const apploader_item_t *item = apploader_list_item_by_id(controller->apploader_apps, holder->app_id);
+    assert(item != NULL);
     if (current_app != 0) {
         if (holder->app_id == current_app) {
             open_context_menu(controller, holder);
+        } else {
+            /* ANOTHER APP IS RUNNING ON THIS PC. This used to return here and do nothing at
+             * all -- no message, no log -- so a click or OK on any other app simply did not
+             * work until the user thought to open the running app's menu and stop it
+             * (measured 2026-09-26: a session left paused on a host blocked every launch). */
+            switch_app_dialog(controller, current_app, item);
         }
         return;
     }
-    const apploader_item_t *item = apploader_list_item_by_id(controller->apploader_apps, holder->app_id);
-    assert(item != NULL);
+    /* CHOOSE MODE: the click asks how to start -- "Start streaming" or "...(host monitor off)". */
+    if (host_monitor_choice_here(holder->controller)) {
+        open_context_menu(holder->controller, holder);
+        return;
+    }
     launcher_launch_game(holder->controller, item);
+}
+
+bool apps_controller_reconnect_running_app(app_t *global) {
+    if (global == NULL || global->session == NULL) {
+        return false;
+    }
+    /* Read the app id from the session, not pcmanager/current_instance: during a
+     * stream the apps-controller obj is destroyed (so current_instance is NULL)
+     * and pcmanager's cached currentGame is 0 on a cold boot until stream end.
+     * The session knows the id it launched with. */
+    int app_id = session_get_app_id(global->session);
+    if (app_id == 0) {
+        return false;
+    }
+    /* Remember what to relaunch; the recreated apps view picks this up in
+     * appload_loaded once the stream has torn down. */
+    g_pending_hdr_relaunch_app = app_id;
+    g_pending_hdr_relaunch_coop = app_launch_coop_requested();
+    g_hdr_relaunch_attempts = 0;
+    commons_log_info("PIN", "HDR reconnect: quitting to relaunch app %d fresh (coop=%d)", app_id,
+                     g_pending_hdr_relaunch_coop ? 1 : 0);
+    /* quitapp=true clears the host's currentGame so the relaunch is a FRESH
+     * gs_start_app — the only thing that re-runs Apollo's HDR display setup (a
+     * resume does not). On the wake/PIN path the streamed app is the Desktop, so
+     * quitting + relaunching it is harmless. */
+    session_interrupt(global->session, true, STREAMING_INTERRUPT_USER);
+    return true;
+}
+
+bool apps_controller_hdr_relaunch_will_retry(void) {
+    return g_pending_hdr_relaunch_app > 0 && g_hdr_relaunch_attempts < HDR_RELAUNCH_MAX_ATTEMPTS;
+}
+
+void apps_controller_hdr_relaunch_succeeded(void) {
+    /* A stream opened — whatever we were reconnecting for is done (or superseded by
+     * a manual launch). Clear the pending state so no stale relaunch/retry fires. */
+    g_pending_hdr_relaunch_app = 0;
+    g_pending_hdr_relaunch_coop = false;
+    g_hdr_relaunch_attempts = 0;
+    if (g_hdr_relaunch_timer != NULL) {
+        lv_timer_del(g_hdr_relaunch_timer);
+        g_hdr_relaunch_timer = NULL;
+    }
 }
 
 static void item_longpress_cb(lv_event_t *event) {
@@ -584,8 +815,83 @@ static void item_longpress_cb(lv_event_t *event) {
     open_context_menu(controller, (appitem_viewholder_t *) lv_obj_get_user_data(target));
 }
 
+static void launcher_launch_game_monitor_off(apps_fragment_t *controller, const apploader_item_t *app) {
+    LV_UNUSED(controller);
+    LV_UNUSED(app);
+}
+
 static void launcher_launch_game(apps_fragment_t *controller, const apploader_item_t *app) {
     LV_ASSERT(app->base.id != 0);
+    /* Every launch answers the host-monitor question, so no earlier launch's answer can carry over. */
+    app_launch_choose_host_monitor(g_launch_monitor_off);
+    g_launch_monitor_off = false;
+    /* A RUNNING CO-OP PANE RESUMES THE WHOLE CO-OP SESSION, never one half of it. The tile is only
+     * shown while co-op runs on this PC (apps_hide_idle_coop_pane); resuming it alone would stream a
+     * single pane. The last pair is relaunched on BOTH hosts (each resumes its paused pane); without
+     * a remembered pair the co-op screen opens instead. The scripted harness (payload) is exempt. */
+    if (app->base.name != NULL && strcmp(app->base.name, COOP_SESSION_APP_NAME) == 0 &&
+        !(controller->def_app_from_payload && app_launch_coop_requested())) {
+        /* Consumed here too: a payload that named the pane without asking for co-op must not leave
+         * the flag standing for the next, ordinary tile (the 08-12 black-screen leak below). */
+        controller->def_app_from_payload = false;
+        /* Relaunch the remembered pair only if THIS PC is in it; a pane started for another pair
+         * (another client, another session) gets the co-op screen to choose the pair instead. */
+        uuidstr_t mine = controller->uuid;
+        const bool in_last_pair = app_configuration != NULL &&
+                ((app_configuration->coop_primary_uuid != NULL &&
+                  uuidstr_t_equals_s(&mine, app_configuration->coop_primary_uuid)) ||
+                 (app_configuration->coop_secondary_uuid != NULL &&
+                  uuidstr_t_equals_s(&mine, app_configuration->coop_secondary_uuid)));
+        commons_log_info("COOP", "co-op pane tile chosen: %s", in_last_pair ? "relaunching the last co-op pair"
+                                                                            : "opening the co-op screen");
+        if (!in_last_pair || !coop_dialog_relaunch_last(controller->global)) {
+            launcher_fragment_t *launcher = (launcher_fragment_t *) lv_fragment_get_parent(&controller->base);
+            if (launcher != NULL) {
+                coop_dialog_open(launcher);
+            }
+        }
+        return;
+    }
+    /* THIS IS A SINGLE-HOST LAUNCH, SO SAY SO. CO-OP MODE DOES NOT EXPIRE BY ITSELF.
+     *
+     * coop.dialog.c sets app_launch_set_coop_requested(true) and coop_session_set() when a
+     * co-op session starts, and NOTHING ever unset them -- not the end of the session, not
+     * the teardown, not returning to the launcher. So after one co-op session every later
+     * stream in the same app run was still built as a co-op pane: it asked the host for a
+     * half-height 3840x1088, opened a 3840x2176 composite, and waited for a peer that was
+     * never coming. Reported 2026-08-12 as "closing coop and opening pc1 has given a black
+     * screen", and the diag agreed while insisting nothing was wrong -- ok=43982 climbing,
+     * errors=0, and a solid black panel, because the decoder was fed a half-height picture
+     * into a double-height canvas.
+     *
+     * This is NOT machine-specific: it is a leaked global, so any host on any PC hits it
+     * the moment somebody runs co-op and then opens a single machine without restarting
+     * the app. Clearing it HERE -- at the one place a single-host stream begins -- keeps
+     * the two modes from being able to disagree, whatever order they are used in.
+     *
+     * EXCEPT THIS IS NOT ONLY WHERE A SINGLE-HOST STREAM BEGINS, and assuming it was
+     * broke co-op from the launch payload outright. `ares-launch -p '{...,"coop":true}'`
+     * arms co-op in app_webos.c, then auto-launches the requested app through THIS
+     * function -- which immediately cleared the flag again. The payload arrived intact
+     * and parsed correctly; the stream then came up solo, logging "sentinels present but
+     * launch did not request co-op". Every co-op run is driven that way (run_coop.sh),
+     * so co-op could not be started at all. Found 2026-08-14 on the first co-op run
+     * after the leak fix.
+     *
+     * The payload's request belongs to the ONE launch it arrived with, so it is consumed
+     * here rather than left standing: a later single-host launch in the same app run
+     * clears normally and the leak stays fixed. */
+    const bool payload_wants_coop = controller->def_app_from_payload && app_launch_coop_requested();
+    controller->def_app_from_payload = false;
+    /* Both halves matter. "From the payload" alone is not enough: a payload launch that
+     * did NOT ask for co-op must still clear, or a co-op session followed by a plain
+     * `-p '{host_uuid,host_app_id}'` launch in the same app run would inherit co-op and
+     * reopen exactly the leak above. */
+    if (!payload_wants_coop) {
+        app_launch_set_coop_requested(false);
+        coop_session_clear();
+    }
+
     streaming_scene_arg_t args = {
             .global = controller->global,
             .uuid = controller->uuid,
@@ -608,9 +914,35 @@ static void launcher_toggle_hidden(apps_fragment_t *controller, const apploader_
     apploader_load(controller->apploader);
 }
 
+/* STOPPING ONE CO-OP PANE STOPS THE PAIR, like Quit inside the stream (session_worker.c, "CO-OP: QUIT
+ * ENDS BOTH PANES"). Each host runs its own Co-op Pane, so "Stop streaming" on one PC's pane ended only
+ * that PC and left the other paused with no partner to resume with -- the user had to stop it again from
+ * the other PC's list. Every other PC whose running app is the Co-op Pane is quit too; their results come
+ * back through quitgame_cb, which ignores any PC but the one on screen. */
+static void launcher_quit_coop_peers(const apps_fragment_t *controller, int app_id) {
+    const int coop_id = app_configuration != NULL && app_configuration->coop_app_id > 0
+                        ? app_configuration->coop_app_id : COOP_APP_ID_DEFAULT;
+    if (app_id == 0 || app_id != coop_id) {
+        return;
+    }
+    for (const pclist_t *cur = pcmanager_servers(pcmanager); cur != NULL; cur = cur->next) {
+        if (cur->server == NULL || uuidstr_t_equals_t(&cur->id, &controller->uuid)) {
+            continue;
+        }
+        if (cur->server->currentGame != coop_id) {
+            continue;
+        }
+        commons_log_info("Launcher", "Stop streaming on the Co-op Pane: also quitting it on %s",
+                         cur->server->hostname);
+        pcmanager_quitapp(pcmanager, &cur->id, quitgame_cb, NULL);
+    }
+}
+
 static void launcher_quit_game(apps_fragment_t *controller) {
+    const int quitting = pcmanager_server_current_app(pcmanager, &controller->uuid);
     controller->quit_progress = progress_dialog_create(locstr("Quitting game..."));
     pcmanager_quitapp(pcmanager, &controller->uuid, quitgame_cb, NULL);
+    launcher_quit_coop_peers(controller, quitting);
 }
 
 static int adapter_item_count(lv_obj_t *grid, void *data) {
@@ -670,7 +1002,15 @@ static void quitgame_cb(int result, const char *error, const uuidstr_t *uuid, vo
         controller->quit_progress = NULL;
     }
     lv_gridview_rebind(controller->applist);
+    const int launch_after_quit = controller->launch_after_quit;
+    controller->launch_after_quit = 0;
     if (result == GS_OK) {
+        if (launch_after_quit != 0) {
+            const apploader_item_t *next = apploader_list_item_by_id(controller->apploader_apps, launch_after_quit);
+            if (next != NULL) {
+                launcher_launch_game(controller, next);
+            }
+        }
         return;
     }
     static const char *btn_texts[] = {translatable("OK"), ""};
@@ -686,6 +1026,47 @@ static void quit_dialog_cb(lv_event_t *event) {
     lv_msgbox_close_async(dialog);
 }
 
+/** "X is running on this PC. Quit it and start Y?" -- the choice the silent return used to hide. */
+static void switch_app_dialog(apps_fragment_t *controller, int running_app, const apploader_item_t *app) {
+    const apploader_item_t *running = apploader_list_item_by_id(controller->apploader_apps, running_app);
+    const pclist_t *node = pcmanager_node(pcmanager, &controller->uuid);
+    const char *pc = node != NULL && node->server != NULL && node->server->hostname != NULL
+                     ? node->server->hostname : locstr("this PC");
+    char text[512];
+    snprintf(text, sizeof(text), locstr("%s is running on %s. Quit it and start %s?"),
+             running != NULL ? running->base.name : locstr("Another app"), pc, app->base.name);
+    /* "Yes", not "Quit and start": the question already says what happens, and a msgbox button
+     * has a fixed width that the longer label overflowed (clipped to "uit and start"). */
+    static const char *btn_texts[] = {translatable("Yes"), translatable("Cancel"), ""};
+    lv_obj_t *dialog = lv_msgbox_create_i18n(NULL, locstr("Another app is running"), text, btn_texts, false);
+    lv_obj_set_user_data(dialog, (void *) (intptr_t) app->base.id);
+    lv_obj_add_event_cb(dialog, switch_app_dialog_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_center(dialog);
+}
+
+static void switch_app_dialog_cb(lv_event_t *event) {
+    lv_obj_t *dialog = lv_event_get_current_target(event);
+    const int app_id = (int) (intptr_t) lv_obj_get_user_data(dialog);
+    const bool confirmed = lv_msgbox_get_active_btn(dialog) == 0;
+    lv_msgbox_close_async(dialog);
+    /* The launcher that opened this is looked up again rather than remembered: it is the
+     * same guard quitgame_cb uses, should the view have been rebuilt meanwhile. */
+    apps_fragment_t *controller = current_instance;
+    if (!confirmed || controller == NULL || app_id == 0) {
+        return;
+    }
+    if (pcmanager_server_current_app(pcmanager, &controller->uuid) == 0) {
+        /* It stopped by itself while the question was up: nothing left to quit. */
+        const apploader_item_t *app = apploader_list_item_by_id(controller->apploader_apps, app_id);
+        if (app != NULL) {
+            launcher_launch_game(controller, app);
+        }
+        return;
+    }
+    controller->launch_after_quit = app_id;
+    launcher_quit_game(controller);
+}
+
 static void actions_click_cb(lv_event_t *event) {
     apps_fragment_t *controller = lv_event_get_user_data(event);
     uint16_t index = lv_btnmatrix_get_selected_btn(controller->actions);
@@ -697,6 +1078,8 @@ static void action_cb_wol(apps_fragment_t *controller, lv_obj_t *buttons, uint16
     LV_UNUSED(index);
     lv_btnmatrix_set_btn_ctrl_all(buttons, LV_BTNMATRIX_CTRL_DISABLED);
     pcmanager_send_wol(pcmanager, &controller->uuid, send_wol_cb, NULL);
+    /* Arm PIN auto-entry so the stream that follows this wake auto-unlocks the host. */
+    pin_autoentry_arm(&controller->uuid);
 }
 
 static void action_cb_host_reload(apps_fragment_t *controller, lv_obj_t *buttons, uint16_t index) {
@@ -730,6 +1113,13 @@ static void open_context_menu(apps_fragment_t *fragment, appitem_viewholder_t *h
                                                                         : locstr("Start streaming"));
         lv_obj_add_flag(start_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_user_data(start_btn, launcher_launch_game);
+        if (host_monitor_choice_here(fragment)) {
+            lv_obj_t *off_btn = lv_list_add_btn(content, NULL,
+                                                currentId == app->base.id ? locstr("Resume streaming (host monitor off)")
+                                                                          : locstr("Start streaming (host monitor off)"));
+            lv_obj_add_flag(off_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
+            lv_obj_set_user_data(off_btn, launcher_launch_game_monitor_off);
+        }
     }
 
     if (currentId) {
@@ -772,6 +1162,9 @@ static void context_menu_click_cb(lv_event_t *e) {
     if (lv_obj_get_user_data(target) == launcher_quit_game) {
         launcher_quit_game(self);
     } else if (lv_obj_get_user_data(target) == launcher_launch_game) {
+        launcher_launch_game(self, app);
+    } else if (lv_obj_get_user_data(target) == launcher_launch_game_monitor_off) {
+        g_launch_monitor_off = true;
         launcher_launch_game(self, app);
     } else if (lv_obj_get_user_data(target) == launcher_toggle_fav) {
         launcher_toggle_fav(self, app);

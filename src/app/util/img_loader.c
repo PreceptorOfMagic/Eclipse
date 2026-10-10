@@ -118,7 +118,18 @@ static void run_on_main(img_loader_t *loader, img_loader_fn fn, img_loader_req_t
             .mutex = SDL_CreateMutex(), .cond = SDL_CreateCond(),
             .destroyed = &loader->destroyed
     };
-    loader->impl.run_on_main(loader, (img_loader_run_on_main_fn) notify_cb, &args);
+    if (!loader->impl.run_on_main(loader, (img_loader_run_on_main_fn) notify_cb, &args)) {
+        /* NOT SCHEDULED, SO NEVER WAIT FOR IT. The app bus refuses work once the app stops
+         * running, and app_deinit then destroys the executor, which cancels this loader's
+         * pending tasks and JOINS the worker running them -- on the main thread, the one this
+         * wait needed. Measured 2026-09-26 (gdb, Windows): main in executor_destroy, the
+         * "moonlight-io" worker here in run_on_main from task_destroy; the window gone and
+         * the process never exiting. Skipping the callback only leaks a request the exiting
+         * process never frees. */
+        SDL_DestroyMutex(args.mutex);
+        SDL_DestroyCond(args.cond);
+        return;
+    }
     SDL_LockMutex(args.mutex);
     while (!args.notified) {
         SDL_CondWait(args.cond, args.mutex);

@@ -24,8 +24,10 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
+
+      - name: Prepare Client Dependencies
+        run: ./scripts/bootstrap_client_deps.sh
 
       - name: Update Packages
         shell: bash
@@ -68,7 +70,11 @@ jobs:
       - name: Copy Install Manual
         run: cp docs/INSTALL.steamlink.md dist/
 
-      - uses: actions/upload-artifact@v4
+      # Keep unvalidated platform packages inside private CI until the
+      # release-specific notice, source and support gates are complete.
+      - name: Upload private Steam Link snapshot
+        if: ${{ github.event.repository.private }}
+        uses: actions/upload-artifact@v4
         with:
           name: steamlink-snapshot-${{ env.SHORT_SHA }}
           path: |

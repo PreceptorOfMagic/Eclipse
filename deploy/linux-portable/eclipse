@@ -1,0 +1,167 @@
+#!/bin/sh
+# Eclipse for Linux -- start the client from this folder.
+#
+# This only POINTS the unmodified client at the folder it was unpacked to: the bundled translations,
+# the window class the menu entry matches (install-desktop-entry.sh), fallbacks for the three system
+# libraries a desktop can lack, and a log file when there is no terminal to print to. The client's
+# own libraries are found through its RUNPATH ($ORIGIN/../lib). Driver shader-cache defaults
+# stay under the app cache directory so normal uninstall can remove them.
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd) || exit 1
+BIN="$HERE/bin/moonlight-tv"
+
+# The loader's view of the system: `ldconfig -p` knows every 64-bit library it will resolve, including
+# /etc/ld.so.conf.d directories. Checking plain directories instead would be fooled by a 32-bit copy
+# (Steam and Wine install those in /usr/lib on Fedora).
+LDCACHE=$( (ldconfig -p || /sbin/ldconfig -p || /usr/sbin/ldconfig -p) 2>/dev/null )
+have_lib() {
+    if [ -n "$LDCACHE" ]; then
+        case "$LDCACHE" in *"$1 (libc6,x86-64"*) return 0 ;; esac
+        return 1
+    fi
+    for d in /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu /lib64 /usr/lib64; do
+        [ -e "$d/$1" ] && return 0
+    done
+    return 1
+}
+
+fail() {   # the menu entry has no terminal: say it where the user can see it, too
+    printf 'Eclipse: %s\n' "$1" >&2
+    if command -v zenity > /dev/null 2>&1; then zenity --error --title=Eclipse --text="$1" 2> /dev/null
+    elif command -v kdialog > /dev/null 2>&1; then kdialog --title Eclipse --error "$1" 2> /dev/null
+    elif command -v notify-send > /dev/null 2>&1; then notify-send Eclipse "$1" 2> /dev/null
+    fi
+    exit 1
+}
+
+[ "$(uname -m)" = x86_64 ] || fail "this build is for 64-bit x86 PCs (x86_64); this machine is $(uname -m)."
+[ -x "$BIN" ] || fail "the client is missing from $HERE/bin -- unpack the whole archive again."
+
+# Libraries every desktop has but a stripped-down system may not (never bundled: they must match the
+# system's own fonts and configuration).
+missing=
+for lib in libfontconfig.so.1 libfreetype.so.6 libexpat.so.1 libuuid.so.1; do
+    have_lib "$lib" || missing="$missing $lib"
+done
+if [ -n "$missing" ]; then
+    fail "required system libraries are missing:$missing
+Install them with your package manager, e.g.
+  Debian/Ubuntu/Mint:  sudo apt install libfontconfig1 libfreetype6 libexpat1 libuuid1
+  Fedora:              sudo dnf install fontconfig freetype expat libuuid
+  Arch/SteamOS:        sudo pacman -S fontconfig freetype2 expat util-linux-libs"
+fi
+
+# VA-API and DRM: the system's copies win (its GPU drivers are built against them); the bundled ones
+# are used only for a library the system does not have, one library at a time.
+extra=
+for pair in libva:libva.so.2 libva-drm:libva-drm.so.2 libdrm:libdrm.so.2; do
+    have_lib "${pair#*:}" || extra="$extra:$HERE/lib/fallback/${pair%%:*}"
+done
+if [ -n "$extra" ]; then
+    LD_LIBRARY_PATH="${extra#:}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH
+fi
+
+# Driver defaults normally use a shared user cache, which an app uninstaller must not delete.
+# Preserve explicit overrides (even empty values); only our defaults are owned by this package.
+. "$HERE/package-functions.sh"
+package_paths
+if [ "${MESA_SHADER_CACHE_DIR+x}" != x ] || [ "${__GL_SHADER_DISK_CACHE_PATH+x}" != x ]; then
+    shader_cache="$CACHE/moonlight-tv"
+    [ ! -L "$shader_cache" ] || fail "the app cache directory is a symbolic link: $shader_cache"
+    prepare_shader_cache() {
+        [ ! -L "$1" ] || fail "the shader cache directory is a symbolic link: $1"
+        (umask 077; mkdir -p -- "$1") || fail "cannot create the app shader cache: $1"
+    }
+    if [ "${MESA_SHADER_CACHE_DIR+x}" != x ]; then
+        prepare_shader_cache "$shader_cache/mesa"
+        export MESA_SHADER_CACHE_DIR="$shader_cache/mesa"
+    fi
+    if [ "${__GL_SHADER_DISK_CACHE_PATH+x}" != x ]; then
+        prepare_shader_cache "$shader_cache/nvidia"
+        export __GL_SHADER_DISK_CACHE_PATH="$shader_cache/nvidia"
+    fi
+fi
+
+# libpulse may create a default authentication cookie during connection/authentication.
+# Supply a lower-priority fallback through client.conf, never PULSE_COOKIE: that would
+# override cookies advertised by X11 or chosen in the user's client configuration.
+if [ "${PULSE_COOKIE+x}" != x ] && [ "${PULSE_CLIENTCONFIG+x}" != x ] &&
+   [ "${PULSE_CONFIG_PATH+x}" != x ] &&
+   [ ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/pulse/cookie" ] &&
+   [ ! -L "${XDG_CONFIG_HOME:-$HOME/.config}/pulse/cookie" ] &&
+   [ ! -e "$HOME/.pulse-cookie" ] && [ ! -L "$HOME/.pulse-cookie" ]; then
+    pulse_original=
+    # Match libpulse's readable legacy -> modern -> global selection. An existing
+    # unreadable modern/global file is ignored, rather than blocking application startup.
+    if [ -r "$HOME/.pulse/client.conf" ]; then
+        pulse_original="$HOME/.pulse/client.conf"
+    elif [ -r "$HOME/.config/pulse/client.conf" ]; then
+        pulse_original="$HOME/.config/pulse/client.conf"
+    elif [ ! -e "$HOME/.config/pulse/client.conf" ] && [ -r /etc/pulse/client.conf ]; then
+        pulse_original=/etc/pulse/client.conf
+    fi
+    pulse_dir="$STATE/eclipse/pulse"
+    for directory in "$STATE/eclipse" "$pulse_dir"; do
+        [ ! -L "$directory" ] || fail "the app state directory is a symbolic link: $directory"
+    done
+    (umask 077; mkdir -p -- "$pulse_dir") || fail "cannot create the app audio state: $pulse_dir"
+    pulse_cookie="$pulse_dir/cookie"
+    [ ! -L "$pulse_cookie" ] || fail "the app audio cookie is a symbolic link: $pulse_cookie"
+    if [ ! -e "$pulse_cookie" ]; then
+        pulse_new=$(mktemp "$pulse_dir/cookie.XXXXXX") || fail 'cannot prepare the app audio cookie.'
+        if ! head -c 256 /dev/urandom > "$pulse_new" || ! chmod 600 "$pulse_new"; then
+            rm -f -- "$pulse_new"
+            fail 'cannot initialize the app audio cookie.'
+        fi
+        # A concurrent launch may have created it first; never replace an existing cookie.
+        ln -- "$pulse_new" "$pulse_cookie" 2>/dev/null || true
+        rm -f -- "$pulse_new"
+    fi
+    [ -f "$pulse_cookie" ] && [ -r "$pulse_cookie" ] &&
+        [ "$(wc -c < "$pulse_cookie")" -eq 256 ] || fail 'the app audio cookie is unreadable or invalid.'
+    pulse_conf=$(mktemp "$pulse_dir/client.conf.XXXXXX") || fail 'cannot prepare the app audio configuration.'
+    # Keep the cookie readable through exec without exposing its path to Pulse's grammar.
+    # This also works when a normal home directory contains '#' or ';'.
+    exec 9< "$pulse_cookie"
+    printf 'cookie-file = /proc/self/fd/9\n' > "$pulse_conf" || fail 'cannot write the app audio configuration.'
+    # Native drop-in parsing isolates errors in each file. Individual .include lines
+    # do not, so retain the original directory through an app-owned directory symlink.
+    [ ! -e "$pulse_dir/client.conf.d" ] || [ -L "$pulse_dir/client.conf.d" ] ||
+        fail 'the app audio drop-in path is not a symbolic link.'
+    if [ -n "$pulse_original" ]; then
+        # The directory descriptor preserves relative includes and symlinked-file
+        # semantics without passing arbitrary home path characters to Pulse's parser.
+        exec 8< "$(dirname -- "$pulse_original")"
+        printf '.include /proc/self/fd/8/client.conf\n' >> "$pulse_conf" ||
+            fail 'cannot preserve the existing audio configuration.'
+        pulse_links=$(mktemp -d "$pulse_dir/dropins.XXXXXX") || fail 'cannot prepare audio configuration overrides.'
+        if ! ln -s -- "$pulse_original.d" "$pulse_links/link" ||
+           ! mv -Tf -- "$pulse_links/link" "$pulse_dir/client.conf.d"; then
+            rm -f -- "$pulse_links/link"
+            rmdir -- "$pulse_links"
+            fail 'cannot preserve audio configuration overrides.'
+        fi
+        rmdir -- "$pulse_links"
+    else
+        rm -f -- "$pulse_dir/client.conf.d"
+    fi
+    [ ! -L "$pulse_dir/client.conf" ] || fail 'the app audio configuration is a symbolic link.'
+    mv -f -- "$pulse_conf" "$pulse_dir/client.conf" || fail 'cannot publish the app audio configuration.'
+    export PULSE_CLIENTCONFIG="$pulse_dir/client.conf"
+fi
+
+export TEXTDOMAINDIR="${TEXTDOMAINDIR:-$HERE/share/locale}"
+export SDL_VIDEO_X11_WMCLASS="${SDL_VIDEO_X11_WMCLASS:-eclipse}"
+export SDL_VIDEO_WAYLAND_WMCLASS="${SDL_VIDEO_WAYLAND_WMCLASS:-eclipse}"
+
+# Started from a terminal: print there. Started from the menu: keep the last two runs' output.
+if [ ! -t 2 ]; then
+    LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/eclipse"
+    if mkdir -p "$LOGDIR" 2> /dev/null; then
+        [ -f "$LOGDIR/eclipse.log" ] && mv -f "$LOGDIR/eclipse.log" "$LOGDIR/eclipse.log.1"
+        exec > "$LOGDIR/eclipse.log" 2>&1
+    fi
+fi
+
+exec "$BIN" "$@"

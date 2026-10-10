@@ -17,8 +17,11 @@
 
 #include "errors.h"
 #include "set_error.h"
+#include "file_compat.h"
 
 #include <stdio.h>
+#include <errno.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -124,14 +127,23 @@ int mkcert_generate(const char *certFile, const char *keyFile) {
         goto finally;
     }
 
-    f = fopen(keyFile, "w");
+    f = gs_fopen_private_utf8(keyFile, 1);
     if (f == NULL) {
-        ret = gs_set_error(GS_IO_ERROR, "Failed to open keyFile %s for writing", keyFile);
+        ret = gs_set_error(GS_IO_ERROR, "Cannot safely write private key %s: %s (requires an owned regular file, no links)",
+                           keyFile, strerror(errno));
         goto finally;
     }
-    fwrite(buf, strlen(buf), 1, f);
-    fflush(f);
-    fclose(f);
+    bool write_failed = fwrite(buf, 1, strlen(buf), f) != strlen(buf);
+    if (fflush(f) != 0) {
+        write_failed = true;
+    }
+    if (fclose(f) != 0) {
+        write_failed = true;
+    }
+    if (write_failed) {
+        ret = gs_set_error(GS_IO_ERROR, "Failed to write keyFile %s", keyFile);
+        goto finally;
+    }
 
     if ((ret = mbedtls_x509write_crt_pem(&crt, (unsigned char *) buf, 4096, mbedtls_ctr_drbg_random, &ctr_drbg)) != 0) {
         mbedtls_strerror(ret, buf, 512);
@@ -139,14 +151,22 @@ int mkcert_generate(const char *certFile, const char *keyFile) {
         goto finally;
     }
 
-    f = fopen(certFile, "w");
+    f = gs_fopen_utf8(certFile, "wb");
     if (f == NULL) {
         ret = gs_set_error(GS_IO_ERROR, "Failed to open certFile %s for writing", certFile);
         goto finally;
     }
-    fwrite(buf, strlen(buf), 1, f);
-    fflush(f);
-    fclose(f);
+    write_failed = fwrite(buf, 1, strlen(buf), f) != strlen(buf);
+    if (fflush(f) != 0) {
+        write_failed = true;
+    }
+    if (fclose(f) != 0) {
+        write_failed = true;
+    }
+    if (write_failed) {
+        ret = gs_set_error(GS_IO_ERROR, "Failed to write certFile %s", certFile);
+        goto finally;
+    }
 
     finally:
     mbedtls_pk_free(&key);

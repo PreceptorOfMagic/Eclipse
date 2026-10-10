@@ -1,121 +1,74 @@
-# Aurora
+# Eclipse
 
-Unofficial fork of [Moonlight TV](https://github.com/mariotaku/moonlight-tv) for **LG webOS** (C1–C5 and compatible sets), focused on high-quality streaming on OLED TVs with a remote- and gamepad-friendly UI.
+**The screen-side app: everyday game streaming and two-host couch co-op on LG webOS, Windows and Linux.**
 
-> Rights to the original project belong to [mariotaku/moonlight-tv](https://github.com/mariotaku/moonlight-tv) and the Moonlight community. Provided without warranty.
+[Project Hub](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub) · [Installation Guide](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md) · [Eclipse](https://github.com/PreceptorOfMagic/Eclipse) · [Umbra](https://github.com/PreceptorOfMagic/Umbra) · [Development](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/development.md) · [Acknowledgements](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/ACKNOWLEDGEMENTS.md)
 
-## Highlights
+New here? [The Project Hub](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub) explains the setup, co-op, hardware coverage and both applications. This repository owns Eclipse source and client release files. Eclipse descends from Moonlight, Moonlight TV and Aurora.
 
-- **AMOLED layout** — pure black background (`#000000`), dark surfaces, and violet accent; launcher, game grid, and settings popups share the same theme.
-- **3.6K resolution (3584×2016)** — option between 2K and 4K; ~90% of 4K pixel area with less load on the TV decoder and lower input lag than native 4K on recent models.
-- **HDR10 (PQ)** over HEVC Main10 or AV1 Main10 (when supported).
-- Up to **400 Mbps** on the bitrate slider (UI maximum); practical guidance below.
+## Downloads and installation
 
-## Recommended settings (LG OLED)
+Open [Eclipse releases](https://github.com/PreceptorOfMagic/Eclipse/releases), choose the latest compatible release and expand **Assets**. Download the attached package for your device—not GitHub’s generated **Source code** archives. If no release/package is listed, that platform’s installer has not been published.
 
-| Setting | Suggestion |
-|---------|------------|
-| **Resolution** | **3.6K** (3584×2016) — best quality/performance balance for most titles |
-| **FPS** | 60 or 120 depending on game and network |
-| **Codec** | HEVC (H.265); AV1 if host and decoder expose it |
-| **Bitrate** | **Up to ~270 Mbps** on stable 5 GHz Wi‑Fi — reduces micro-stutters and throughput drops on heavy streams (HDR, 120 Hz). Increase gradually; visual gains above that are usually small |
+| Device | Asset to choose | Install |
+|---|---|---|
+| LG webOS TV | Standard `com.aurora.gamestream_<version>_arm.ipk` (not beta) | [LG TV steps](#lg-webos) |
+| Windows x64 | `eclipse-windows-x64-unsigned.zip` + checksum | [Windows steps](#windows-x64) |
+| Linux x86_64 | `eclipse-linux-x86_64.tar.gz` | [Linux steps](#linux-x86_64) |
 
-On an unstable network, start at **120–180 Mbps** for 3.6K HDR before going higher.
+### LG webOS
 
-## Status overlay
+1. Follow [LG’s Developer Mode setup](https://webostv.developer.lge.com/develop/getting-started/developer-mode-app) on the TV.
+2. Install [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop/releases/latest) on your computer and connect the TV using its Developer Mode address/passphrase.
+3. Download the standard Eclipse IPK above, choose **Apps → Install** in Dev Manager and select the file.
+4. Launch Eclipse on the TV. Keep the Developer Mode session active; close/reopen Eclipse after updates.
 
-### How to open
+[Full LG installation and prerequisites](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md#eclipse-webos). Physical testing: LG G5 on webOS 26; other models/versions need reports.
 
-- **Magic Remote:** **red (RED)** button or **EXIT** key (traditional remote).
-- **Gamepad:** press **LB + RB + Back + Start** together, then **release** (opens the streaming menu).
-- **Physical keyboard on the host (via stream):** `Ctrl + Alt + Shift + S`.
-- During streaming, the app also hints at holding **BACK** (behavior may vary by remote model).
+### Windows x64
 
-From the menu: **Full keyboard**, virtual mouse, suspend, and quit. The compact stats bar can stay pinned on start (Settings → Basic).
+1. Download the ZIP and its matching SHA-256 file from the same release; compare with `Get-FileHash .\eclipse-windows-x64-unsigned.zip -Algorithm SHA256`.
+2. Use **Extract All**, preserving every DLL/data folder.
+3. Run `moonlight-tv.exe` as a normal user. The inherited executable name is expected. No compiler or MSYS2 is required.
 
-### Gamepad hotkeys (during streaming)
+The portable build is unsigned; check its provenance and checksum before responding to a Windows warning. Signing through SignPath Foundation is being set up: see the [Code signing policy](CODE_SIGNING_POLICY.md). Windows 11 is tested. The source minimum is Windows 10 version 1803, but its coverage is not equivalent. A compatible D3D11VA GPU/driver is required.
 
-Hold the buttons together, then **release all at once** to trigger (same pattern as opening the menu).
+[Full Windows installation](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md#eclipse-windows).
 
-| Combo | Action |
-|-------|--------|
-| **LB + RB + Back + Start** | Open streaming menu (overlay) |
-| **RB + RS** | Open **Full keyboard** directly |
-| **LB + RS** | Toggle **Virtual mouse** |
-| **LB + LS** | Toggle **pinned performance stats** |
+### Linux x86_64
 
-**Xbox layout:** **LB** / **RB** = left / right bumper; **LS** / **RS** = press the left / right analog stick; **Back** = View; **Start** = Menu.
+1. Download the archive and verify its matching checksum if supplied.
+2. Extract it with `tar -xzf eclipse-linux-x86_64.tar.gz`.
+3. Enter `eclipse-linux-x86_64` and run `./eclipse`. Keep the directory together; the launcher sets up bundled libraries.
+4. Optionally run `./install-desktop-entry.sh` for a user launcher.
 
-**Virtual mouse** must be enabled first in **Settings → Input → Virtual mouse**. When active:
+Requires glibc 2.35+ (Ubuntu 22.04 baseline), a graphical desktop and working GPU drivers. Current Linux tests are WSL-based with NVDEC; native Linux and AMD/Intel VAAPI still need validation.
 
-- **Right stick** — move the cursor
-- **LT / RT** — left / right mouse button
-- **Left stick click (LS)** — scroll mode (vertical wheel)
+[Full Linux installation](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md#eclipse-linux).
 
-These combos work without opening the overlay. **HID Passthrough** disables standard Moonlight gamepad emulation, so hotkeys may not apply in that mode.
+## What Eclipse provides
 
-### Compact mode (single line)
+- Discover or add an Umbra host, complete PIN pairing and launch its games or desktop.
+- Choose decoder-aware 720p, 1080p, 1440p, 3584×2016 “3.6K”, 4K, native or custom resolutions.
+- Select frame rates from 30 to 240 fps where the active decoder permits them.
+- Use automatic bitrate or a manual 5–400 Mbps selector; the negotiated protocol path may impose a lower effective limit.
+- Use H.264 or HEVC on desktop targets, with capability-gated AV1 and HDR10 paths on compatible webOS hardware.
+- Send gamepad, keyboard and mouse input, including supported rumble, trigger rumble, touchpad, gyro, accelerometer and RGB capabilities.
+- Open the on-screen keyboard, use the gamepad virtual mouse and inspect live codec, size, frame rate, latency, drop and bitrate statistics.
 
-Example: `3584×2016 HDR H.265 FPS 120 N 2/1ms H 4ms S 1ms D 8ms TL 15ms FD 0.00% 245.0 Mbps`
+## First stream and co-op
 
-| Field | Meaning |
-|-------|---------|
-| **Resolution / HDR / Codec** | Current stream (SDR or HDR, H.264/H.265/AV1) |
-| **FPS** | Render rate on the panel (capped to display refresh) |
-| **N** | Network RTT (average / variance in ms) |
-| **H** | Average host capture latency (ms) |
-| **S** | Submit time to the decoder (ms) |
-| **D** | Average TV decoder latency only (ms) |
-| **TL** | Estimated total latency (N + H + S + D) |
-| **FD** | % of frames dropped on the network |
-| **Mbps** | Measured video throughput |
+1. Install [Umbra](https://github.com/PreceptorOfMagic/Umbra) on the gaming PC. Discover/add it in Eclipse and approve Eclipse’s PIN on the host.
+2. Launch a normal game or desktop and verify picture, audio and input.
+3. For co-op, install a compatible Umbra release on a second PC and test it individually.
+4. Choose **Co-op** in Eclipse, select both PCs and layout, assign players/controllers and start. Matching host/client releases negotiate the encoder path; no manual Co-op Pane application or hidden encoder settings are part of setup.
 
-**Color dot:** green ≤25 ms, yellow ≤30 ms, red >30 ms (TL).
+Each PC runs its own game session. See the [Project Hub](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub) for the full system map and current hardware matrix.
 
-### Full mode
+## Reporting and contributing
 
-Same metrics in separate rows: video, audio, RTT, network/render FPS, frame drop, bitrate, host and decoder latency.
+Use **Settings → About → Keep diagnostic logs**, restart, reproduce the issue, then **Share logs…**. Follow the [log-export instructions](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md#diagnostics), review private details and attach the bundle to [Eclipse issues](https://github.com/PreceptorOfMagic/Eclipse/issues/new/choose). Include exact versions, hardware and whether a normal stream works.
 
-## Full keyboard (soft keyboard)
+[Development and build entry points](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/development.md) · [Acknowledgements](ACKNOWLEDGEMENTS.md)
 
-Windows 11 / Xbox OSK layout with alphabetic and `&123` symbol layers, plus F1–F12. Aurora dark theme. Sticky modifiers (Alt then Tab = Alt+Tab).
-
-### How to open
-
-1. **Gamepad:** hold **RB + RS**, then release both — opens the keyboard without the overlay.
-2. Open the **streaming overlay** (see above) and select **Full keyboard**.
-3. **Magic Remote:** press the **blue (BLUE)** button during streaming.
-
-Keys are sent directly to the PC (**Ctrl**, **Alt**, **Shift**, **Win** are *sticky*: e.g. Alt then Tab = Alt+Tab). **B / Back** closes the keyboard (on webOS remotes it does not send Escape to the host in that case).
-
-### Known issues (to be fixed)
-
-- The remote may send **both key and gamepad events for one press**, toggling input mode while the keyboard is open.
-- **Modifier combos** (e.g. Ctrl+Q) can sometimes leave a modifier stuck on the host and affect gamepad input on Windows (Game Bar, etc.) — there is mitigation, but it is not 100% reliable in all cases.
-- **TV remote D-pad** on the keyboard: only navigates keys (arrows + OK); other remote keys may close the keyboard or reach the host.
-- While the keyboard is open, avoid switching quickly between TV remote and gamepad.
-
-## Virtual mouse
-
-Move the PC cursor from a gamepad while streaming (useful for desktop apps and launchers).
-
-### How to enable
-
-Turn on **Settings → Input → Virtual mouse**, then start or reconnect the stream.
-
-### How to toggle during streaming
-
-- **Gamepad:** hold **LB + RS**, then release both.
-- Or open the **streaming overlay** and select **Virtual Mouse**.
-
-When active, use the right stick and triggers as described in [Gamepad hotkeys](#gamepad-hotkeys-during-streaming) above. Press **LB + RS** again to turn it off.
-
-## Build and installation
-
-- **[webOS build](docs/BUILD_WEBOS.md)** — developer mode, Docker/WSL, manual IPK install.
-- **[Homebrew catalog](docs/WEBOS_HOMEBREW.md)** — publishing to [webosbrew/apps-repo](https://github.com/webosbrew/apps-repo).
-
-## Credits
-
-- Base: [mariotaku/moonlight-tv](https://github.com/mariotaku/moonlight-tv)
-- Components: [moonlight-embedded](https://github.com/irtimmer/moonlight-embedded), [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c)
+[Eclipse/Umbra licence & notices](LICENSES.md) · [GPL-3.0](LICENSE.txt)

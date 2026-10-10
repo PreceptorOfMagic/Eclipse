@@ -1,4 +1,5 @@
 #include "ui/streaming/streaming.controller.h"
+#include "stream/input/coop_input.h"
 #include "stream/input/session_input.h"
 
 #include "util/i18n.h"
@@ -7,12 +8,26 @@
 #include "app.h"
 #include "stream/session_priv.h"
 
+#include <stdio.h>
+
+static void conn_write_diag(const char *msg) {
+    FILE *f = fopen(AURORA_DIAG_LOG, "a");
+    if (f) { fputs(msg, f); fclose(f); }
+}
+
 static session_t *current_session = NULL;
 
 static void connection_terminated(int errorCode) {
+    char buf[112];
+    snprintf(buf, sizeof(buf), "[CONN@%u] connection_terminated errorCode=0x%x (%s)\n",
+             (unsigned) SDL_GetTicks(), errorCode,
+             errorCode == ML_ERROR_GRACEFUL_TERMINATION ? "GRACEFUL" : "NETWORK_ERROR");
+    conn_write_diag(buf);
     if (!current_session) {
         return;
     }
+    current_session->conn_error = errorCode;
+    current_session->conn_error_set = true;
     if (errorCode == ML_ERROR_GRACEFUL_TERMINATION) {
         session_interrupt(current_session, false, STREAMING_INTERRUPT_HOST);
     } else {
@@ -27,9 +42,27 @@ static void connection_log_message(const char *format, ...) {
     va_start(arglist, format);
     commons_log_vprintf(COMMONS_LOG_LEVEL_INFO, "Limelight", format, arglist);
     va_end(arglist);
+    /* Also capture moonlight's own log into the diag file with a tick timestamp.
+     * Its "Loss Stats: Transaction failed: <errno>", "Server notified termination
+     * reason", and RTT/ping lines pinpoint WHY/WHEN the control channel died —
+     * the smooth-video/clean-Wi-Fi control-plane drop we're chasing. */
+    FILE *f = fopen(AURORA_DIAG_LOG, "a");
+    if (f) {
+        va_list ap;
+        va_start(ap, format);
+        fprintf(f, "[LL@%u] ", (unsigned) SDL_GetTicks());
+        vfprintf(f, format, ap);
+        va_end(ap);
+        fclose(f);
+    }
 }
 
 static void connection_status_update(int status) {
+    char buf[80];
+    snprintf(buf, sizeof(buf), "[CONN@%u] status_update status=%d (%s)\n",
+             (unsigned) SDL_GetTicks(), status,
+             status == CONN_STATUS_OKAY ? "OKAY" : status == CONN_STATUS_POOR ? "POOR" : "?");
+    conn_write_diag(buf);
     switch (status) {
         case CONN_STATUS_OKAY:
             commons_log_info("Session", "Connection is okay");
@@ -60,7 +93,11 @@ static void connection_rumble(unsigned short controllerNumber, unsigned short lo
     if (!current_session) {
         return;
     }
-    app_input_gamepad_rumble(&current_session->app->input, controllerNumber, lowFreqMotor, highFreqMotor);
+    const int source = coop_input_primary_source_slot(controllerNumber);
+    if (source >= 0) {
+        app_input_gamepad_rumble(&current_session->app->input, (unsigned short) source,
+                                 lowFreqMotor, highFreqMotor);
+    }
 }
 
 static void connection_rumble_triggers(unsigned short controllerNumber, unsigned short leftTrigger,
@@ -68,21 +105,35 @@ static void connection_rumble_triggers(unsigned short controllerNumber, unsigned
     if (!current_session) {
         return;
     }
-    app_input_gamepad_rumble_triggers(&current_session->app->input, controllerNumber, leftTrigger, rightTrigger);
+    const int source = coop_input_primary_source_slot(controllerNumber);
+    if (source >= 0) {
+        app_input_gamepad_rumble_triggers(&current_session->app->input,
+                                          (unsigned short) source,
+                                          leftTrigger, rightTrigger);
+    }
 }
 
 static void connection_set_motion_event_state(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz) {
     if (!current_session) {
         return;
     }
-    app_input_gamepad_set_motion_event_state(&current_session->app->input, controllerNumber, motionType, reportRateHz);
+    const int source = coop_input_primary_source_slot(controllerNumber);
+    if (source >= 0) {
+        app_input_gamepad_set_motion_event_state(&current_session->app->input,
+                                                 (unsigned short) source,
+                                                 motionType, reportRateHz);
+    }
 }
 
 static void connection_set_controller_led(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b) {
     if (!current_session) {
         return;
     }
-    app_input_gamepad_set_controller_led(&current_session->app->input, controllerNumber, r, g, b);
+    const int source = coop_input_primary_source_slot(controllerNumber);
+    if (source >= 0) {
+        app_input_gamepad_set_controller_led(&current_session->app->input,
+                                             (unsigned short) source, r, g, b);
+    }
 }
 
 static void connection_set_hdr(bool hdrEnabled) {

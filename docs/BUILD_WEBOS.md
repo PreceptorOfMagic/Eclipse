@@ -1,6 +1,6 @@
-# Aurora – Build and installation for LG webOS
+# Client build and installation for LG webOS
 
-This guide explains how to enable developer mode on the TV, build Aurora, and install it manually on LG webOS TVs (LG C1 and compatible).
+This guide explains how to enable developer mode, build the client, and install it manually on an LG webOS TV. The current project rig is an LG G5 running webOS 26; this is not a claim of broad model or firmware compatibility.
 
 ---
 
@@ -10,8 +10,7 @@ This guide explains how to enable developer mode on the TV, build Aurora, and in
 2. [Manual installation](#2-manual-installation)
 3. [Build](#3-build)
 4. [Troubleshooting](#4-troubleshooting)
-5. [HID Passthrough (Experimental)](#5-hid-passthrough-experimental)
-6. [webOS Homebrew (catalog)](#6-webos-homebrew-catalog)
+5. [webOS Homebrew (catalog)](#5-webos-homebrew-publication)
 
 ---
 
@@ -40,14 +39,15 @@ To install apps manually (.ipk), the TV must be in developer mode.
    - In the Developer Mode app, note the **passphrase** shown
    - You will use it to connect the TV to your PC
 
-> Developer mode disables automatically after several reboots without a network connection. Re-enable it from the app when needed.
+> Developer Mode is time-limited. Extend it while the TV is online before the timer expires; it also disables after ten offline reboots. When Developer Mode is disabled, apps installed through it are uninstalled. See LG's [Developer Mode app guide](https://webostv.developer.lge.com/develop/getting-started/developer-mode-app).
 
-### Alternative: webosbrew
+### GUI alternative: webOS Dev Manager
 
-If you use [webosbrew](https://webosbrew.org/):
+If you prefer a GUI, [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) supports TVs in Developer Mode as well as rooted TVs:
 
-1. Install the Homebrew Channel (see webosbrew docs)
-2. Install [dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop) to install .ipk via the GUI
+1. Install webOS Dev Manager on the computer.
+2. Add the TV using the connection details from the Developer Mode app.
+3. Use its application installer for the locally built `.ipk`.
 
 ---
 
@@ -57,49 +57,56 @@ If you use [webosbrew](https://webosbrew.org/):
 
 - TV in developer mode (see section 1)
 - TV and PC on the **same network**
-- Built `.ipk` package (section 3) or from a release
+- A locally built `.ipk` package from section 3; no public package is available yet
 
 ### Method A: ares-cli (command line)
 
 1. **Install webOS CLI**
-   - Follow [webOS TV Developer – CLI](https://webostv.developer.lge.com/develop/tools/cli-dev-guide)
-   - Windows: `npm install -g @webos-tools/ares-cli`
-   - Linux: `sudo npm install -g @webos-tools/ares-cli`
+   - Follow [LG's webOS CLI installation guide](https://webostv.developer.lge.com/develop/tools/cli-installation)
+   - Windows: `npm install -g @webos-tools/cli`
+   - Linux: `sudo npm install -g @webos-tools/cli`
 
 2. **Configure the device**
    ```bash
    ares-setup-device
    ```
-   - Enter name, TV IP, and when prompted, the **passphrase** from the Developer Mode app
+   - Add the TV with port `9922` and user `prisoner`.
+   - Retrieve its key, replacing the quoted example with the device name you configured:
+     ```bash
+     ares-novacom --device "TV_DEVICE_NAME" --getkey
+     ```
+   - `ares-novacom` prompts for the **passphrase** from the Developer Mode app.
 
-3. **Install the .ipk**
+3. **Install the exact `.ipk` produced by the build**
    ```bash
-   ares-install dist/com.aurora.gamestream_1.0.2_arm.ipk -d <TV_NAME>
+   find dist -maxdepth 1 -type f -name '*.ipk' -print
+   ares-install "dist/ACTUAL_GENERATED_FILENAME.ipk" -d "TV_DEVICE_NAME"
    ```
-   (Adjust the filename for your build version.)
+   Do not copy a versioned filename from older documentation; use the file the build actually produced. The public application name is **Eclipse**. The installed app ID remains `com.aurora.gamestream` as a compatibility identifier so existing settings and pairings keep their namespace.
 
-4. **Launch Aurora**
+4. **Close any running copy, then launch the installed build**
    ```bash
-   ares-launch com.aurora.gamestream -d <TV_NAME>
+   ares-launch --close com.aurora.gamestream -d "TV_DEVICE_NAME"
+   ares-launch com.aurora.gamestream -d "TV_DEVICE_NAME"
    ```
 
-### Method B: dev-manager-desktop (GUI)
+### Method B: webOS Dev Manager (GUI)
 
-1. Install [webosbrew](https://webosbrew.org/) on the TV
-2. Install [dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop)
-3. Ensure TV and PC are on the same network
-4. Open dev-manager-desktop and install the `.ipk` file
+1. Install [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) on the computer.
+2. Connect it to a Developer Mode or rooted TV on the same network.
+3. Select the exact `.ipk` created by the current build and install it.
+4. Close and relaunch the app after an update; installation alone does not reload a running process.
 
 ---
 
 ## 3. Build
 
-Aurora is built via **cross-compilation** on **Linux** (or WSL2 on Windows).
+The webOS client is built via **cross-compilation** on **Linux** (or WSL2 on Windows).
 
-### Compatibility
+### Tested target
 
-- **webOS 6.x** (LG C1) – NDL, SMP, H.265, HDR
-- **ARM** – toolchain `arm-webos-linux-gnueabi`
+- **Project rig:** LG G5 running webOS 26; broader model support is unverified
+- **Build target:** ARM with the `arm-webos-linux-gnueabi` toolchain
 
 ### Prerequisites
 
@@ -109,62 +116,31 @@ sudo apt-get update
 sudo apt-get install -y cmake gawk curl git build-essential
 ```
 
-**Windows:** Use Docker or WSL2 with Ubuntu (see section 3.4).
+**Windows:** Use WSL2 with Ubuntu (see section 3.3).
 
 ### 3.1. Quick build (automated script)
 
+> [!WARNING]
+> If the SDK is absent, this convenience wrapper downloads a third-party toolchain archive without verifying a pinned digest. That path is suitable only for the controlled development setup while the provenance check is open; it is not an approved public release build. A release builder must provide a previously verified SDK through `WEBOS_SDK_DIR` until the wrapper enforces the digest itself.
+
 ```bash
-cd moonlight-tv   # or your repo folder name
+cd /path/to/client-repository
 chmod +x scripts/webos/build_for_lg.sh
 ./scripts/webos/build_for_lg.sh
 ```
 
 The `.ipk` will be created in `dist/`.
 
-### 3.2. Manual build (step by step)
+The wrapper owns dependency preparation, cross-compilation and packaging. A low-level SDK-download recipe is intentionally omitted until the third-party archive and its digest are recorded together; do not replace that check with an unverified download pasted from old documentation.
 
-**1. webOS SDK**
+### 3.2. Output
 
-```bash
-cd /tmp
-curl -L -O https://github.com/openlgtv/buildroot-nc4/releases/download/webos-b17b4cc/arm-webos-linux-gnueabi_sdk-buildroot.tar.gz
-tar -xzf arm-webos-linux-gnueabi_sdk-buildroot.tar.gz
-./arm-webos-linux-gnueabi_sdk-buildroot/relocate-sdk.sh
-```
+The resulting package is written under `dist/`. Read the actual generated filename;
+the version embedded in the name is not bumped for every local build.
 
-**2. Submodules**
+### 3.3. Windows through WSL2
 
-```bash
-cd moonlight-tv   # repo folder
-git submodule update --init --recursive
-```
-
-**3. Configure and build**
-
-```bash
-export TOOLCHAIN_FILE=/tmp/arm-webos-linux-gnueabi_sdk-buildroot/share/buildroot/toolchainfile.cmake
-./scripts/webos/easy_build.sh -DCMAKE_BUILD_TYPE=Release
-```
-
-**4. Release build**
-
-```bash
-CMAKE_BUILD_TYPE=Release ./scripts/webos/build_for_lg.sh
-```
-
-### 3.3. Output
-
-The resulting package will be at:
-```
-dist/com.aurora.gamestream_1.0.2_arm.ipk
-```
-
-### 3.4. Windows (Docker or WSL2)
-
-**Docker:**
-```powershell
-.\scripts\webos\build_with_docker.ps1
-```
+The existing Docker helper downloads an unverified third-party packaging binary, so it is not a supported release path. Use WSL2 until that helper either builds the tool from audited source or verifies an approved artifact.
 
 **WSL2 (Ubuntu):**
 ```bash
@@ -204,82 +180,15 @@ The buildroot-nc4 SDK includes pbnjson_c, PmLogLib, webosi18n, etc. If something
 - Developer mode enabled on the TV
 - Firewall not blocking the ares-cli port
 
-### HEVC artifact drift (long sessions)
+### HEVC visual degradation
 
-If blockiness or color smearing builds up over time with **H.265** streams, try **Settings → Video → Periodic decoder refresh (HEVC)** (interval 10–30 s). This only applies when HEVC is active; it has no effect on H.264-only streams.
-
----
-
-## 5. HID Passthrough (Experimental)
-
-HID Passthrough sends raw controller HID reports from the TV to **[CTM-USBIP](https://github.com/CTM-Bridge/CTM-USBIP)** on your PC, so Windows sees the manufacturer's native USB driver instead of a virtual Xbox pad from Sunshine.
-
-### PC setup
-
-1. Install **CTM-Bridge-Setup.exe** from the [CTM-USBIP releases](https://github.com/CTM-Bridge/CTM-USBIP/releases).
-2. The installer registers the `ctm-usbip` Windows service (default control port **48054**) and the usbip-win2 driver.
-3. PC and TV must be on the **same LAN** as the Moonlight stream.
-
-### TV setup
-
-1. Pair your controller to the TV via **webOS Settings** (Bluetooth), not inside Aurora.
-2. In Aurora: **Settings → Input → Enable HID Passthrough (Experimental)**.
-3. Start a stream. During streaming, open the status overlay (BACK / gamepad combo) and choose **HID Devices** (next to Virtual Mouse).
-4. In the device list, tap **Plug in** on each gamepad you want bridged to CTM-USBIP on the PC. Use **Plug out** to stop bridging without unpairing the controller from the TV.
-
-Video, audio, keyboard, and mouse still use Moonlight; **only plugged HID gamepads** are sent to CTM-USBIP.
-
-When HID Passthrough is enabled, Aurora does **not** send Moonlight gamepad events (avoids duplicate controllers on the host).
-
-### Supported controllers
-
-| Controller | TV bridge | Host map | Notes |
-|------------|-----------|----------|-------|
-| DualSense / DS4 | `ds5` / `ds4` | Dedicated `.map` files | BT reports translated on the host |
-| Xbox (GIP) | `xbox` | `xbox_gip_*.map` | |
-| Steam Controller Puck | `puck` | `steam_puck_identity.map` | Composite + `CTMB_MSG_ENUM` |
-| Flydigi Apex 4 | `flydigi` | `flydigi_apex4_identity.map` | Enable **Recognize as native Flydigi on PC** in the HID panel |
-| Gamesir / generic | `hid` | `hid_identity.map` | Single-interface passthrough |
-
-### DualSense (DS5) — optional raw ACL output (webOS)
-
-webOS paces Bluetooth HID output **one-outstanding** (~30–40 ms between ACL writes), which degrades DS5 controller audio/haptics (~100 Hz → ~62 Hz with jitter). Aurora integrates an **optional** raw-ACL forwarder (from [PR #18](https://github.com/GuiDev1994/aurora-tv/pull/18)) that bypasses this when a root companion daemon is running.
-
-**Without the daemon:** behavior is unchanged (normal `/dev/hidraw` writes).
-
-**With the daemon:** install and run **`ds5_txd`** from [webos-ds5-raw-acl](https://github.com/sh00bx/webos-ds5-raw-acl) on the TV (root / dev mode). The daemon injects DS5 output reports (0x31/0x32/0x36) directly as HCI ACL packets.
-
-Optional environment variables (defaults shown):
-
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `CTM_RAW_ACL` | on | Set `0` to disable raw-ACL forwarding |
-| `CTM_AUDIO_PLC` | on | Packet-loss concealment for missing audio blocks in 0x36 |
-| `CTM_HID_WAIT_MS` | `3` | Bounded wait on hidraw `EAGAIN` (0–20 ms) |
-| `CTM_DEDUP` | on | Skip duplicate 0x31 rumble/LED reports |
-| `CTM_RT` | on | Real-time scheduling for I/O threads |
-| `DS5_ACL_SOCK` | `/tmp/ds5_acl.sock` | Daemon inject socket |
-| `DS5_HIDFD_SOCK` | `/tmp/ds5_hidfd.sock` | hidraw fd broker socket |
-
-TV log should show `raw-ACL forward ACTIVE` when the daemon template is ready. Per-controller logs (`/tmp/ctm-*.log`) include `PLC/60s` telemetry every minute.
-
-Build the Windows agent from the vendored submodule: see **[CTM_USBIP.md](CTM_USBIP.md)**.
-
-For other devices that fail on the host, add a `.map` in [CTM-USBIP](https://github.com/CTM-Bridge/CTM-USBIP).
-
-### Developer mode / hidraw access
-
-HID capture reads `/dev/hidraw*`. On developer-mode installs this is typically available to the app. If controllers are not detected, verify nodes exist (e.g. with the standalone [ctm-bridge-webos](https://github.com/CTM-Bridge/ctm-bridge-webos) `--enumerate` tool).
-
-Optional INI keys in `moonlight.ini` under `[input]`:
-
-```ini
-hid_passthrough=true
-hid_passthrough_port=48054
-```
+Do not treat periodic decoder refresh as a documented cure for blockiness or colour smearing; the project has not measured that outcome, and refresh requests can have their own visible or bitrate effects. Reproduce the issue with a live host encode, capture a redacted photograph or screenshot of the actual display, and attach a narrow log slice and exact host/client build information to the structured bug report described in [CONTRIBUTING.md](../CONTRIBUTING.md#evidence-expected).
 
 ---
 
-## 6. webOS Homebrew catalog
+## 5. webOS Homebrew publication
 
-To list **Aurora** in the [Homebrew Channel](https://webosbrew.org/) app store ([repo.webosbrew.org](https://repo.webosbrew.org/)), submit a PR to [webosbrew/apps-repo](https://github.com/webosbrew/apps-repo) using [`deploy/webosbrew/com.aurora.gamestream.yml`](../deploy/webosbrew/com.aurora.gamestream.yml) and the checklist in **[WEBOS_HOMEBREW.md](WEBOS_HOMEBREW.md)**.
+> [!WARNING]
+> **Do not submit the inherited catalog metadata yet.** Its name, repository/release links, artwork and package notices are not the final public set. Publishing is gated until the identity, source, artifact-compliance and fresh-install checks are complete.
+
+See **[WEBOS_HOMEBREW.md](WEBOS_HOMEBREW.md)** for the current blockers and the submission procedure to follow after they clear. The existing file under `deploy/webosbrew/` is a historical regeneration input, not a ready-to-submit catalog entry.

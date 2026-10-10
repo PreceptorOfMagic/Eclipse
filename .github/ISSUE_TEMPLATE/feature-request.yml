@@ -1,24 +1,74 @@
-name: Feature Request
-description: Suggest a new feature or improvement
+name: Feature request
+description: Propose a concrete client, host-integration, co-op, documentation, or accessibility improvement
+title: "[Feature]: "
 labels:
   - enhancement
 body:
-  - type: textarea
+  - type: markdown
     attributes:
-      label: Description
-      description: Describe the feature you would like to see added to Moonlight.
-      placeholder: "Example: I would like to see support for custom ports."
+      value: |
+        Explain the user problem before the implementation. This project extends upstream open-source work, so please say whether Moonlight, Moonlight TV, Aurora, Sunshine, or Apollo already provides related behaviour.
+
+  - type: dropdown
+    id: project_area
+    attributes:
+      label: Project area
+      options:
+        - Eclipse — single-host streaming
+        - Eclipse — two-host co-op
+        - Umbra host integration
+        - Input and controller routing
+        - LG webOS
+        - Eclipse for Windows
+        - Eclipse for Linux
+        - Documentation or setup
+        - Accessibility
+        - Other
     validations:
       required: true
+
   - type: textarea
+    id: user_problem
     attributes:
-      label: Motivation
-      description: Why do you think this feature should be added?
-      placeholder: "Example: My host is behind a firewall and I cannot open default ports."
+      label: User problem
+      description: What are you trying to do, and what prevents it today?
+      placeholder: "Example: During a two-host session, I need to ... because ..."
     validations:
       required: true
+
   - type: textarea
+    id: proposed_result
     attributes:
-      label: Additional Context
-      description: Add any other context or screenshots about the feature request here.
-      placeholder: "Example: I am using Moonlight on a Raspberry Pi 4."
+      label: Proposed result
+      description: Describe the observable behaviour you want without assuming a particular internal implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: upstream_context
+    attributes:
+      label: Upstream and compatibility context
+      description: Does an upstream project already implement something similar? Link primary documentation, source, or an issue if known.
+      placeholder: "Moonlight/Aurora/Apollo/Sunshine currently ...; this request would differ by ..."
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds have you tried, and why are they insufficient?
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Supporting material
+      description: Add a sketch, recording, screenshot, or link that clarifies the use case. Remove private identifiers first.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and upstream projects for this request.
+          required: true
+        - label: I understand that optional funding does not buy feature priority or influence over technical decisions.
+          required: true

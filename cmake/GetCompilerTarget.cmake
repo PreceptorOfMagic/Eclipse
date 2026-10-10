@@ -1,6 +1,12 @@
 get_property(_ENABLED_LANGUAGES GLOBAL PROPERTY ENABLED_LANGUAGES)
 
 foreach (_LANG ${_ENABLED_LANGUAGES})
+    # GNU windres treats `-v` as verbose compilation and waits for resource input
+    # on stdin. It has no compiler target for the platform-selection logic below,
+    # so probing it here hangs Windows configuration indefinitely.
+    if (_LANG STREQUAL "RC")
+        continue()
+    endif ()
     if (DEFINED CMAKE_${_LANG}_COMPILER_TARGET)
         continue()
     endif ()

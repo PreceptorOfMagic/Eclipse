@@ -14,7 +14,7 @@ int app_session_begin(app_t *app, const uuidstr_t *uuid, const APP_LIST *gs_app)
         return -1;
     }
     app->session = session_create(app, app_configuration, node->server, gs_app);
-    return 0;
+    return app->session != NULL ? 0 : -1;
 }
 
 void app_session_destroy(app_t *app) {

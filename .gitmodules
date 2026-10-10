@@ -16,6 +16,3 @@
 [submodule "third_party/commons"]
 	path = third_party/commons
 	url = https://github.com/mariotaku/commons-c.git
-[submodule "CTM-USBIP"]
-	path = CTM-USBIP
-	url = https://github.com/CTM-Bridge/CTM-USBIP.git

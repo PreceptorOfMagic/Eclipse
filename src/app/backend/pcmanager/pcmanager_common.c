@@ -22,6 +22,12 @@ PSERVER_DATA serverdata_clone(const SERVER_DATA *src) {
     server->mac = strdup_nullable(src->mac);
     server->hostname = strdup_nullable(src->hostname);
     server->gpuType = strdup_nullable(src->gpuType);
+    /* Cloned WITH its known-flag and caps, because the pair only means anything
+     * together: an encoderVendor that survived the copy while encoderVendorKnown did not
+     * would read as "this host answered, and said nothing". */
+    server->encoderVendor = strdup_nullable(src->encoderVendor);
+    server->encoderVendorKnown = src->encoderVendorKnown;
+    server->coopProfileCaps = src->coopProfileCaps;
     server->extPort = src->extPort;
     server->httpsPort = src->httpsPort;
     server->paired = src->paired;
@@ -29,6 +35,13 @@ PSERVER_DATA serverdata_clone(const SERVER_DATA *src) {
     server->supportsHdr = src->supportsHdr;
     server->unsupported = src->unsupported;
     server->currentGame = src->currentGame;
+    /* The rest of what the host reported travels with it too: a session's copy that dropped these read as
+     * "not reported" (umbraCaps 0, lock screen unknown) to anything that looked at the session's copy. */
+    server->codecModeSupport = src->codecModeSupport;
+    server->umbraCaps = src->umbraCaps;
+    server->umbraCapsKnown = src->umbraCapsKnown;
+    server->sessionLocked = src->sessionLocked;
+    server->sessionLockedKnown = src->sessionLockedKnown;
     server->serverMajorVersion = src->serverMajorVersion;
     server->gsVersion = strdup_nullable(src->gsVersion);
     server->modes = display_mode_clone(src->modes);
@@ -50,6 +63,7 @@ void serverdata_free(PSERVER_DATA data) {
     free_nullable((void *) data->mac);
     free_nullable((void *) data->hostname);
     free_nullable((void *) data->gpuType);
+    free_nullable((void *) data->encoderVendor);
     free_nullable((void *) data->gsVersion);
     free_nullable((void *) data->serverInfo.serverInfoAppVersion);
     free_nullable((void *) data->serverInfo.serverInfoGfeVersion);

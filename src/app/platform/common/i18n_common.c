@@ -7,21 +7,26 @@ static const i18n_entry_t i18n_locales[] = {
         {"en-US", "English"},
         {"cs", "Čeština"},
         {"de", "Deutsch"},
-        {"es", "Español"},
+        {"es-ES", "Español"},
         {"fr", "Français"},
         {"it", "Italiano"},
-#if DEBUG
         {"ja", "日本語"},
-#endif
-        {"ko", "조선말"},
+        {"ko", "한국어"},
         {"nl", "Dutch"},
         {"pl", "Polski"},
         {"pt-BR", "Português (Brasil)"},
         {"ro", "Română"},
         {"ru", "Русский"},
+        {"tr", "Türkçe"},
+        {"uk", "Українська"},
         {"zh-CN", "简体中文",
 #if OS_WINDOWS
                 .font =        "Microsoft YaHei"
+#endif
+        },
+        {"zh-TW", "繁體中文",
+#if OS_WINDOWS
+                .font =        "Microsoft JhengHei"
 #endif
         },
         {NULL, NULL},
@@ -35,6 +40,7 @@ const i18n_entry_t *i18n_entry(const char *locale) {
     if (!locale) return NULL;
     char locale_tmp[16];
     strncpy(locale_tmp, locale, sizeof(locale_tmp) - 1);
+    locale_tmp[sizeof(locale_tmp) - 1] = '\0';
     char *current_pos = strchr(locale_tmp, '_');
     while (current_pos) {
         *current_pos = '-';

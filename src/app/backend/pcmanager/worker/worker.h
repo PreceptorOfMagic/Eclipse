@@ -11,6 +11,9 @@ typedef struct worker_context_t {
 
     int result;
     char *error;
+    /** What a user asked for ("Pairing", "Quitting the running app"...), for the log line when it fails; NULL for
+     *  status polls and discovery, whose outcome is already logged as [Host] lines. */
+    const char *name;
 
     pcmanager_callback_t callback;
     void *userdata;

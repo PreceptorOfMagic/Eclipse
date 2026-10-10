@@ -1,0 +1,18 @@
+# toolchain-jammy.cmake -- build against the Ubuntu 22.04 sysroot made by make_sysroot.sh (see env.sh).
+set(CMAKE_SYSROOT "$ENV{SYSROOT}")
+set(CMAKE_C_COMPILER gcc)
+set(CMAKE_CXX_COMPILER g++)
+set(CMAKE_FIND_ROOT_PATH "$ENV{SYSROOT}")
+# See env.sh: without -B/-L the native gcc links the HOST's crt1.o and glibc despite --sysroot.
+set(_jammy_libs "$ENV{SYSROOT}/lib/x86_64-linux-gnu;$ENV{SYSROOT}/usr/lib/x86_64-linux-gnu")
+set(CMAKE_C_FLAGS_INIT "-B$ENV{SYSROOT}/usr/lib/x86_64-linux-gnu/ -B$ENV{SYSROOT}/lib/x86_64-linux-gnu/")
+set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT}")
+foreach(_kind EXE SHARED MODULE)
+    set(CMAKE_${_kind}_LINKER_FLAGS_INIT "$ENV{SYSROOT_LDFLAGS}")
+endforeach()
+list(APPEND CMAKE_PREFIX_PATH "$ENV{DEPS_PREFIX}")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+set(PKG_CONFIG_EXECUTABLE "$ENV{PKG_CONFIG}" CACHE FILEPATH "sysroot pkg-config")

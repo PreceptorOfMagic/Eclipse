@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Eclipse webOS app tile</title>
+  <desc id="desc">Full-bleed webOS tile ("E1", chosen by the user 2026-10-04 from in-photo mockups): the tile itself is the split screen -- the Eclipse/Umbra mark's two violet panels (site/assets/brand-mark.svg colours, with a light top-to-bottom gradient) filling the whole tile, and the white seam between them. Like LG's own tiles the art fills the space; the launcher clips the corners. appinfo iconColor = the left panel violet.</desc>
+  <defs>
+    <linearGradient id="l" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8b47f5"/><stop offset="1" stop-color="#6d28d9"/></linearGradient>
+    <linearGradient id="r" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d09dfd"/><stop offset="1" stop-color="#b57bf8"/></linearGradient>
+  </defs>
+  <rect width="32" height="64" fill="url(#l)"/>
+  <rect x="32" width="32" height="64" fill="url(#r)"/>
+  <path d="M32 9v46" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>
+</svg>

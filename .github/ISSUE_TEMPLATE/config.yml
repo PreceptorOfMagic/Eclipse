@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Discord
+  - name: Project setup and current status
+    url: https://github.com/PreceptorOfMagic/PreceptorOfMagic.github.io
+    about: Read the shared project hub, quick start, tested-status matrix, known limits, and launch warnings before opening an issue.
+  - name: Umbra host issues
+    url: https://github.com/PreceptorOfMagic/umbra/issues
+    about: Report host capture, encoder, pairing, virtual-display, service, installer, or host web-interface problems in the Umbra repository.
+  - name: Upstream Moonlight community
     url: https://moonlight-stream.org/discord
-    about: For general questions and discussion, feel free to join our Discord server.
+    about: For general Moonlight questions that are not specific to this client fork or its co-op integration.

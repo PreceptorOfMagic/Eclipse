@@ -1,6 +1,7 @@
 #include "app.h"
 #include "launcher.controller.h"
 #include "lvgl/util/lv_app_utils.h"
+#include "platform/this_pc.h"
 
 #include "errors.h"
 #include "util/i18n.h"
@@ -86,6 +87,18 @@ static lv_obj_t *pair_dialog(lv_fragment_t *self, lv_obj_t *parent) {
 static void pair_result_cb(int result, const char *error, const uuidstr_t *uuid, void *userdata) {
     pair_dialog_controller_t *controller = (pair_dialog_controller_t *) userdata;
     if (result == GS_OK) {
+        /* THIS PC is a co-op host only (#39), so pairing it (D15) must not make it the launcher's
+         * host. Nothing else on screen changes then, so say that it worked and where it is used. */
+        const pclist_t *node = uuid != NULL ? pcmanager_node(pcmanager, uuid) : NULL;
+        if (node != NULL && node->server != NULL && local_host_is_this_pc(node->server->serverInfo.address)) {
+            char text[256];
+            snprintf(text, sizeof(text), locstr("%s is paired. Choose Co-op (two PCs) to use it."),
+                     node->server->hostname != NULL ? node->server->hostname : locstr("this PC"));
+            lv_obj_clear_flag(controller->btns, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(controller->message_label, text);
+            lv_obj_add_flag(controller->pin_label, LV_OBJ_FLAG_HIDDEN);
+            return;
+        }
         launcher_fragment_t *launcher_controller = launcher_instance();
         if (launcher_controller) {
             launcher_select_server(launcher_controller, uuid);

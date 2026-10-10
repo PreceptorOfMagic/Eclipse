@@ -30,6 +30,15 @@ typedef struct known_host_t {
     bool selected;
     appid_list_t *favs;
     appid_list_t *hidden;
+    char *pin_code;
+    /* The credential is a PASSWORD, not a PIN. Stored explicitly rather than
+     * inferred from "are these all digits": a numeric password is a real thing, and
+     * guessing wrong means typing it without the Enter that a password needs. */
+    bool pin_is_password;
+    padname_list_t *pads;
+    /** What the USER said this PC's GPU is (coop_gpu_vendor_t), asked once when co-op
+     *  needed to know and the host could not say. 0 = never answered. */
+    int gpu_vendor;
     struct known_host_t *next;
 } known_host_t;
 

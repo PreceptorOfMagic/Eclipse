@@ -9,6 +9,14 @@
 #include "ss4s.h"
 #include "ss4s_modules.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#if !defined(TARGET_WEBOS)
+#include <SDL.h>
+#endif
+
 typedef struct audio_pane_t {
     lv_fragment_t base;
     settings_controller_t *parent;
@@ -20,6 +28,11 @@ typedef struct audio_pane_t {
 
     pref_dropdown_int_entry_t surround_entries[3];
     int surround_entries_len;
+
+#if !defined(TARGET_WEBOS)
+    pref_dropdown_string_entry_t *device_entries;
+    int device_entries_len;
+#endif
 } audio_pane_t;
 
 static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container);
@@ -31,6 +44,8 @@ static void pane_ctor(lv_fragment_t *self, void *args);
 static void pane_dtor(lv_fragment_t *self);
 
 static void module_changed_cb(lv_event_t *e);
+
+static void stream_setting_changed_cb(lv_event_t *e);
 
 const lv_fragment_class_t settings_pane_audio_cls = {
     .constructor_cb = pane_ctor,
@@ -76,11 +91,64 @@ static void pane_ctor(lv_fragment_t *self, void *args) {
         entry->fallback = config.configuration == AUDIO_CONFIGURATION_STEREO;
         pane->surround_entries_len++;
     }
+#if !defined(TARGET_WEBOS)
+    const int num_devices = SDL_GetNumAudioDevices(0);
+    pane->device_entries = calloc((size_t) (num_devices > 0 ? num_devices : 0) + 2,
+                                  sizeof(*pane->device_entries));
+    if (pane->device_entries != NULL) {
+        pane->device_entries[0] = (pref_dropdown_string_entry_t) {
+                .name = locstr("System default"), .value = "default", .fallback = true,
+        };
+        pane->device_entries_len = 1;
+        const char *saved_device = app_configuration->audio_device;
+        bool saved_device_found = saved_device == NULL || saved_device[0] == '\0' ||
+                                  strcmp(saved_device, "default") == 0;
+        for (int i = 0; i < num_devices; ++i) {
+            const char *name = SDL_GetAudioDeviceName(i, 0);
+            char *owned_name = name != NULL ? strdup(name) : NULL;
+            if (owned_name == NULL) {
+                continue;
+            }
+            pane->device_entries[pane->device_entries_len++] =
+                    (pref_dropdown_string_entry_t) {
+                            .name = owned_name, .value = owned_name, .fallback = false,
+                    };
+            if (saved_device != NULL && strcmp(saved_device, owned_name) == 0) {
+                saved_device_found = true;
+            }
+        }
+        if (!saved_device_found) {
+            char *owned_value = strdup(saved_device);
+            const char *suffix = locstr(" (unavailable)");
+            const size_t label_len = strlen(saved_device) + strlen(suffix) + 1;
+            char *owned_label = malloc(label_len);
+            if (owned_value != NULL && owned_label != NULL) {
+                snprintf(owned_label, label_len, "%s%s", saved_device, suffix);
+                pane->device_entries[pane->device_entries_len++] =
+                        (pref_dropdown_string_entry_t) {
+                                .name = owned_label, .value = owned_value, .fallback = false,
+                        };
+            } else {
+                free(owned_value);
+                free(owned_label);
+            }
+        }
+    }
+#endif
 }
 
 static void pane_dtor(lv_fragment_t *self) {
     audio_pane_t *pane = (audio_pane_t *) self;
     free(pane->adec_entries);
+#if !defined(TARGET_WEBOS)
+    for (int i = 1; i < pane->device_entries_len; ++i) {
+        if (pane->device_entries[i].name != pane->device_entries[i].value) {
+            free((void *) pane->device_entries[i].name);
+        }
+        free((void *) pane->device_entries[i].value);
+    }
+    free(pane->device_entries);
+#endif
 }
 
 static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
@@ -109,6 +177,19 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
 
     pref_header(view, locstr("Audio Settings"));
 
+#if !defined(TARGET_WEBOS)
+    if (controller->device_entries_len > 0) {
+        pref_title_label(view, locstr("Audio output device"));
+        lv_obj_t *device_dropdown = pref_dropdown_string(
+                view, controller->device_entries, controller->device_entries_len,
+                &app_configuration->audio_device);
+        lv_obj_set_width(device_dropdown, LV_PCT(100));
+        lv_obj_add_event_cb(device_dropdown, module_changed_cb,
+                            LV_EVENT_VALUE_CHANGED, controller);
+        pref_desc_label(view, locstr("Used for future streams after restarting the app."), false);
+    }
+#endif
+
     pref_title_label(view, locstr("Sound Channels (Experimental)"));
 
     lv_obj_t *ch_dropdown = pref_dropdown_int(view, controller->surround_entries, controller->surround_entries_len,
@@ -116,6 +197,7 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
     lv_obj_set_width(ch_dropdown, LV_PCT(100));
 
     lv_obj_add_event_cb(adec_dropdown, module_changed_cb, LV_EVENT_VALUE_CHANGED, controller);
+    lv_obj_add_event_cb(ch_dropdown, stream_setting_changed_cb, LV_EVENT_VALUE_CHANGED, controller);
 
     return view;
 }
@@ -128,6 +210,11 @@ static void obj_created(lv_fragment_t *self, lv_obj_t *obj) {
 static void module_changed_cb(lv_event_t *e) {
     audio_pane_t *fragment = (audio_pane_t *) lv_event_get_user_data(e);
     settings_controller_t *parent = fragment->parent;
-    parent->needs_stream_reconnect = true;
+    parent->needs_app_restart = true;
     update_conflict_hint(parent->app, fragment->conflict_hint);
+}
+
+static void stream_setting_changed_cb(lv_event_t *e) {
+    audio_pane_t *fragment = (audio_pane_t *) lv_event_get_user_data(e);
+    fragment->parent->needs_stream_reconnect = true;
 }

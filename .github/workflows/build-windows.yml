@@ -1,0 +1,153 @@
+name: Build (Windows)
+
+on:
+  push:
+    tags-ignore:
+      - 'v*.*.*'
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Package (Windows x64, unsigned)
+    runs-on: windows-2022
+
+    steps:
+      # setup-msys2 documents that checkout's default CRLF conversion can break
+      # MSYS tools and shell scripts. Configure Git before the checkout exists.
+      - name: Preserve repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up MSYS2 MinGW64
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          cache: true
+          suppress-deprecation-warnings: msystem-mingw64
+          install: mingw-w64-x86_64-nsis
+
+      - name: Build portable package
+        shell: pwsh
+        run: >-
+          ./scripts/windows/build_portable.ps1
+          -Clean
+          -RequireCleanTree
+          -Configuration RelWithDebInfo
+          -MsysRoot '${{ steps.msys2.outputs.msys2-location }}'
+
+      - name: Build per-user Windows installer
+        shell: pwsh
+        run: >-
+          ./scripts/windows/build_installer.ps1
+          -Makensis '${{ steps.msys2.outputs.msys2-location }}/mingw64/bin/makensis.exe'
+
+      - name: Verify release surface
+        shell: pwsh
+        run: |
+          $required = @(
+            'dist/eclipse-windows-x64-setup-unsigned.exe',
+            'dist/eclipse-windows-x64-setup-unsigned.exe.sha256',
+            'dist/eclipse-windows-x64-unsigned.zip',
+            'dist/eclipse-windows-x64-unsigned.zip.sha256',
+            'dist/eclipse-windows-x64/LICENSE.txt',
+            'dist/eclipse-windows-x64/COPYRIGHT',
+            'dist/eclipse-windows-x64/ACKNOWLEDGEMENTS.md',
+            'dist/eclipse-windows-x64/THIRD-PARTY-NOTICES.txt',
+            'dist/eclipse-windows-x64/SOURCE-MANIFEST.txt',
+            'dist/eclipse-windows-x64/UNSIGNED-BUILD.txt',
+            'dist/eclipse-windows-x64/licenses/source/Moonlight-Qt-GPL-3.0.txt',
+            'dist/eclipse-windows-x64/licenses/source/Moonlight-Qt-Derivative-NOTICE.md',
+            'dist/eclipse-windows-x64/licenses/source/Moonlight-Common-C-Reed-Solomon-BSD.txt',
+            'dist/eclipse-windows-x64/licenses/external/LVGL-Embedded-Fonts-NOTICE.md',
+            'dist/eclipse-windows-x64/licenses/external/Montserrat-7.200-OFL-1.1.txt',
+            'dist/eclipse-windows-x64/licenses/external/Font-Awesome-Free-5.9.0-LICENSE.txt',
+            'dist/eclipse-windows-x64/licenses/external/SIL-OFL-1.1.txt',
+            'dist/eclipse-windows-x64/licenses/external/Unscii-8-1.0-PROVENANCE.txt'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing Windows release file: $path"
+            }
+          }
+          $byteMatches = @{
+            'LICENSE.txt' = 'dist/eclipse-windows-x64/LICENSE.txt'
+            'COPYRIGHT' = 'dist/eclipse-windows-x64/COPYRIGHT'
+            'ACKNOWLEDGEMENTS.md' = 'dist/eclipse-windows-x64/ACKNOWLEDGEMENTS.md'
+            'docs/licenses/windows/Moonlight-Qt-Derivative-NOTICE.md' = 'dist/eclipse-windows-x64/licenses/source/Moonlight-Qt-Derivative-NOTICE.md'
+            'docs/licenses/webos/Moonlight-Common-C-Reed-Solomon-BSD.txt' = 'dist/eclipse-windows-x64/licenses/source/Moonlight-Common-C-Reed-Solomon-BSD.txt'
+            'docs/licenses/common/LVGL-Embedded-Fonts-NOTICE.md' = 'dist/eclipse-windows-x64/licenses/external/LVGL-Embedded-Fonts-NOTICE.md'
+            'docs/licenses/common/Montserrat-7.200-OFL-1.1.txt' = 'dist/eclipse-windows-x64/licenses/external/Montserrat-7.200-OFL-1.1.txt'
+            'docs/licenses/common/Font-Awesome-Free-5.9.0-LICENSE.txt' = 'dist/eclipse-windows-x64/licenses/external/Font-Awesome-Free-5.9.0-LICENSE.txt'
+            'docs/licenses/common/SIL-OFL-1.1.txt' = 'dist/eclipse-windows-x64/licenses/external/SIL-OFL-1.1.txt'
+            'docs/licenses/common/Unscii-8-1.0-PROVENANCE.txt' = 'dist/eclipse-windows-x64/licenses/external/Unscii-8-1.0-PROVENANCE.txt'
+          }
+          foreach ($source in $byteMatches.Keys) {
+            $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash
+            $packageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $byteMatches[$source]).Hash
+            if ($sourceHash -ne $packageHash) {
+              throw "Packaged legal file does not byte-match source: $source"
+            }
+          }
+
+          # Inspect the exact ZIP that the next step uploads, not only the
+          # staging directory from which it was created.
+          $archive = 'dist/eclipse-windows-x64-unsigned.zip'
+          $archiveHashFile = 'dist/eclipse-windows-x64-unsigned.zip.sha256'
+          $actualArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          $declaredArchiveHash = ((Get-Content -LiteralPath $archiveHashFile -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          if ($actualArchiveHash -ne $declaredArchiveHash) {
+            throw 'Windows archive does not match its adjacent SHA-256 file'
+          }
+          $inspectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("eclipse-zip-inspect-" + [guid]::NewGuid())
+          Expand-Archive -LiteralPath $archive -DestinationPath $inspectRoot
+          $archiveRoot = Join-Path $inspectRoot 'eclipse-windows-x64'
+          if (-not (Test-Path -LiteralPath $archiveRoot -PathType Container)) {
+            throw 'Windows archive is missing its eclipse-windows-x64 root directory'
+          }
+          $stagedRoot = (Resolve-Path -LiteralPath 'dist/eclipse-windows-x64').Path
+          $expandedRoot = (Resolve-Path -LiteralPath $archiveRoot).Path
+          $stagedFiles = @{}
+          Get-ChildItem -LiteralPath $stagedRoot -File -Recurse | ForEach-Object {
+            $relative = $_.FullName.Substring($stagedRoot.Length + 1).Replace('\', '/')
+            $stagedFiles[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+          }
+          $expandedFiles = @{}
+          Get-ChildItem -LiteralPath $expandedRoot -File -Recurse | ForEach-Object {
+            $relative = $_.FullName.Substring($expandedRoot.Length + 1).Replace('\', '/')
+            $expandedFiles[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+          }
+          $pathDiff = Compare-Object @($stagedFiles.Keys | Sort-Object) @($expandedFiles.Keys | Sort-Object)
+          if ($pathDiff) {
+            throw "Windows archive file list differs from the verified staging tree: $($pathDiff | Out-String)"
+          }
+          foreach ($relative in $stagedFiles.Keys) {
+            if ($stagedFiles[$relative] -ne $expandedFiles[$relative]) {
+              throw "Windows archive bytes differ from the verified staging tree: $relative"
+            }
+          }
+
+      - name: Upload unsigned Windows package
+        if: ${{ github.event.repository.private }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eclipse-windows-x64-unsigned-${{ github.sha }}
+          path: |
+            dist/eclipse-windows-x64-setup-unsigned.exe
+            dist/eclipse-windows-x64-setup-unsigned.exe.sha256
+            dist/eclipse-windows-x64-unsigned.zip
+            dist/eclipse-windows-x64-unsigned.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

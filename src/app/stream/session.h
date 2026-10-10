@@ -63,9 +63,6 @@ typedef struct session_config_t {
     bool hardware_mouse;
     bool vmouse;
     uint8_t stick_deadzone;
-    bool hid_passthrough;
-    int hid_passthrough_port;
-    bool hid_passthrough_autoplug;
 } session_config_t;
 
 extern int streaming_errno;
@@ -80,6 +77,10 @@ typedef struct session_t session_t;
 session_t *session_create(app_t *app, const app_settings_t *config, const SERVER_DATA *server, const APP_LIST *gs_app);
 
 stream_input_t *session_get_input(session_t *session);
+
+/** App id this session was launched with (0 if none). Reliable during a stream,
+ * unlike pcmanager's cached currentGame which only refreshes at stream end. */
+int session_get_app_id(session_t *session);
 
 void session_destroy(session_t *session);
 
@@ -102,14 +103,6 @@ void session_screen_keyboard_closed(session_t *session);
 
 bool session_accepting_input(session_t *session);
 
-#if defined(TARGET_WEBOS)
-struct hid_passthrough_manager;
-typedef struct hid_passthrough_manager hid_passthrough_manager_t;
-
-hid_passthrough_manager_t *session_get_hid_passthrough(session_t *session);
-
-void session_ensure_hid_passthrough(session_t *session);
-#endif
 
 void streaming_display_size(session_t *session, short width, short height);
 

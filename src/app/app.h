@@ -67,6 +67,9 @@ void app_process_events(app_t *app);
 
 void app_request_exit();
 
+/** TEST ONLY: stall the UI thread @p seconds on its next main-loop pass (support-log stall record tests). */
+void app_test_hang_request(unsigned seconds);
+
 bool app_is_running();
 
 void app_quit_confirm();
@@ -91,7 +94,8 @@ bool app_get_mouse_relative();
 
 void app_set_keep_awake(app_t *app, bool awake);
 
-void app_set_fullscreen(app_t *app, bool);
+/** Apply fullscreen state immediately. Returns false when SDL rejected the change. */
+bool app_set_fullscreen(app_t *app, bool);
 
 void app_open_url(const char *url);
 

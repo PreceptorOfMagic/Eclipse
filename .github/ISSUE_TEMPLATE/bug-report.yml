@@ -1,96 +1,149 @@
-name: Bug Report
-description: Something is not working (video, audio, gamepad, crash, etc...)
+name: Bug report
+description: Report a reproducible client, stream, input, audio, video, or co-op problem
+title: "[Bug]: "
 labels:
   - bug
 body:
   - type: markdown
     attributes:
       value: |
-        ## Device Information
-        Please provide information about the device you are using as a client.
-  - type: input
-    attributes:
-      label: Moonlight Version
-      description: What is the version of Moonlight you are using?
-      placeholder: "Example: 1.6.0"
-    validations:
-      required: true
+        Thanks for taking the time to report a problem. This project is still an engineering preview, so exact build and hardware details matter.
+
+        Do not include pairing codes, account details, public IP addresses, host UUIDs, or unredacted logs/screenshots. Host-only capture, encoder, pairing, virtual-display, service, installer, or web-interface problems belong in the [Umbra tracker](https://github.com/PreceptorOfMagic/umbra/issues). Optional Pi/device-hub and USB/IP problems belong in the [CTM-USBIP tracker](https://github.com/PreceptorOfMagic/CTM-USBIP/issues). For stock Moonlight questions that do not reproduce in this fork, use the upstream community link shown on the new-issue page.
+
   - type: dropdown
+    id: session_type
     attributes:
-      label: Device Type
-      description: What kind of device are you running Moonlight on?
+      label: Session type
+      description: Which path shows the problem?
       options:
-        - webOS TV
-        - Raspberry Pi
-        - Steam Link
-        - Other (Desktop Linux, macOS, etc...)
+        - Single-host stream
+        - Two-host co-op — side by side
+        - Two-host co-op — stacked
+        - Windows client also hosts one co-op pane
+        - Client UI or setup before streaming
+        - Other
     validations:
       required: true
+
   - type: input
+    id: client_build
     attributes:
-      label: Device Model
-      description: What is the model of your device?
-      placeholder: "Example: LG C9"
+      label: Client build
+      description: Give the release tag, package filename, commit hash, or exact source branch used.
+      placeholder: "Example: commit abc1234 from the default branch"
     validations:
       required: true
+
+  - type: dropdown
+    id: client_platform
+    attributes:
+      label: Client platform
+      options:
+        - LG webOS TV
+        - Windows x64
+        - Linux desktop
+        - Other source build
+    validations:
+      required: true
+
   - type: input
+    id: device_model
     attributes:
-      label: Device OS
-      description: What is the OS version of your device?
-      placeholder: "Example: webOS 4.5.3"
+      label: Device model and OS
+      description: Include the model, operating-system version, and relevant GPU/driver where applicable.
+      placeholder: "Example: LG TV model and webOS version, or PC GPU and driver version"
     validations:
       required: true
+
   - type: markdown
     attributes:
       value: |
-        ## Host Information
-        Please provide information about the computer you are streaming from.
-        This information is important especially when experiencing performance issues.
+        ## Host information
+
+        For co-op, describe both hosts separately. Do not include fixed network addresses or identifiers.
+
   - type: dropdown
+    id: host_software
     attributes:
-      label: Host OS
-      description: What is the OS of your computer?
+      label: Host software
       options:
-        - Windows
-        - Linux
-        - macOS
-  - type: dropdown
-    attributes:
-      label: Host Software
-      description: What streaming software are you using?
-      options:
+        - Umbra
+        - Apollo (upstream)
         - Sunshine
-        - GeForce Experience
-  - type: textarea
+        - Other Moonlight-compatible host
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: host_build
     attributes:
-      label: Host Setup
-      description: What is the hardware and software setup of your computer?
-      placeholder: "Example: Intel Core i7-8700K, NVIDIA GeForce RTX 2080 Ti, 16GB RAM with Windows 10 Home"
+      label: Host build
+      description: Give the release tag, commit hash, or exact branch for the host software.
+      placeholder: "Example: Umbra commit abc1234"
+
+  - type: textarea
+    id: host_setup
+    attributes:
+      label: Host hardware and configuration
+      description: List the CPU, GPU, driver, operating system, display path, and any virtual-display use for each host.
+      placeholder: |
+        Host 1: hardware, driver, OS, display path
+        Host 2 (co-op only): hardware, driver, OS, display path
+    validations:
+      required: true
+
   - type: markdown
     attributes:
       value: |
-        ## Issue Information
-        Please provide information about the issue you are experiencing.
-        This information is important to help us understand the issue.
+        ## Problem
+
   - type: textarea
+    id: description
     attributes:
-      label: Bug Description
-      description: What kind of incorrect behavior did you see?
-      placeholder: "Example: I can't see video output when I start streaming"
+      label: What happened?
+      description: Describe what was visible or audible, when it began, and whether one or both panes were affected.
+      placeholder: "Example: The second pane stayed black after launch while the first pane continued updating."
     validations:
       required: true
+
   - type: textarea
+    id: reproduction
     attributes:
-      label: Reproduction Steps
-      description: Can you reproduce the issue? If so, please share below as steps.
+      label: Reproduction steps
+      description: Give the smallest repeatable sequence, including selected layout and input assignment when relevant.
       placeholder: |
-        Example: 
-        1. Select computer
-        2. Open "desktop" in the apps list
-        3. Wait for the connection to be established
-        4. Seeing black screen without video
+        1. Pair both hosts
+        2. Select the co-op entry
+        3. Choose the layout and input ownership
+        4. Launch and observe ...
+    validations:
+      required: true
+
   - type: textarea
+    id: expected
     attributes:
-      label: Expected Behavior
-      description: What is the correct behavior do you think?
-      placeholder: "Seeing video output of my computer screen"
+      label: Expected result
+      description: State what should have happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Attach a photo or screenshot of the actual client display and the smallest relevant log excerpt. Include timestamps, and say if the image contradicts the counters.
+      placeholder: "Drag files here after removing personal, account, pairing, network, and machine-identifying information."
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for this symptom.
+          required: true
+        - label: I removed credentials, pairing codes, account information, network addresses, host IDs, and other private data.
+          required: true
+        - label: If this is stream-related, I reproduced it against a live host rather than prerecorded playback.
+          required: true

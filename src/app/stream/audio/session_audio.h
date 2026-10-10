@@ -21,3 +21,12 @@
 
 extern AUDIO_RENDERER_CALLBACKS ss4s_aud_callbacks;
 
+
+#include <stdbool.h>
+#include <ss4s.h>
+struct session_t;
+/** Prepare qualified PCM output before host connection can start a secondary.
+ * False leaves normal audio init selected. Never called for a secondary process. */
+bool session_audio_prepare_coop_output(struct session_t *context);
+/** Safe after normal cleanup and on connection-init failure; joins before player close. */
+void session_audio_finish_output(SS4S_Player *player);

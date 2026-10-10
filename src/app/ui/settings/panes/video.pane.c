@@ -39,6 +39,10 @@ static void module_changed_cb(lv_event_t *e);
 
 static void hdr_state_update_cb(lv_event_t *e);
 
+static void stream_setting_changed_cb(lv_event_t *e);
+
+static void hdr_relaunch_follow_cb(lv_event_t *e);
+
 static void hdr_more_click_cb(lv_event_t *e);
 
 static void hdr_state_update(video_pane_t *controller);
@@ -141,8 +145,12 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
 
     lv_obj_add_event_cb(vdec_dropdown, module_changed_cb, LV_EVENT_VALUE_CHANGED, controller);
     lv_obj_add_event_cb(hevc_checkbox, hdr_state_update_cb, LV_EVENT_VALUE_CHANGED, controller);
+    lv_obj_add_event_cb(hevc_checkbox, stream_setting_changed_cb, LV_EVENT_VALUE_CHANGED, controller);
     lv_obj_add_event_cb(av1_checkbox, hdr_state_update_cb, LV_EVENT_VALUE_CHANGED, controller);
+    lv_obj_add_event_cb(av1_checkbox, stream_setting_changed_cb, LV_EVENT_VALUE_CHANGED, controller);
     lv_obj_add_event_cb(hdr_checkbox, hdr_state_update_cb, LV_EVENT_VALUE_CHANGED, controller);
+    lv_obj_add_event_cb(hdr_checkbox, stream_setting_changed_cb, LV_EVENT_VALUE_CHANGED, controller);
+    lv_obj_add_event_cb(hdr_checkbox, hdr_relaunch_follow_cb, LV_EVENT_VALUE_CHANGED, controller);
     lv_obj_add_event_cb(hdr_more, hdr_more_click_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *idr_checkbox = lv_checkbox_create(view);
@@ -167,12 +175,28 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
     idr_refresh_state_update(controller);
 
     pref_header(view, locstr("Color"));
-    pref_checkbox(view, locstr("Full range YUV (SDR only)"), &app_configuration->force_full_color_range, false);
-    pref_desc_label(view,
-                    locstr("Request full-range (0-255) color from the host for SDR streams. "
-                           "Has no effect when HDR is enabled — HDR always uses limited range "
-                           "(SMPTE ST 2084 standard). Disable if SDR colors look washed out."),
-                    false);
+    if (!app->ss4s.video_cap.fullColorRange) {
+        /* Do not preserve a preference this decoder cannot render correctly. Leaving it
+         * checked would imply the next stream uses it even though session negotiation
+         * must force limited range. Backends that advertise support keep existing behavior. */
+        app_configuration->force_full_color_range = false;
+    }
+    lv_obj_t *full_range_checkbox = pref_checkbox(view, locstr("Full range YUV (SDR only)"),
+                                                   &app_configuration->force_full_color_range, false);
+    lv_obj_add_event_cb(full_range_checkbox, stream_setting_changed_cb, LV_EVENT_VALUE_CHANGED, controller);
+    if (!app->ss4s.video_cap.fullColorRange) {
+        lv_obj_add_state(full_range_checkbox, LV_STATE_DISABLED);
+        pref_desc_label(view,
+                        locstr("Unavailable with this decoder. SDR and HDR both use limited-range "
+                               "YUV so colors are presented correctly."),
+                        false);
+    } else {
+        pref_desc_label(view,
+                        locstr("Request full-range (0-255) color from the host for SDR streams. "
+                               "Has no effect when HDR is enabled — HDR always uses limited range "
+                               "(SMPTE ST 2084 standard). Disable if SDR colors look washed out."),
+                        false);
+    }
 
     return view;
 }
@@ -185,13 +209,37 @@ static void obj_created(lv_fragment_t *self, lv_obj_t *obj) {
 static void module_changed_cb(lv_event_t *e) {
     video_pane_t *fragment = (video_pane_t *) lv_event_get_user_data(e);
     settings_controller_t *parent = fragment->parent;
-    parent->needs_stream_reconnect = true;
+    parent->needs_app_restart = true;
     update_conflict_hint(parent->app, fragment->conflict_hint);
+}
+
+static void stream_setting_changed_cb(lv_event_t *e) {
+    video_pane_t *fragment = (video_pane_t *) lv_event_get_user_data(e);
+    fragment->parent->needs_stream_reconnect = true;
 }
 
 static void hdr_state_update_cb(lv_event_t *e) {
     video_pane_t *controller = (video_pane_t *) lv_event_get_user_data(e);
     hdr_state_update(controller);
+}
+
+/* TURNING HDR ON RE-ARMS THE POST-SIGN-IN RELAUNCH, because that relaunch exists for
+ * exactly one reason: Apollo runs its HDR display setup only on a fresh launch, and the
+ * launch that lands on a lock screen cannot do it. Enabling HDR and quietly getting SDR
+ * after every wake is the kind of failure nobody thinks to look for.
+ *
+ * NOT FOLDED INTO `hdr` -- it stays its own switch (host pane) so it can be turned back
+ * off. That was worth keeping because the relaunch used to fire whether or not it was
+ * needed; now that it only runs when the host really was locked (pin_autoentry.c), the
+ * reason to refuse it is much weaker, but the escape hatch costs nothing.
+ *
+ * One direction only. Turning HDR OFF does not clear the flag: it is already inert with
+ * HDR off, and clearing it would silently discard a preference the user set by hand. */
+static void hdr_relaunch_follow_cb(lv_event_t *e) {
+    (void) e;
+    if (app_configuration->hdr) {
+        app_configuration->pin_hdr_relaunch = true;
+    }
 }
 
 static void hdr_state_update(video_pane_t *controller) {

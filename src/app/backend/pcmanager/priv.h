@@ -31,6 +31,9 @@ struct pcmanager_t {
     SDL_mutex *lock;
     pcmanager_listener_list *listeners;
     discovery_t discovery;
+    /* False when hosts.ini existed but could not be opened or parsed.  In that
+     * state an empty in-memory list must not replace the user's recoverable file. */
+    bool known_hosts_save_allowed;
 };
 
 void serverdata_free(PSERVER_DATA data);

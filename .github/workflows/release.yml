@@ -9,15 +9,73 @@ env:
   BUILD_TYPE: Release
 
 jobs:
+  release-windows:
+    # PUBLIC-LAUNCH GATE: remove only after the artifact-specific licence,
+    # corresponding-source, naming, and release checks are complete.
+    if: ${{ false }}
+    name: Release (Windows x64, unsigned)
+    runs-on: windows-2022
+    permissions:
+      contents: write
+
+    steps:
+      - name: Preserve repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Set up MSYS2 MinGW64
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          cache: true
+          suppress-deprecation-warnings: msystem-mingw64
+          install: mingw-w64-x86_64-nsis
+
+      - name: Build unsigned portable package
+        shell: pwsh
+        run: >-
+          ./scripts/windows/build_portable.ps1
+          -Clean
+          -RequireCleanTree
+          -Configuration RelWithDebInfo
+          -MsysRoot '${{ steps.msys2.outputs.msys2-location }}'
+
+      - name: Build per-user Windows installer
+        shell: pwsh
+        run: >-
+          ./scripts/windows/build_installer.ps1
+          -Makensis '${{ steps.msys2.outputs.msys2-location }}/mingw64/bin/makensis.exe'
+
+      - name: Attach unsigned Windows package
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.event.release.tag_name }}
+          allowUpdates: true
+          omitNameDuringUpdate: true
+          omitBody: true
+          omitPrereleaseDuringUpdate: true
+          artifactErrorsFailBuild: true
+          artifacts: dist/eclipse-windows-x64-setup-unsigned.exe,dist/eclipse-windows-x64-setup-unsigned.exe.sha256,dist/eclipse-windows-x64-unsigned.zip,dist/eclipse-windows-x64-unsigned.zip.sha256
+
   release-webos:
+    # PUBLIC-LAUNCH GATE: the current IPK does not yet carry the complete
+    # release-specific licence/notice/source material.
+    if: ${{ false }}
     name: Release (webOS)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Download ares-cli-rs
         uses: robinraju/release-downloader@v1.9
@@ -59,6 +117,8 @@ jobs:
           artifacts: dist/*.ipk,dist/*_dbgsym.tar.gz,dist/*.manifest.json
 
   release-raspi:
+    # PUBLIC-LAUNCH GATE: inherited packaging and notices require review.
+    if: ${{ false }}
     name: Release (Raspberry Pi ${{ matrix.arch }})
     runs-on: ubuntu-22.04
 
@@ -69,8 +129,9 @@ jobs:
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Prepare Client Dependencies
+        run: ./scripts/bootstrap_client_deps.sh
 
       - name: Update Packages
         shell: bash
@@ -119,14 +180,17 @@ jobs:
           artifacts: build/*.deb
 
   release-steamlink:
+    # PUBLIC-LAUNCH GATE: inherited packaging and notices require review.
+    if: ${{ false }}
     name: Release (Steam Link)
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Prepare Client Dependencies
+        run: ./scripts/bootstrap_client_deps.sh
 
       - name: Install Steam Link SDK
         uses: ./.github/actions/steamlink-sdk

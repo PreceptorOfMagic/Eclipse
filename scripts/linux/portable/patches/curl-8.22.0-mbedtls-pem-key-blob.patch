@@ -1,0 +1,35 @@
+--- a/lib/vtls/mbedtls.c
++++ b/lib/vtls/mbedtls.c
+@@ -703,6 +703,10 @@
+     else {
+       const struct curl_blob *ssl_key_blob = ssl_config->primary.key_blob;
+       const char *passwd = ssl_config->primary.key_passwd;
++      /* mbedtls_pk_parse_key() wants a PEM key's length to INCLUDE the
++         terminating null byte curlx_memdup0() adds below; the bare length
++         rejected every in-memory PEM key (Eclipse Linux client). */
++      size_t keylen = ssl_key_blob->len;
+       /* Unfortunately, mbedtls_pk_parse_key() requires the data to be
+          null-terminated if the data is PEM encoded (even when provided the
+          exact length). */
+@@ -710,9 +714,11 @@
+                                              ssl_key_blob->len);
+       if(!newblob)
+         return CURLE_OUT_OF_MEMORY;
++      if(strstr((const char *)newblob, "-----BEGIN "))
++        keylen++;
+ 
+ #if MBEDTLS_VERSION_NUMBER >= 0x04000000
+-      ret = mbedtls_pk_parse_key(&backend->pk, newblob, ssl_key_blob->len,
++      ret = mbedtls_pk_parse_key(&backend->pk, newblob, keylen,
+                                  (const unsigned char *)passwd,
+                                  passwd ? strlen(passwd) : 0);
+       if(ret == 0 &&
+@@ -724,7 +730,7 @@
+                                  PSA_KEY_USAGE_SIGN_HASH)))
+         ret = MBEDTLS_ERR_PK_TYPE_MISMATCH;
+ #else
+-      ret = mbedtls_pk_parse_key(&backend->pk, newblob, ssl_key_blob->len,
++      ret = mbedtls_pk_parse_key(&backend->pk, newblob, keylen,
+                                  (const unsigned char *)passwd,
+                                  passwd ? strlen(passwd) : 0,
+                                  mbedtls_ctr_drbg_random,

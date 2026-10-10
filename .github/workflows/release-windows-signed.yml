@@ -1,0 +1,172 @@
+name: Release (Windows x64, signed)
+run-name: "Signed Windows build for ${{ inputs.tag }}"
+
+# Builds the Windows package from a release tag, has SignPath sign it (SignPath Foundation's free
+# open-source programme; see CODE_SIGNING_POLICY.md), and attaches the signed files to that
+# GitHub release. Started by hand from the Actions tab after the release exists, so nothing is
+# ever signed without the maintainer starting the run AND approving each signing request in
+# SignPath. Setup: docs/signpath-setup.md.
+#
+# Two signing requests per run, because the installer must contain the already-signed program:
+#   1. moonlight-tv.exe            (artifact configuration: eclipse-windows-app)
+#   2. the NSIS installer built from the signed package   (eclipse-windows-installer)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build, sign and attach (for example eclipse-v1.3.2)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG || 'eclipse' }}
+  SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+
+jobs:
+  build-sign-attach:
+    name: Build, sign and attach (Windows x64)
+    runs-on: windows-2022
+    timeout-minutes: 300
+    permissions:
+      contents: write   # attach the signed files to the release
+      actions: read     # SignPath reads this job and downloads its artifacts
+
+    steps:
+      # setup-msys2 documents that checkout's default CRLF conversion can break
+      # MSYS tools and shell scripts. Configure Git before the checkout exists.
+      - name: Preserve repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Check the release exists
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json tagName | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "No GitHub release for tag $env:TAG; publish the release first." }
+
+      - name: Set up MSYS2 MinGW64
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          cache: true
+          suppress-deprecation-warnings: msystem-mingw64
+          install: mingw-w64-x86_64-nsis
+
+      - name: Build portable package (not yet signed)
+        shell: pwsh
+        run: >-
+          ./scripts/windows/build_portable.ps1
+          -Clean
+          -RequireCleanTree
+          -NoArchive
+          -Configuration RelWithDebInfo
+          -MsysRoot '${{ steps.msys2.outputs.msys2-location }}'
+
+      - name: Stage the program for signing
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force signing/app | Out-Null
+          Copy-Item dist/eclipse-windows-x64/moonlight-tv.exe signing/app/
+
+      - name: Upload the program for signing
+        id: upload-app
+        uses: actions/upload-artifact@v4
+        with:
+          name: eclipse-windows-app-unsigned
+          path: signing/app/
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign the program (approve the request in SignPath)
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: eclipse-windows-app
+          github-artifact-id: ${{ steps.upload-app.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signing/app-signed
+
+      - name: Put the signed program into the package and finish it
+        shell: pwsh
+        run: |
+          Copy-Item -Force signing/app-signed/moonlight-tv.exe dist/eclipse-windows-x64/moonlight-tv.exe
+          ./scripts/windows/finalize_signed_package.ps1
+
+      - name: Build the installer from the signed package
+        shell: pwsh
+        run: >-
+          ./scripts/windows/build_installer.ps1
+          -Makensis '${{ steps.msys2.outputs.msys2-location }}/mingw64/bin/makensis.exe'
+          -OutputName eclipse-windows-x64-setup.exe
+
+      - name: Stage the installer for signing
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force signing/installer | Out-Null
+          Copy-Item dist/eclipse-windows-x64-setup.exe signing/installer/
+
+      - name: Upload the installer for signing
+        id: upload-installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: eclipse-windows-installer-unsigned
+          path: signing/installer/
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign the installer (approve the request in SignPath)
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: eclipse-windows-installer
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signing/installer-signed
+
+      - name: Check the signed installer and re-hash it
+        shell: pwsh
+        run: |
+          $installer = 'dist/eclipse-windows-x64-setup.exe'
+          Copy-Item -Force signing/installer-signed/eclipse-windows-x64-setup.exe $installer
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($signature.Status -ne 'Valid') { throw "Installer signature is $($signature.Status)" }
+          if ($signature.SignerCertificate.Subject -notmatch '(^|, )O=SignPath Foundation(,|$)') {
+            throw "Unexpected installer signer: $($signature.SignerCertificate.Subject)"
+          }
+          if ($null -eq $signature.TimeStamperCertificate) { throw 'Installer signature has no timestamp' }
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+          "$digest  eclipse-windows-x64-setup.exe" | Set-Content -Encoding ascii "$installer.sha256"
+
+      - name: Attach the signed files to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release upload $env:TAG --repo $env:GITHUB_REPOSITORY --clobber `
+            dist/eclipse-windows-x64-setup.exe dist/eclipse-windows-x64-setup.exe.sha256 `
+            dist/eclipse-windows-x64.zip dist/eclipse-windows-x64.zip.sha256
+          if ($LASTEXITCODE -ne 0) { throw "Upload to release $env:TAG failed" }

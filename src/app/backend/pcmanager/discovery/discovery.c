@@ -15,8 +15,8 @@ void discovery_init(discovery_t *discovery, discovery_callback callback, void *u
 }
 
 void discovery_deinit(discovery_t *discovery) {
-    discovery_throttle_deinit(&discovery->throttle);
     discovery_stop(discovery);
+    discovery_throttle_deinit(&discovery->throttle);
     SDL_DestroyMutex(discovery->lock);
 }
 
@@ -27,12 +27,29 @@ void discovery_start(discovery_t *discovery) {
         return;
     }
     discovery_task_t *task = SDL_calloc(1, sizeof(discovery_task_t));
+    if (task == NULL) {
+        commons_log_error("Discovery", "Could not allocate discovery task");
+        SDL_UnlockMutex(discovery->lock);
+        return;
+    }
     commons_log_info("Discovery", "Start task %p", task);
     task->discovery = discovery;
     task->lock = SDL_CreateMutex();
+    if (task->lock == NULL) {
+        commons_log_error("Discovery", "Could not create discovery task mutex: %s", SDL_GetError());
+        SDL_free(task);
+        SDL_UnlockMutex(discovery->lock);
+        return;
+    }
     task->stop = false;
-    SDL_Thread *thread = SDL_CreateThread(discovery_worker_wrapper, "discovery", task);
-    SDL_DetachThread(thread);
+    task->thread = SDL_CreateThread(discovery_worker_wrapper, "discovery", task);
+    if (task->thread == NULL) {
+        commons_log_error("Discovery", "Could not start discovery thread: %s", SDL_GetError());
+        SDL_DestroyMutex(task->lock);
+        SDL_free(task);
+        SDL_UnlockMutex(discovery->lock);
+        return;
+    }
     discovery->task = task;
     SDL_UnlockMutex(discovery->lock);
 }
@@ -47,6 +64,9 @@ void discovery_stop(discovery_t *discovery) {
     discovery->task = NULL;
     discovery_worker_stop(task);
     SDL_UnlockMutex(discovery->lock);
+    SDL_WaitThread(task->thread, NULL);
+    SDL_DestroyMutex(task->lock);
+    SDL_free(task);
 }
 
 void discovery_discovered(struct discovery_t *discovery, const sockaddr_t *addr) {
@@ -55,8 +75,5 @@ void discovery_discovered(struct discovery_t *discovery, const sockaddr_t *addr)
 
 int discovery_worker_wrapper(void *arg) {
     discovery_task_t *task = (discovery_task_t *) arg;
-    int result = discovery_worker(task);
-    SDL_DestroyMutex(task->lock);
-    free(arg);
-    return result;
+    return discovery_worker(task);
 }

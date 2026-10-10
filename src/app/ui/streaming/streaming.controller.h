@@ -10,6 +10,7 @@ typedef struct app_t app_t;
 typedef struct {
     lv_fragment_t base;
     app_t *global;
+    uuidstr_t uuid;   /* host being streamed; used to scope PIN auto-entry */
     lv_obj_t *detached_root;
     lv_obj_t *hint;
     lv_obj_t *overlay;
@@ -19,8 +20,6 @@ typedef struct {
     lv_obj_t *actions;
     lv_obj_t *kbd_btn, *vmouse_btn;
 #if defined(TARGET_WEBOS)
-    lv_obj_t *hid_devices_btn;
-    lv_obj_t *hid_panel;
 #endif
     lv_obj_t *suspend_btn, *quit_btn;
     lv_obj_t *stats;
@@ -48,6 +47,10 @@ typedef struct {
     bool network_test;
     uint8_t network_test_duration; /* seconds */
     lv_timer_t *network_test_timer;
+    /* Co-op only: holds the "Connecting..." dialog until the composite emits its first
+       picture, so the horizontal startup gap is not a blank black panel. */
+    lv_timer_t *coop_wait_timer;
+    unsigned coop_wait_ms;
 } streaming_controller_t;
 
 /* Usually references to SERVER_DATA and APP_LIST should not be kept, but in this struct, they will only be used once */
@@ -74,7 +77,6 @@ bool streaming_overlay_shown();
 bool streaming_soft_keyboard_shown();
 
 #if defined(TARGET_WEBOS)
-bool streaming_hid_panel_shown();
 #endif
 
 bool streaming_stats_shown();

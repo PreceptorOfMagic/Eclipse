@@ -129,6 +129,17 @@ static void app_input_populate_group(app_ui_input_t *input) {
     if (!group) {
         group = lv_group_get_default();
     }
+    /* THE RING BELONGS TO WHOEVER HAS THE KEYS. A dialog opening pushes a modal group,
+     * and the screen underneath kept its focus ring drawn the whole time it was
+     * covered -- two things looking selected, one of them unreachable. The outgoing
+     * group's focused object gives its ring up here; ui_hover.c gives the incoming
+     * one its ring on the next tick if a key or stick is what is driving. */
+    if (input->key.indev != NULL && input->key.indev->group != group) {
+        lv_obj_t *leaving = lv_group_get_focused(input->key.indev->group);
+        if (leaving != NULL) {
+            lv_obj_clear_state(leaving, LV_STATE_FOCUS_KEY);
+        }
+    }
     if (input->key.indev) {
         lv_indev_set_group(input->key.indev, group);
     }

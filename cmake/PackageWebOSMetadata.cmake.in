@@ -1,0 +1,4 @@
+execute_process(
+    COMMAND "@Python3_EXECUTABLE@" "@CMAKE_SOURCE_DIR@/scripts/webos/package_metadata.py"
+            "@CMAKE_SOURCE_DIR@" "@CMAKE_BINARY_DIR@" "${CPACK_TEMPORARY_DIRECTORY}"
+    COMMAND_ERROR_IS_FATAL ANY)

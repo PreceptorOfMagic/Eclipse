@@ -18,10 +18,8 @@ if [ -z "${CMAKE_BINARY_DIR}" ]; then
   CMAKE_BINARY_DIR=build/webos-easy_build
 fi
 
-if [ -z "$CI" ]; then
-  echo "Update submodules"
-  git submodule update --init --recursive
-fi
+echo "Prepare client dependencies"
+./scripts/bootstrap_client_deps.sh
 
 if [ -z "${TOOLCHAIN_FILE}" ]; then
   echo "Use buildroot-nc4 toolchain installed in /opt"
@@ -39,20 +37,19 @@ if [ ! -d "${CMAKE_BINARY_DIR}" ]; then
   mkdir -p "${CMAKE_BINARY_DIR}"
 fi
 
-BUILD_OPTIONS="-DBUILD_TESTS=OFF -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DTHREADS_PTHREAD_ARG=2"
+BUILD_OPTIONS=(-DBUILD_TESTS=OFF -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DTHREADS_PTHREAD_ARG=2)
 # buildroot-nc4 SDK: avoid CMake staying on host /usr/bin/cc if the toolchain file does not set CC.
 _sdk_root="$(dirname "$(dirname "$(dirname "${TOOLCHAIN_FILE}")")")"
 _webos_gcc="${_sdk_root}/bin/arm-webos-linux-gnueabi-gcc"
 _webos_gxx="${_sdk_root}/bin/arm-webos-linux-gnueabi-g++"
 if [ -x "${_webos_gcc}" ]; then
-  BUILD_OPTIONS="${BUILD_OPTIONS} -DCMAKE_C_COMPILER=${_webos_gcc}"
+  BUILD_OPTIONS+=("-DCMAKE_C_COMPILER=${_webos_gcc}")
 fi
 if [ -x "${_webos_gxx}" ]; then
-  BUILD_OPTIONS="${BUILD_OPTIONS} -DCMAKE_CXX_COMPILER=${_webos_gxx}"
+  BUILD_OPTIONS+=("-DCMAKE_CXX_COMPILER=${_webos_gxx}")
 fi
 
-# shellcheck disable=SC2068,SC2086
-$CMAKE_BIN -B"${CMAKE_BINARY_DIR}" -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" $BUILD_OPTIONS $@ || exit 1
+"$CMAKE_BIN" -B"${CMAKE_BINARY_DIR}" -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" "${BUILD_OPTIONS[@]}" "$@" || exit 1
 
 if command -v nproc &>/dev/null; then
   CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)
@@ -62,8 +59,8 @@ fi
 
 export CMAKE_BUILD_PARALLEL_LEVEL
 
-$CMAKE_BIN --build "${CMAKE_BINARY_DIR}" || exit 1
+"$CMAKE_BIN" --build "${CMAKE_BINARY_DIR}" || exit 1
 
 echo "Build package"
 cd "${CMAKE_BINARY_DIR}" || exit 1
-$CPACK_BIN
+"$CPACK_BIN"

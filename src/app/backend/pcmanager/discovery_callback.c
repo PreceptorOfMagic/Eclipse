@@ -24,8 +24,6 @@
 
 static void lan_host_status_update(pcmanager_t *manager, SERVER_DATA *server);
 
-static void lan_host_offline(pcmanager_t *manager, const sockaddr_t *addr);
-
 void pcmanager_lan_host_discovered(const sockaddr_t *addr, pcmanager_t *manager) {
     GS_CLIENT client = app_gs_client_new(manager->app);
     SERVER_DATA *server = serverdata_new();
@@ -42,7 +40,7 @@ void pcmanager_lan_host_discovered(const sockaddr_t *addr, pcmanager_t *manager)
         ret = gs_get_error(&gs_error);
         if (ret == GS_IO_ERROR) {
             commons_log_warn("PCManager", "Error while updating status from %s. Host seems to be offline", ip);
-            lan_host_offline(manager, addr);
+            pclist_mark_offline_async(manager, addr);
         } else {
             commons_log_warn("PCManager", "Error while updating status from %s: %d (%s)", ip, ret, gs_error);
         }
@@ -53,15 +51,9 @@ void pcmanager_lan_host_discovered(const sockaddr_t *addr, pcmanager_t *manager)
 
 void lan_host_status_update(pcmanager_t *manager, SERVER_DATA *server) {
     SERVER_STATE state = {.code = server->paired ? SERVER_STATE_AVAILABLE : SERVER_STATE_NOT_PAIRED};
-    pclist_upsert(manager, (const uuidstr_t *) server->uuid, &state, server);
-}
-
-void lan_host_offline(pcmanager_t *manager, const sockaddr_t *addr) {
-    pclist_t *existing = pclist_find_by_addr(manager, addr);
-    if (!existing) {
-        return;
-    }
-    pcmanager_lock(manager);
-    existing->state.code = SERVER_STATE_OFFLINE;
-    pcmanager_unlock(manager);
+    /* Never synchronously wait for the UI from the discovery thread. The UI
+     * joins this worker while destroying the launcher; a synchronous upsert
+     * makes each side wait for the other forever when discovery completes at
+     * exactly that point. */
+    pclist_upsert_async(manager, (const uuidstr_t *) server->uuid, &state, server);
 }

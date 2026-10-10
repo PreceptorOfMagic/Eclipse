@@ -1,10 +1,10 @@
-# Build Aurora for LG webOS via Docker
+# Build Eclipse for LG webOS via Docker
 # Funciona no Windows sem WSL Ubuntu - usa container Ubuntu
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
-Write-Host "=== Aurora - Build for LG webOS (via Docker) ===" -ForegroundColor Cyan
+Write-Host "=== Eclipse - Build for LG webOS (via Docker) ===" -ForegroundColor Cyan
 Write-Host ""
 
 # Verificar Docker

@@ -23,6 +23,7 @@
 #include "errors.h"
 #include "priv.h"
 #include "logging.h"
+#include "file_compat.h"
 
 #include <Limelight.h>
 
@@ -471,7 +472,11 @@ int gs_applist(GS_CLIENT hnd, const SERVER_DATA *server, PAPP_LIST *list) {
         return gs_set_error(GS_OUT_OF_MEMORY, "Out of memory");
     }
 
-    construct_url(hnd, url, sizeof(url), true, server->serverInfo.address, server_port(server, true), "applist", NULL);
+    /* umbraCoop=1: Umbra lists its built-in "Co-op Pane" only to clients that ask (UmbraCaps bit 2), so the
+     * co-op screen can resolve it while ordinary Moonlight clients do not see it. Stock hosts ignore it, and
+     * the launcher hides the tile itself unless co-op is running there (apps.controller.c). */
+    construct_url(hnd, url, sizeof(url), true, server->serverInfo.address, server_port(server, true), "applist",
+                  "umbraCoop=1");
     if (http_request(hnd->http, url, data) != GS_OK) {
         ret = gs_set_error(GS_IO_ERROR, "Failed to get apps list");
     } else if (xml_status(data->memory, data->size) == GS_ERROR) {
@@ -495,6 +500,24 @@ static void append_launch_mode_param(char *url, size_t url_len, int width, int h
     } else {
         append_param(url, url_len, "mode", "%dx%dx%d", width, height, fps);
     }
+}
+
+void gs_set_gpu_hevc(GS_CLIENT hnd, bool enabled) { hnd->aurora_gpu_hevc = enabled; }
+
+void gs_set_coop(GS_CLIENT hnd, bool coop, bool tuning) {
+    hnd->umbra_coop = coop;
+    hnd->umbra_coop_tuning = coop && tuning;
+}
+
+void gs_set_host_monitor_off(GS_CLIENT hnd, bool off) {
+    hnd->umbra_monitor_off = off;
+}
+
+void gs_set_wired_pin(GS_CLIENT hnd, const char *wired_mac, const char *own_macs, const char *own_ips) {
+    const bool on = wired_mac != NULL && wired_mac[0] != '\0';
+    snprintf(hnd->wired_mac, sizeof(hnd->wired_mac), "%s", on ? wired_mac : "");
+    snprintf(hnd->own_macs, sizeof(hnd->own_macs), "%s", on && own_macs != NULL ? own_macs : "");
+    snprintf(hnd->own_ips, sizeof(hnd->own_ips), "%s", on && own_ips != NULL ? own_ips : "");
 }
 
 int gs_start_app(GS_CLIENT hnd, PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, bool is_gfe, bool sops,
@@ -594,6 +617,14 @@ int gs_start_app(GS_CLIENT hnd, PSERVER_DATA server, STREAM_CONFIGURATION *confi
         append_param(url, sizeof(url), "displayRefreshRateMillihertz", "%d",
                      config->clientRefreshRateX100 * 10);
     }
+    if (hnd->aurora_gpu_hevc) append_param(url, sizeof(url), "auroraGpuHevc", "1");
+    if (hnd->umbra_coop) append_param(url, sizeof(url), "umbraCoop", "%d", hnd->umbra_coop_tuning ? 1 : 0);
+    if (hnd->umbra_monitor_off) append_param(url, sizeof(url), "umbraMonitorOff", "1");
+    if (hnd->wired_mac[0] != '\0') {
+        append_param(url, sizeof(url), "auroraWiredMac", "%s", hnd->wired_mac);
+        append_param(url, sizeof(url), "auroraOwnMacs", "%s", hnd->own_macs);
+        append_param(url, sizeof(url), "auroraOwnIps", "%s", hnd->own_ips);
+    }
     append_param(url, sizeof(url), "additionalStates", "1");
     append_param(url, sizeof(url), "sops", "%d", sops);
     append_param(url, sizeof(url), "rikey", "%s", rikey_hex);
@@ -638,6 +669,16 @@ int gs_start_app(GS_CLIENT hnd, PSERVER_DATA server, STREAM_CONFIGURATION *confi
         goto cleanup;
     }
 
+    if (hnd->aurora_gpu_hevc) {
+        char *ack = NULL;
+        const int status = xml_search_ex(data->memory, data->size, "auroraGpuHevc", true, &ack);
+        const bool accepted = status == GS_OK && ack != NULL && strcmp(ack, "1") == 0;
+        free(ack);
+        if (!accepted) {
+            ret = gs_set_error(GS_FAILED, "Host did not accept the experimental GPU HEVC encoder; refusing vendor fallback");
+            goto cleanup;
+        }
+    }
     if (xml_search_ex(data->memory, data->size, "sessionUrl0", true, &result) == GS_OK) {
         server->serverInfo.rtspSessionUrl = result;
         result = NULL;
@@ -695,6 +736,31 @@ int gs_quit_app(GS_CLIENT hnd, PSERVER_DATA server) {
     return ret;
 }
 
+int gs_get_host_log(GS_CLIENT hnd, const SERVER_DATA *server, int max_bytes, char **text) {
+    *text = NULL;
+    char url[4096];
+    HTTP_DATA *data = http_data_alloc();
+    if (data == NULL) {
+        return gs_set_error(GS_OUT_OF_MEMORY, "Out of memory");
+    }
+    int ret = GS_OK;
+    if (!construct_url(hnd, url, sizeof(url), true, server->serverInfo.address, server_port(server, true),
+                       "umbralog", "bytes=%d", max_bytes)) {
+        ret = gs_set_error(GS_FAILED, "Failed to build the host log URL");
+    } else if ((ret = http_request(hnd->http, url, data)) == GS_OK) {
+        char *copy = malloc(data->size + 1);
+        if (copy == NULL) {
+            ret = gs_set_error(GS_OUT_OF_MEMORY, "Out of memory");
+        } else {
+            memcpy(copy, data->memory, data->size);
+            copy[data->size] = '\0';
+            *text = copy;
+        }
+    }
+    http_data_free(data);
+    return ret;
+}
+
 int gs_download_cover(GS_CLIENT hnd, const SERVER_DATA *server, int appid, const char *path) {
     int ret = GS_OK;
     char url[4096];
@@ -710,7 +776,7 @@ int gs_download_cover(GS_CLIENT hnd, const SERVER_DATA *server, int appid, const
         goto cleanup;
     }
 
-    FILE *f = fopen(path, "wb");
+    FILE *f = gs_fopen_utf8(path, "wb");
     if (f == NULL) {
         ret = gs_set_error(GS_IO_ERROR, "Failed to download cover");
         goto cleanup;
@@ -780,6 +846,9 @@ static int load_server_status(GS_CLIENT hnd, PSERVER_DATA server) {
         char *serverCodecModeSupportText = NULL;
         char *httpsPortText = NULL;
         char *externalPortText = NULL;
+        char *sessionLockedText = NULL;
+        char *coopProfileCapsText = NULL;
+        char *umbraCapsText = NULL;
 
         ret = GS_INVALID;
 
@@ -862,6 +931,37 @@ static int load_server_status(GS_CLIENT hnd, PSERVER_DATA server) {
             goto cleanup;
         }
 
+        /* OPTIONAL, AND IT HAS TO STAY OPTIONAL. Only our Apollo emits SessionLocked, and
+         * even there only over HTTPS -- the unpaired HTTP probe above does not carry it.
+         * Every other field here treats absence as fatal (`goto cleanup`), which for this
+         * one would refuse to talk to stock Sunshine and to our own hosts before they are
+         * paired. xml_search() with required=false hands back an empty string rather than
+         * an error when the node is missing, so absence lands on "not locked" below. */
+        if (xml_search(data->memory, data->size, "SessionLocked", &sessionLockedText) != GS_OK) {
+            sessionLockedText = NULL;
+        }
+
+        /* OPTIONAL FOR THE SAME REASON SessionLocked IS: only our Apollo emits these, only
+         * over HTTPS, and a stock Sunshine host must keep working. Absence lands on
+         * encoderVendorKnown = false below, which means "we are guessing", not "no GPU".
+         *
+         * Freed before assignment because this whole block can run TWICE -- the HTTP
+         * retry below re-enters it -- and the second pass would otherwise drop the first
+         * pass's allocation on the floor. */
+        if (server->encoderVendor != NULL) {
+            free((void *) server->encoderVendor);
+            server->encoderVendor = NULL;
+        }
+        if (xml_search(data->memory, data->size, "EncoderVendor", (char **) &server->encoderVendor) != GS_OK) {
+            server->encoderVendor = NULL;
+        }
+        if (xml_search(data->memory, data->size, "CoopProfileCaps", &coopProfileCapsText) != GS_OK) {
+            coopProfileCapsText = NULL;
+        }
+        if (xml_search(data->memory, data->size, "UmbraCaps", &umbraCapsText) != GS_OK) {
+            umbraCapsText = NULL;
+        }
+
         if (xml_modelist(data->memory, data->size, &server->modes) != GS_OK) {
             goto cleanup;
         }
@@ -876,7 +976,19 @@ static int load_server_status(GS_CLIENT hnd, PSERVER_DATA server) {
                                      (int) strtol(serverCodecModeSupportText, NULL, 0);
 
         server->paired = pairedText != NULL && strcmp(pairedText, "1") == 0;
+        /* KNOWN is recorded separately from the VALUE, because "this host says it is not
+         * locked" and "this host cannot tell us" are different facts that used to collapse
+         * into the same false. They call for different behaviour: the first is an answer
+         * to trust, the second is silence from an Apollo too old to have the patch. */
+        server->sessionLockedKnown = sessionLockedText != NULL && sessionLockedText[0] != '\0';
+        server->sessionLocked = sessionLockedText != NULL && strcmp(sessionLockedText, "1") == 0;
+        /* KNOWN means the host named an encoder, not merely that the tag was present. */
+        server->encoderVendorKnown = server->encoderVendor != NULL && server->encoderVendor[0] != '\0';
+        server->coopProfileCaps = coopProfileCapsText == NULL ? 0 : (int) strtol(coopProfileCapsText, NULL, 0);
+        server->umbraCapsKnown = umbraCapsText != NULL;
+        server->umbraCaps = umbraCapsText == NULL ? 0 : (int) strtol(umbraCapsText, NULL, 0);
         server->currentGame = currentGameText == NULL ? 0 : (int) strtol(currentGameText, NULL, 0);
+        server->codecModeSupport = serverCodecModeSupport;
         server->supports4K = serverCodecModeSupport != 0;
         server->supportsHdr = serverCodecModeSupport & 0x200;
         server->serverMajorVersion = (int) strtol(server->serverInfo.serverInfoAppVersion, NULL, 0);
@@ -914,6 +1026,17 @@ static int load_server_status(GS_CLIENT hnd, PSERVER_DATA server) {
 
         if (serverCodecModeSupportText != NULL) {
             free(serverCodecModeSupportText);
+        }
+
+        if (sessionLockedText != NULL) {
+            free(sessionLockedText);
+        }
+
+        if (umbraCapsText != NULL) {
+            free(umbraCapsText);
+        }
+        if (coopProfileCapsText != NULL) {
+            free(coopProfileCapsText);
         }
 
         i++;
@@ -1008,9 +1131,14 @@ static bool append_param(char *url, size_t ulen, const char *param, const char *
         return false;
     }
     *p++ = '&';
-    p = stpncpy(p, param, plen);
+    /* NOT stpncpy: it is a GNU extension and MinGW does not have it. Both lengths are known
+     * exactly here and the bound was checked above, so a copy-and-advance is the same thing
+     * without the portability problem. */
+    memcpy(p, param, plen);
+    p += plen;
     *p++ = '=';
-    p = stpncpy(p, value, vlen);
+    memcpy(p, value, vlen);
+    p += vlen;
     *p = '\0';
     return true;
 }
@@ -1026,7 +1154,9 @@ static bool append_params_raw(char *url, size_t ulen, const char *params) {
         return false;
     }
     *p++ = '&';
-    p = stpncpy(p, params, plen);
+    /* Same reason as above: stpncpy is a GNU extension MinGW does not provide. */
+    memcpy(p, params, plen);
+    p += plen;
     *p = '\0';
     return true;
 }

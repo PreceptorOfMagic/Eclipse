@@ -9,6 +9,15 @@ typedef struct app_gamepad_state_t app_gamepad_state_t;
 
 bool app_input_init_gamepad(app_input_t *input, int device_index);
 
+/** A Nintendo pad (Switch Pro, Joy-Con, and Nintendo's own adapters) -- by SDL's controller type, else by
+ *  Nintendo's USB vendor id. Third-party pads in Switch mode report as a Pro Controller and count too. */
+bool app_input_gamepad_is_nintendo(SDL_GameController *controller);
+
+/** Whether THIS controller's A/B and X/Y are swapped. A detected Nintendo pad follows `nintendo_layout`
+ *  (as printed, or Xbox positions); everything else -- and Nintendo pads when detection is off -- follows
+ *  `swap_abxy`, which swaps every controller. */
+bool app_input_gamepad_swaps_abxy(SDL_GameController *controller);
+
 void app_input_close_gamepad(app_input_t *input, SDL_JoystickID sdl_id);
 
 int app_input_get_gamepads_count(app_input_t *input);
