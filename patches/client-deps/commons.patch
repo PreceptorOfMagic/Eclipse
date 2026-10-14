@@ -608,6 +608,94 @@ index 0000000000000000000000000000000000000000..1b5e7cbfe26c0d569bbb88ea58323835
 +    assert(remove(destination_path) == 0);
 +    return 0;
 +}
+diff --git a/util/logging/CMakeLists.txt b/util/logging/CMakeLists.txt
+index 2a118e1f36e0a13c9c5320912578218f84181b00..f63194ee18a4f4f4da2fcfef6de4c6c7af29ed3f 100644
+--- a/util/logging/CMakeLists.txt
++++ b/util/logging/CMakeLists.txt
+@@ -9,7 +9,10 @@ check_symbol_exists(syslog "syslog.h" HAVE_SYSLOG)
+ 
+ option(COMMONS_LOGGING_SYSLOG "Use syslog for logging" OFF)
+ 
+-if (PMLOG_FOUND)
++if (ANDROID)
++    target_sources(commons-logging PRIVATE logging_android.c)
++    target_link_libraries(commons-logging PRIVATE log)
++elseif (PMLOG_FOUND)
+     target_include_directories(commons-logging SYSTEM PRIVATE ${PMLOG_INCLUDE_DIRS})
+     target_link_libraries(commons-logging PRIVATE ${PMLOG_LIBRARIES})
+     target_sources(commons-logging PRIVATE logging_pmlog.c)
+diff --git a/util/logging/logging_android.c b/util/logging/logging_android.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..d700df05788ef9a52239a14e41f2f5a46deed1f3
+--- /dev/null
++++ b/util/logging/logging_android.c
+@@ -0,0 +1,66 @@
++/* Android: the system log (adb logcat -s Eclipse), as PmLog on webOS -- and stderr too, which a kept
++ * diagnostic log captures into its file, as on every other platform. */
++#include "logging.h"
++
++#include <android/log.h>
++#include <stdio.h>
++#include <string.h>
++#include <time.h>
++
++#define LOGCAT_TAG "Eclipse"
++
++static struct timespec ts_init;
++
++void commons_logging_init(const char *context_name) {
++    (void) context_name;
++    clock_gettime(CLOCK_MONOTONIC, &ts_init);
++}
++
++void commons_logging_deinit() {
++    // No-op
++}
++
++void commons_log_vprintf(commons_log_level level, const char *tag, const char *fmt, va_list arg) {
++    int priority;
++    switch (level) {
++        case COMMONS_LOG_LEVEL_FATAL:
++            priority = ANDROID_LOG_FATAL;
++            break;
++        case COMMONS_LOG_LEVEL_ERROR:
++            priority = ANDROID_LOG_ERROR;
++            break;
++        case COMMONS_LOG_LEVEL_WARN:
++            priority = ANDROID_LOG_WARN;
++            break;
++        case COMMONS_LOG_LEVEL_INFO:
++            priority = ANDROID_LOG_INFO;
++            break;
++        case COMMONS_LOG_LEVEL_DEBUG:
++            priority = ANDROID_LOG_DEBUG;
++            break;
++        case COMMONS_LOG_LEVEL_VERBOSE:
++            priority = ANDROID_LOG_VERBOSE;
++            break;
++        default:
++            return;
++    }
++    char msg[1024];
++    vsnprintf(msg, sizeof(msg), fmt, arg);
++    size_t len = strlen(msg);
++    if (len > 0 && msg[len - 1] == '\n') {
++        msg[len - 1] = '\0';
++    }
++    __android_log_print(priority, LOGCAT_TAG, "[%s] %s", tag, msg);
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    ts.tv_sec -= ts_init.tv_sec;
++    ts.tv_nsec -= ts_init.tv_nsec;
++    if (ts.tv_nsec < 0) {
++        ts.tv_sec--;
++        ts.tv_nsec += 1000000000;
++    }
++    static const char letters[] = {'V', 'D', 'I', 'W', 'E', 'F'};
++    const int index = priority - ANDROID_LOG_VERBOSE;
++    fprintf(stderr, "[%ld.%03ld][%s] %c %s\n", (long) ts.tv_sec, ts.tv_nsec / 1000000, tag,
++            index >= 0 && index < (int) sizeof(letters) ? letters[index] : '?', msg);
++}
 diff --git a/util/uuidstr/CMakeLists.txt b/util/uuidstr/CMakeLists.txt
 index a9d291f3292e5269717fb934fd8c36734df1b517..be807093cffa4e81d728ae1f4d67fb12392e5f4a 100644
 --- a/util/uuidstr/CMakeLists.txt

@@ -15,6 +15,7 @@ Open [Eclipse releases](https://github.com/PreceptorOfMagic/Eclipse/releases), c
 | LG webOS TV | Standard `com.aurora.gamestream_<version>_arm.ipk` (not beta) | [LG TV steps](#lg-webos) |
 | Windows x64 | `eclipse-windows-x64-unsigned.zip` + checksum | [Windows steps](#windows-x64) |
 | Linux x86_64 | `eclipse-linux-x86_64.tar.gz` | [Linux steps](#linux-x86_64) |
+| Android TV / NVIDIA SHIELD | `eclipse-android.apk` + checksum | [Android TV steps](#android-tv-and-nvidia-shield) |
 
 ### LG webOS
 
@@ -45,6 +46,16 @@ The portable build is unsigned; check its provenance and checksum before respond
 Requires glibc 2.35+ (Ubuntu 22.04 baseline), a graphical desktop and working GPU drivers. Current Linux tests are WSL-based with NVDEC; native Linux and AMD/Intel VAAPI still need validation.
 
 [Full Linux installation](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md#eclipse-linux).
+
+### Android TV and NVIDIA SHIELD
+
+1. Download the APK and its matching SHA-256 file from the same release.
+2. Sideload it: with the **Downloader** app on the TV (allow it under **Unknown sources**), or from a computer with `adb connect <TV address>:5555` then `adb install eclipse-android.apk`.
+3. Launch Eclipse from the TV's apps row. Install updates the same way; your hosts and settings are kept.
+
+Requires Android 9 or newer. The SHIELD TV (Android 11) is the primary target. The Android port is new and has not yet been tested on SHIELD hardware; reports are welcome. There is no Play Store listing.
+
+[Android TV installation, remote keys and building](docs/BUILD_ANDROID.md).
 
 ## What Eclipse provides
 

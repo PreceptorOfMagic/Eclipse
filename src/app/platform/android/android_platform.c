@@ -66,9 +66,6 @@ bool android_platform_init(bool peer) {
         /* Back reaches the app as SDL_SCANCODE_AC_BACK instead of finishing the activity; the UI and the
          * stream decide what it means (platform/android/keyboard_android.c). */
         SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
-        /* The UI is drawn over the video surface: its EGL surface needs an alpha channel for the transparent
-         * areas to show the stream (see EclipseActivity.createSDLSurface). */
-        SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
         /* The device's own accelerometer (phones, some boxes) must not appear as a game controller. */
         SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
     }
@@ -168,14 +165,6 @@ static void call_static_void_int(const char *name, int value) {
 
 void android_display_request_refresh(int refresh_x100) {
     call_static_void_int("requestRefreshRate", refresh_x100);
-}
-
-void android_keep_screen_on(bool on) {
-    call_static_void_int("keepScreenOn", on ? 1 : 0);
-}
-
-void android_open_home(void) {
-    call_static_void_int("openHome", 0);
 }
 
 /* EclipseActivity.nativeTvKey(int key, boolean pressed): a remote key SDL2 leaves unmapped (see

@@ -10,6 +10,7 @@ NAVKEY navkey_from_sdl_android(const SDL_Event *ev) {
                 case ANDROID_SCANCODE_RED:
                     return NAVKEY_NEGATIVE;
                 case ANDROID_SCANCODE_YELLOW:
+                case ANDROID_SCANCODE_MENU:
                     return NAVKEY_MENU;
                 case ANDROID_SCANCODE_BLUE:
                     return NAVKEY_ALTERNATIVE;

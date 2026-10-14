@@ -66,6 +66,67 @@ jobs:
           artifactErrorsFailBuild: true
           artifacts: dist/eclipse-windows-x64-setup-unsigned.exe,dist/eclipse-windows-x64-setup-unsigned.exe.sha256,dist/eclipse-windows-x64-unsigned.zip,dist/eclipse-windows-x64-unsigned.zip.sha256
 
+  release-android:
+    # PUBLIC-LAUNCH GATE: remove only after the APK's licence, notice and corresponding-source material has
+    # been reviewed and the project's Android signing key exists (docs/BUILD_ANDROID.md, "Signing").
+    if: ${{ false }}
+    name: Release (Android TV)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      NDK_VERSION: 27.2.12479018
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install build tools
+        run: |
+          sudo apt-get -yq update
+          sudo apt-get -y -qq install ninja-build gettext pkg-config
+
+      - name: Install the Android NDK and platform
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" \
+            "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Build the signed APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ECLIPSE_ANDROID_KEYSTORE_BASE64 }}
+          ECLIPSE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ECLIPSE_ANDROID_KEYSTORE_PASSWORD }}
+          ECLIPSE_ANDROID_KEY_ALIAS: ${{ secrets.ECLIPSE_ANDROID_KEY_ALIAS }}
+          ECLIPSE_ANDROID_KEY_PASSWORD: ${{ secrets.ECLIPSE_ANDROID_KEY_PASSWORD }}
+        run: |
+          [ -n "$KEYSTORE_BASE64" ] || { echo "the release signing key is not configured" >&2; exit 1; }
+          export ECLIPSE_ANDROID_KEYSTORE="$RUNNER_TEMP/eclipse-release.jks"
+          base64 -d <<<"$KEYSTORE_BASE64" > "$ECLIPSE_ANDROID_KEYSTORE"
+          ./scripts/android/build_apk.sh --clean --require-clean-tree
+          rm -f "$ECLIPSE_ANDROID_KEYSTORE"
+          tar -C build -czf dist/eclipse-android-symbols.tar.gz android-symbols
+
+      - name: Attach the Android package
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.event.release.tag_name }}
+          allowUpdates: true
+          omitNameDuringUpdate: true
+          omitBody: true
+          omitPrereleaseDuringUpdate: true
+          artifactErrorsFailBuild: true
+          artifacts: dist/eclipse-android.apk,dist/eclipse-android.apk.sha256,dist/eclipse-android-symbols.tar.gz
+
   release-webos:
     # PUBLIC-LAUNCH GATE: the current IPK does not yet carry the complete
     # release-specific licence/notice/source material.

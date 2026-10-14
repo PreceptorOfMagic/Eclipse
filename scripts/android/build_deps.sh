@@ -116,7 +116,7 @@ step_mbedtls() {   # ONE SHARED, THREAD-SAFE copy for curl, libgamestream and mo
     done
 }
 step_curl() {   # HTTP/HTTPS only, TLS by the same mbedTLS; CA roots: Android's own store (/system/etc/security)
-    local abi=$1 d prefix="$OUT/$abi"; d="$(unpack curl "$abi")"
+    local abi=$1 d; local prefix="$OUT/$abi"; d="$(unpack curl "$abi")"
     patch -d "$d" -p1 --forward --quiet < "$CURL_PATCH"
     cmake_dep "$abi" "$d" -DBUILD_SHARED_LIBS=ON -DBUILD_STATIC_LIBS=OFF -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF \
         -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF -DHTTP_ONLY=ON \
@@ -137,7 +137,7 @@ step_opus() {   # static; its libm need moves into Libs, since consumers link Li
     grep -q '^Libs: .*-lopus -lm$' "$OUT/$abi/lib/pkgconfig/opus.pc" || die "opus.pc Libs not patched"
 }
 step_inih() {   # the pin cmake/ExternalINIH.cmake uses, static
-    local abi=$1 d prefix="$OUT/$abi"; d="$(unpack inih "$abi")"
+    local abi=$1 d; local prefix="$OUT/$abi"; d="$(unpack inih "$abi")"
     cat > "$d/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.13)
 project(inih LANGUAGES C)

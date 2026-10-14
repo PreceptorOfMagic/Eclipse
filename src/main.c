@@ -93,6 +93,9 @@ int main(int argc, char *argv[]) {
     }
 
     app_ui_open(&app.ui, true, params);
+#if defined(TARGET_ANDROID) && defined(ECLIPSE_ANDROID_SELFTEST)
+    android_selftest_start();   /* test builds only */
+#endif
 
     while (app.running) {
         app_run_loop(&app);

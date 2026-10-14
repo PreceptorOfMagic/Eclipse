@@ -32,6 +32,7 @@ bool stream_input_android_intercept_remote_keys(stream_input_t *input, const SDL
     session_t *session = input->session;
     switch ((unsigned int) event->keysym.scancode) {
         case ANDROID_SCANCODE_OVERLAY:
+        case ANDROID_SCANCODE_MENU:
         case ANDROID_SCANCODE_RED:
             if (event->state == SDL_PRESSED) {
                 bus_pushevent(USER_OPEN_OVERLAY, NULL, NULL);

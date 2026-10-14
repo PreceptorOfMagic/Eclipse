@@ -38,9 +38,12 @@
 #define ANDROID_SCANCODE_BLUE (ANDROID_SCANCODE_TV_BASE + 4)
 #define ANDROID_SCANCODE_CH_UP (ANDROID_SCANCODE_TV_BASE + 5)
 #define ANDROID_SCANCODE_CH_DOWN (ANDROID_SCANCODE_TV_BASE + 6)
-/* Info, guide and settings: on webOS the EXIT key's job in a stream (open the overlay). */
+/* Info and guide: on webOS the EXIT key's job in a stream (open the overlay). */
 #define ANDROID_SCANCODE_OVERLAY (ANDROID_SCANCODE_TV_BASE + 7)
-#define ANDROID_SCANCODE_TV_LAST ANDROID_SCANCODE_OVERLAY
+/* A REMOTE's Menu key (a keyboard's stays SDL_SCANCODE_MENU, the host's Apps key): the UI's menu, and in a
+ * stream the overlay. */
+#define ANDROID_SCANCODE_MENU (ANDROID_SCANCODE_TV_BASE + 8)
+#define ANDROID_SCANCODE_TV_LAST ANDROID_SCANCODE_MENU
 
 /* Back held this long in a stream opens the overlay instead of sending Escape (as the remote OK key's hold
  * becomes a right click, session_keyboard.c). Android TV remotes have no EXIT key and many lack MENU. */
@@ -74,8 +77,8 @@ bool android_display_mode(int *width, int *height, int *refresh_x100, int *max_r
  */
 void android_display_request_refresh(int refresh_x100);
 
-/** Ask the system to keep the screen on while streaming (FLAG_KEEP_SCREEN_ON). */
-void android_keep_screen_on(bool on);
-
-/** Leave the app to the TV's home screen (webOS opens its ribbon for the same key). */
-void android_open_home(void);
+#if defined(ECLIPSE_ANDROID_SELFTEST)
+/* TEST BUILDS ONLY: the emulator smoke tests (selftest_android.c). */
+void android_selftest_parse(int argc, char *argv[]);
+void android_selftest_start(void);
+#endif

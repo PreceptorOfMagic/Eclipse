@@ -86,6 +86,9 @@ app_launch_params_t *app_handle_launch(app_t *app, int argc, char *argv[]) {
     if (secondary) {
         return NULL;
     }
+#if defined(ECLIPSE_ANDROID_SELFTEST)
+    android_selftest_parse(argc, argv);
+#endif
     app_launch_params_t *params = NULL;
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];

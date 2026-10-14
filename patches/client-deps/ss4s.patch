@@ -261,10 +261,10 @@ index 0000000000000000000000000000000000000000..38d1acae782526a7701fe2d28ae0bc49
 +target_link_libraries(${SS4S_MODULE_TARGET} PRIVATE ${SDL2_LIBRARIES} mediandk android log)
 diff --git a/modules/android/mediacodec.c b/modules/android/mediacodec.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..234e661edc4d960e2426eada61a643a844bee16d
+index 0000000000000000000000000000000000000000..fda6e579b5debbce4447229673d9f37e2a90e10d
 --- /dev/null
 +++ b/modules/android/mediacodec.c
-@@ -0,0 +1,841 @@
+@@ -0,0 +1,843 @@
 +/*
 + * SS4S video module: Android MediaCodec, for Android TV devices (the NVIDIA Shield first).
 + *
@@ -884,9 +884,10 @@ index 0000000000000000000000000000000000000000..234e661edc4d960e2426eada61a643a8
 +    return false;
 +}
 +
-+/* How many leading bytes of an H.264/H.265 access unit are parameter sets (Moonlight sends them in front of
-+ * every IDR). They go to the decoder as a codec-config buffer of their own, as Moonlight for Android does:
-+ * some decoders (Tegra among them) do not take parameter sets in-band inside a picture's buffer. */
++/* How many leading bytes of an H.264/H.265 access unit are parameter sets: Moonlight sends them in front of
++ * every IDR, and a co-op composite in front of every picture (its own, rewritten ones). They go to the decoder
++ * as a codec-config buffer of their own, as Moonlight for Android does -- some decoders (Tegra among them) do
++ * not take parameter sets in-band inside a picture's buffer -- and only when they change. */
 +static size_t LeadingParameterSets(SS4S_VideoCodec codec, const unsigned char *data, size_t len) {
 +    if (codec != SS4S_VIDEO_H264 && codec != SS4S_VIDEO_H265) {
 +        return 0;
@@ -964,21 +965,22 @@ index 0000000000000000000000000000000000000000..234e661edc4d960e2426eada61a643a8
 +    }
 +    const uint64_t pts = MonotonicUs();
 +    size_t offset = 0;
-+    if (keyframe) {
-+        const size_t params = LeadingParameterSets(instance->codec, data, size);
-+        if (params > 0 && params < size) {
-+            if (params <= sizeof(instance->params.data) &&
-+                (params != instance->params.len || memcmp(instance->params.data, data, params) != 0)) {
-+                if (!QueueBuffer(instance, data, params, pts, AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG)) {
-+                    instance->need_keyframe = true;
-+                    pthread_mutex_unlock(&instance->lock);
-+                    return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
-+                }
-+                memcpy(instance->params.data, data, params);
-+                instance->params.len = params;
++    const size_t params = LeadingParameterSets(instance->codec, data, size);
++    if (params > 0 && params < size) {
++        if (params <= sizeof(instance->params.data) &&
++            (params != instance->params.len || memcmp(instance->params.data, data, params) != 0)) {
++            if (!QueueBuffer(instance, data, params, pts, AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG)) {
++                instance->need_keyframe = true;
++                pthread_mutex_unlock(&instance->lock);
++                return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
 +            }
++            memcpy(instance->params.data, data, params);
++            instance->params.len = params;
 +            offset = params;
++        } else if (params <= sizeof(instance->params.data)) {
++            offset = params;   /* the decoder already has exactly these */
 +        }
++        /* Larger than the cache: left in-band, as the stream carried them. */
 +    }
 +    const bool queued = QueueBuffer(instance, data + offset, size - offset, pts, 0);
 +    instance->fed++;
