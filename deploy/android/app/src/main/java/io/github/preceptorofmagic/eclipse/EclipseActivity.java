@@ -57,16 +57,7 @@ import java.util.List;
 public class EclipseActivity extends SDLActivity {
     private static final String TAG = "Eclipse";
 
-    /* Must match ANDROID_SCANCODE_* - ANDROID_SCANCODE_TV_BASE in android_platform.h. */
-    static final int TV_KEY_RED = 1;
-    static final int TV_KEY_GREEN = 2;
-    static final int TV_KEY_YELLOW = 3;
-    static final int TV_KEY_BLUE = 4;
-    static final int TV_KEY_CH_UP = 5;
-    static final int TV_KEY_CH_DOWN = 6;
-    static final int TV_KEY_OVERLAY = 7;
-    static final int TV_KEY_MENU = 8;
-
+    /* A TvKeys number (ANDROID_SCANCODE_* - ANDROID_SCANCODE_TV_BASE in android_platform.h). */
     private static native void nativeTvKey(int key, boolean pressed);
 
     private static volatile EclipseActivity sInstance;
@@ -298,37 +289,11 @@ public class EclipseActivity extends SDLActivity {
 
     private static int tvKeyFor(KeyEvent event) {
         int source = event.getSource();
-        if ((source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-                (source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
-            return 0;   /* a controller's buttons are SDL's (SDLControllerManager) */
-        }
-        switch (event.getKeyCode()) {
-            case KeyEvent.KEYCODE_PROG_RED:
-                return TV_KEY_RED;
-            case KeyEvent.KEYCODE_PROG_GREEN:
-                return TV_KEY_GREEN;
-            case KeyEvent.KEYCODE_PROG_YELLOW:
-                return TV_KEY_YELLOW;
-            case KeyEvent.KEYCODE_PROG_BLUE:
-                return TV_KEY_BLUE;
-            case KeyEvent.KEYCODE_CHANNEL_UP:
-                return TV_KEY_CH_UP;
-            case KeyEvent.KEYCODE_CHANNEL_DOWN:
-                return TV_KEY_CH_DOWN;
-            case KeyEvent.KEYCODE_INFO:
-            case KeyEvent.KEYCODE_GUIDE:
-                return TV_KEY_OVERLAY;
-            case KeyEvent.KEYCODE_MENU: {
-                /* A full keyboard's Menu key stays the host's Apps key (SDL_SCANCODE_MENU). */
-                InputDevice device = event.getDevice();
-                if (device != null && device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
-                    return 0;
-                }
-                return TV_KEY_MENU;
-            }
-            default:
-                return 0;
-        }
+        boolean controller = (source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                (source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
+        InputDevice device = event.getDevice();
+        boolean alphabetic = device != null && device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+        return TvKeys.forKeyCode(event.getKeyCode(), controller, alphabetic);
     }
 
     /** Every input device, "name|sources (hex)|1 if SDL treats it as a joystick" per line: a TV remote must be a

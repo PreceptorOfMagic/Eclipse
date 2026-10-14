@@ -143,3 +143,9 @@ target_link_libraries(test_android_remote_keys PRIVATE lvgl commons-logging comm
         commons-array-list commons-sockaddr commons-hostport commons-wol commons-ini-writer commons-copyfile
         commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
 add_test(NAME test_android_remote_keys COMMAND test_android_remote_keys)
+if (Java_FOUND)
+    add_test(NAME test_android_tv_keys COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_java_test.sh
+            ${Java_JAVAC_EXECUTABLE} ${Java_JAVA_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/java-tv-keys
+            io.github.preceptorofmagic.eclipse.TvKeysTest ${ECLIPSE_ANDROID_JAVA}/TvKeys.java
+            ${CMAKE_CURRENT_SOURCE_DIR}/java/io/github/preceptorofmagic/eclipse/TvKeysTest.java)
+endif ()
