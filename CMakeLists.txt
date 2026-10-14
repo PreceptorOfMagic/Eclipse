@@ -74,6 +74,8 @@ endif ()
 
 if (BUILD_TESTS)
     enable_testing()
+    # tests/android type-checks the Android build of the app's sources from the desktop build's commands.
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 endif ()
 
 set(I18N_LOCALES

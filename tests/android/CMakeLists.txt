@@ -91,3 +91,9 @@ add_executable(test_android_display_refresh test_display_refresh.c
 target_include_directories(test_android_display_refresh PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android
         ${CMAKE_SOURCE_DIR}/src/app)
 add_test(NAME test_android_display_refresh COMMAND test_android_display_refresh)
+
+# Every C source of the Android app, compiled (syntax only) as the Android build configures it.
+if (Python3_FOUND AND JNI_FOUND)
+    add_test(NAME test_android_typecheck COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/typecheck_android.py
+            ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/typecheck ${JNI_INCLUDE_DIRS})
+endif ()

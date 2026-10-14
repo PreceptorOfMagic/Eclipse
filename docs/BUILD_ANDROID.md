@@ -189,10 +189,13 @@ a new one.
 
 ## 6. Testing
 
-**Host tests** run with the desktop build (`ctest -R test_android`): the translation catalogue reader against
-gettext, the UUID generator, the logcat backend, the audio output names and how a stream opens a chosen output
-(the SS4S SDL module with the activity faked), and the MediaCodec module's feeding against real H.264 and HEVC
-streams, including a co-op composite made by the shipping splice code, decoded by FFmpeg in strict mode.
+**Host tests** run with the desktop build (`ctest -R test_android`, also in the desktop CI). One compiles every C
+source of the Android app as the Android build configures it (`test_android_typecheck`: NDK headers stubbed, the
+host's C library), which catches Android-only compile errors without an NDK; the others check the translation
+catalogue reader against gettext, the UUID generator, the logcat backend, the audio output names and how a stream
+opens a chosen output (the SS4S SDL module with the activity faked), the display mode and refresh rate a stream asks
+for, and the MediaCodec module's feeding against real H.264 and HEVC streams, including a co-op composite made by
+the shipping splice code, decoded by FFmpeg in strict mode.
 
 **Device smoke tests** run the real APK on an emulator (CI) or a device. They use a self-test build, which installs
 **beside** a real Eclipse (its own application ID, `io.github.preceptorofmagic.eclipse.selftest`) without touching
