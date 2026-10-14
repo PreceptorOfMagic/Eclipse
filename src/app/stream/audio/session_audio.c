@@ -316,11 +316,14 @@ static int aud_init(int audioConfiguration, const POPUS_MULTISTREAM_CONFIGURATIO
             if (!device_paced) coop_pump_start(opusConfig->sampleRate);
         }
     }
-#if defined(OS_WINDOWS) || (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK))
+#if defined(OS_WINDOWS) || (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK)) || \
+    defined(TARGET_ANDROID)
     else {
         /* A desktop can lack a usable sound output: a Linux one a working sound server (plain
          * ALSA, PipeWire without its PulseAudio layer, a session without XDG_RUNTIME_DIR), a
          * Windows one a default playback device (outputs unplugged or disabled, a headless PC).
+         * Android, like the desktops, lets the user choose an output (Settings -> Audio) that can be
+         * switched off when a stream starts, Bluetooth headphones for one.
          * The audio module's check only proves its library loads. A failure here aborts the
          * WHOLE connection ("stage 10 (audio stream establishment)"), so stream the picture
          * without sound instead. */

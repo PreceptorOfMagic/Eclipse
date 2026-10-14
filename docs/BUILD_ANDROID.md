@@ -115,8 +115,8 @@ webOS.
 the desktop, a choice applies from the next start of Eclipse; **System default** follows Android's own routing.
 Android numbers its outputs differently after every restart or reconnection, so Eclipse stores the name and looks
 the output up when a stream starts. If the chosen output is not connected then, Eclipse waits up to five seconds for
-it (Bluetooth reconnecting) and otherwise plays no sound rather than sound somewhere you did not choose, as on the
-desktop. A chosen output plays through Android's AAudio; **System default** uses OpenSL ES.
+it (Bluetooth reconnecting) and otherwise streams the picture without sound rather than sound somewhere you did
+not choose, as on the desktop. A chosen output plays through Android's AAudio; **System default** uses OpenSL ES.
 
 ### Settings that differ by platform
 
