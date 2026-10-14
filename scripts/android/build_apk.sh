@@ -226,7 +226,7 @@ dep_version() { local n="${URL[$1]##*/}"; echo "${n%.tar.*}"; }
     while IFS='|' read -r name path file; do echo "- $name -- licenses/source/$file"; done <<< "$SOURCE_LICENSES"
     echo
     echo 'LIBRARIES BUILT FROM PINNED SOURCE (scripts/android/build_deps.sh: exact archive URL and SHA-256)'
-    echo "- $(dep_version sdl2) (Zlib; with scripts/android/patches/sdl2-2.32.10-android-audio-hotplug.patch):"
+    echo "- $(dep_version sdl2) (Zlib; with scripts/android/patches/sdl2-2.32.10-android-*.patch):"
     echo "  lib/<abi>/libSDL2.so, and its Java half in the app -- licenses/dependencies/SDL2-Zlib.txt"
     echo "- $(dep_version sdl2image) (Zlib), linked into libmain.so -- licenses/dependencies/SDL2_image-Zlib.txt"
     echo "- $(dep_version mbedtls) (Apache-2.0): libmbedtls, libmbedx509, libmbedcrypto -- licenses/dependencies/mbedTLS-Apache-2.0.txt"

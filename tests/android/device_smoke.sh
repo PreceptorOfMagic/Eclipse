@@ -11,6 +11,9 @@
 #   co-op      the co-op peer executable runs from the installed package (exits 1 on its unreachable socket),
 #              and, spawned by a real coordinator as a co-op stream spawns it, starts up without a Java VM and
 #              reports back over the co-op control channel
+#   keys       no keyboard-with-a-d-pad (a TV remote) is a joystick to SDL; on an emulator, Up and Back sent
+#              through its own such keyboard arrive as SDL's Up and AC Back keys -- not Escape, not joystick
+#              buttons -- which the remote's Back (tap/hold) and OK (hold: right click) depend on
 #   display    the TV's refresh rates, and the display mode a 60 FPS stream asks for taking effect
 #   audio      the outputs Settings -> Audio offers, by name, and the first of them opened as a stream opens a
 #              chosen output: by its current number, on SDL's AAudio driver
@@ -138,6 +141,48 @@ if run_selftest coop --es selftest_video "$DATA/files/selftest/composite.265" --
         *) fail "co-op: start-up handshake (the peer's own lines are in $W/coop.logcat.txt)" ;;
     esac
     check_video coop composite.265
+fi
+
+# --- remote keys ----------------------------------------------------------------------------------------
+EMULATOR="$(adb shell getprop ro.kernel.qemu | tr -d '\r')"
+send_emulator_keys() {   # once the self-test listens: Up and Back through the emulator's keyboard-with-a-d-pad
+    local start=$SECONDS
+    while [ $((SECONDS - start)) -lt 30 ]; do
+        adb logcat -d | grep -q "SELFTEST keys ready" && break
+        sleep 1
+    done
+    sleep 1
+    adb emu event send EV_KEY:KEY_UP:1 EV_KEY:KEY_UP:0 >/dev/null
+    sleep 1
+    adb emu event send EV_KEY:KEY_BACK:1 EV_KEY:KEY_BACK:0 >/dev/null
+}
+if [ "$EMULATOR" = 1 ]; then
+    send_emulator_keys &
+    sender=$!
+fi
+if run_selftest keys --ez selftest_keys true; then
+    grep -o "SELFTEST input-device .*" "$W/keys.logcat.txt" | sed 's/^/  /' || true
+    devices="$(grep -o "SELFTEST input-devices .*" "$W/keys.logcat.txt" | tail -1 || true)"
+    echo "  ${devices:-no input device result}"
+    case "$devices" in
+        *result=PASS*) pass "keys: no TV-remote-like device is a joystick to SDL" ;;
+        *) fail "keys: a keyboard with a d-pad is a joystick to SDL (see $W/keys.logcat.txt)" ;;
+    esac
+    if [ "$EMULATOR" = 1 ]; then
+        grep -o "SELFTEST key .*" "$W/keys.logcat.txt" | sed 's/^/  /' || true
+        if grep -q "SELFTEST key down scancode=.*(82)" "$W/keys.logcat.txt" &&
+           grep -q "SELFTEST key down scancode=.*(270)" "$W/keys.logcat.txt" &&
+           ! grep -q "SELFTEST key \(joystick\|controller\)-button" "$W/keys.logcat.txt"; then
+            pass "keys: a d-pad device's Up and Back arrive as SDL's Up and AC Back keys"
+        else
+            fail "keys: Up/Back from a d-pad device did not arrive as Up and AC Back keys"
+        fi
+    else
+        echo "  (key routing is checked on the emulator; on this device press Back and OK in a stream)"
+    fi
+fi
+if [ -n "${sender:-}" ]; then
+    wait "$sender" 2>/dev/null || true
 fi
 
 # --- display mode and audio outputs ---------------------------------------------------------------------

@@ -262,6 +262,32 @@ int android_display_refresh_rates(int *rates_x100, int max) {
     return count;
 }
 
+char *android_input_devices(void) {
+    JNIEnv *env = activity_env();
+    jclass cls = env != NULL ? activity_class(env) : NULL;
+    if (cls == NULL) {
+        return NULL;
+    }
+    char *copy = NULL;
+    jmethodID method = (*env)->GetStaticMethodID(env, cls, "describeInputDevices", "()Ljava/lang/String;");
+    if (method != NULL) {
+        jstring result = (jstring) (*env)->CallStaticObjectMethod(env, cls, method);
+        clear_exception(env, "describeInputDevices");
+        if (result != NULL) {
+            const char *text = (*env)->GetStringUTFChars(env, result, NULL);
+            if (text != NULL) {
+                copy = strdup(text);
+                (*env)->ReleaseStringUTFChars(env, result, text);
+            }
+            (*env)->DeleteLocalRef(env, result);
+        }
+    } else {
+        clear_exception(env, "describeInputDevices lookup");
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    return copy;
+}
+
 /* EclipseActivity.nativeTvKey(int key, boolean pressed): a remote key SDL2 leaves unmapped (see
  * android_platform.h). Called on the UI thread; SDL_PushEvent is thread safe. */
 JNIEXPORT void JNICALL

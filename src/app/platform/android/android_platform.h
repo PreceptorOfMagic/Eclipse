@@ -107,6 +107,10 @@ int android_stream_refresh_x100(int fps, int requested_x100, const int *rates_x1
 /** "5994,6000" -> rates, at most @p max (the peer's copy of the display's rates). display_android.c. */
 int android_parse_rates(const char *text, int *rates_x100, int max);
 
+/** EclipseActivity.describeInputDevices(): "name|sources (hex)|SDL joystick 0/1" per line, malloc'd; NULL in the
+ *  co-op peer. A TV remote (a keyboard with a d-pad) must not be a joystick to SDL. */
+char *android_input_devices(void);
+
 #if defined(ECLIPSE_ANDROID_SELFTEST)
 /* TEST BUILDS ONLY: the emulator smoke tests (selftest_android.c). */
 void android_selftest_parse(int argc, char *argv[]);

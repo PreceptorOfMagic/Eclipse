@@ -26,6 +26,7 @@ import android.view.WindowManager;
 import android.widget.RelativeLayout;
 
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLControllerManager;
 import org.libsdl.app.SDLSurface;
 
 import java.io.File;
@@ -118,6 +119,9 @@ public class EclipseActivity extends SDLActivity {
             }
             if (intent.getBooleanExtra("selftest_display", false)) {
                 args.add("--selftest-display");
+            }
+            if (intent.getBooleanExtra("selftest_keys", false)) {
+                args.add("--selftest-keys");
             }
         }
         return args.toArray(new String[0]);
@@ -325,6 +329,22 @@ public class EclipseActivity extends SDLActivity {
             default:
                 return 0;
         }
+    }
+
+    /** Every input device, "name|sources (hex)|1 if SDL treats it as a joystick" per line: a TV remote must be a
+     *  keyboard to SDL (scripts/android/patches/sdl2-2.32.10-android-tv-remote.patch). Self-test builds log it. */
+    static String describeInputDevices() {
+        StringBuilder out = new StringBuilder();
+        for (int id : InputDevice.getDeviceIds()) {
+            InputDevice device = InputDevice.getDevice(id);
+            if (device == null || device.isVirtual()) {
+                continue;
+            }
+            out.append(device.getName().replace('|', '/')).append('|')
+                    .append(Integer.toHexString(device.getSources())).append('|')
+                    .append(SDLControllerManager.isDeviceSDLJoystick(id) ? 1 : 0).append('\n');
+        }
+        return out.toString();
     }
 
     /* --- audio outputs ---------------------------------------------------------------------------------- */

@@ -17,6 +17,9 @@
  *                                paired" over the co-op control channel
  *   --selftest-display        the display's refresh rates, the rate a 60 FPS stream asks its host for, and a
  *                             requested mode taking effect (the TV following a stream, as the webOS panel does)
+ *   --selftest-keys           every input device and whether SDL takes it for a joystick (a TV remote must be a
+ *                             keyboard to it); then the SDL events of keys device_smoke.sh sends through the
+ *                             emulator's own keyboard-with-a-d-pad, as a remote's arrive
  *   --selftest-audio          the audio outputs the settings offer, by name; then the path a chosen output takes:
  *                             SDL on AAudio, the output opened by its current number, half a second of silence
  *
@@ -45,7 +48,7 @@ static struct {
     char video[PATH_MAX];
     SS4S_VideoCodec codec;
     int width, height;
-    bool peer, audio, display;
+    bool peer, audio, display, keys;
 } selftest;
 
 void android_selftest_parse(int argc, char *argv[]) {
@@ -67,6 +70,8 @@ void android_selftest_parse(int argc, char *argv[]) {
             selftest.audio = true;
         } else if (strcmp(argv[i], "--selftest-display") == 0) {
             selftest.display = true;
+        } else if (strcmp(argv[i], "--selftest-keys") == 0) {
+            selftest.keys = true;
         }
     }
 }
@@ -124,6 +129,67 @@ static void selftest_coop_handshake(void) {
     commons_log_info("SELFTEST", "SELFTEST coop-handshake pid=%d after=%ums peer-said=\"%s\" result=%s",
                      pid, elapsed, ready ? "ready" : why,
                      pid > 0 && reported_host ? "PASS" : "FAIL");
+}
+
+/* InputDevice sources: SOURCE_DPAD, SOURCE_GAMEPAD, SOURCE_CLASS_JOYSTICK. */
+#define SOURCE_DPAD 0x201u
+#define SOURCE_GAMEPAD 0x401u
+#define SOURCE_CLASS_JOYSTICK 0x10u
+
+static int key_watch(void *userdata, SDL_Event *event) {
+    (void) userdata;
+    switch (event->type) {
+        case SDL_KEYDOWN:
+            if (!event->key.repeat) {
+                commons_log_info("SELFTEST", "SELFTEST key down scancode=%s(%d)",
+                                 SDL_GetScancodeName(event->key.keysym.scancode), (int) event->key.keysym.scancode);
+            }
+            break;
+        case SDL_JOYBUTTONDOWN:
+            commons_log_info("SELFTEST", "SELFTEST key joystick-button=%d", (int) event->jbutton.button);
+            break;
+        case SDL_CONTROLLERBUTTONDOWN:
+            commons_log_info("SELFTEST", "SELFTEST key controller-button=%s",
+                             SDL_GameControllerGetStringForButton((SDL_GameControllerButton) event->cbutton.button));
+            break;
+        default:
+            break;
+    }
+    return 0;
+}
+
+static void selftest_keys(void) {
+    char *devices = android_input_devices();
+    int count = 0, remotes_as_joysticks = 0;
+    for (char *line = devices, *next; line != NULL && *line != '\0'; line = next) {
+        next = strchr(line, '\n');
+        if (next != NULL) {
+            *next++ = '\0';
+        }
+        char *sources_text = strchr(line, '|');
+        char *joystick_text = sources_text != NULL ? strchr(sources_text + 1, '|') : NULL;
+        if (joystick_text == NULL) {
+            continue;
+        }
+        *sources_text++ = '\0';
+        *joystick_text++ = '\0';
+        const unsigned sources = (unsigned) strtoul(sources_text, NULL, 16);
+        const bool joystick = strcmp(joystick_text, "1") == 0;
+        const bool remote_like = (sources & SOURCE_DPAD) == SOURCE_DPAD && (sources & SOURCE_GAMEPAD) != SOURCE_GAMEPAD &&
+                                 (sources & SOURCE_CLASS_JOYSTICK) == 0;
+        remotes_as_joysticks += remote_like && joystick;
+        count++;
+        commons_log_info("SELFTEST", "SELFTEST input-device name=\"%s\" sources=0x%x sdl-joystick=%d%s", line, sources,
+                         (int) joystick, remote_like ? " (a keyboard with a d-pad, as a TV remote)" : "");
+    }
+    free(devices);
+    commons_log_info("SELFTEST", "SELFTEST input-devices count=%d remote-like-as-joystick=%d result=%s", count,
+                     remotes_as_joysticks, count > 0 && remotes_as_joysticks == 0 ? "PASS" : "FAIL");
+    SDL_AddEventWatch(key_watch, NULL);
+    commons_log_info("SELFTEST", "SELFTEST keys ready");
+    SDL_Delay(10000);   /* device_smoke.sh sends its keys now */
+    SDL_DelEventWatch(key_watch, NULL);
+    commons_log_info("SELFTEST", "SELFTEST keys end");
 }
 
 static void selftest_display(void) {
@@ -313,6 +379,9 @@ static int selftest_thread(void *arg) {
     if (selftest.video[0] != '\0') {
         selftest_video();
     }
+    if (selftest.keys) {
+        selftest_keys();
+    }
     if (selftest.display) {
         selftest_display();
     }
@@ -326,7 +395,7 @@ static int selftest_thread(void *arg) {
 }
 
 void android_selftest_start(void) {
-    if (!selftest.peer && !selftest.audio && !selftest.display && selftest.video[0] == '\0') {
+    if (!selftest.peer && !selftest.audio && !selftest.display && !selftest.keys && selftest.video[0] == '\0') {
         return;
     }
     SDL_Thread *thread = SDL_CreateThread(selftest_thread, "selftest", NULL);

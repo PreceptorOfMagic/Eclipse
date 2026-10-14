@@ -207,7 +207,9 @@ tests/android/device_smoke.sh dist/eclipse-android-selftest.apk ./hevc_tilecols 
 adb uninstall io.github.preceptorofmagic.eclipse.selftest
 ```
 
-They check that the interface starts and survives d-pad input; that the TV's refresh rates are read and the mode
+They check that the interface starts and survives d-pad input; that no remote-like device is a joystick to SDL
+and, on an emulator, that Up and Back from a d-pad device arrive as the keys the remote's Back (tap/hold) and OK
+(hold) depend on; that the TV's refresh rates are read and the mode
 for a 60 FPS stream takes effect; that the audio outputs are listed by name and one opens by its current number on
 AAudio; that the co-op peer executable runs from the
 installed package and, spawned exactly as a co-op stream spawns it, starts up without a Java VM and answers the
@@ -229,6 +231,10 @@ follow the same checklist as for a webOS release.
 - **Audio** uses SS4S's SDL module, with the same clock and pull path as the desktop: OpenSL ES for the system
   default output, AAudio for a chosen one (SDL carries `scripts/android/patches/sdl2-2.32.10-android-audio-hotplug.patch`
   so outputs connected after start-up are offered too).
+- **Remote and controllers**: a TV remote reaches Eclipse as keys (SDL carries
+  `scripts/android/patches/sdl2-2.32.10-android-tv-remote.patch`; unpatched SDL 2 takes any device with a d-pad
+  for a joystick, which turned Back into Escape and OK into Enter), and, as on webOS, nothing remote-like is ever
+  offered to a game as a player's controller.
 - **Co-op** runs its second session in a separate process, as on every platform. The peer is an executable packaged
   as `lib/<abi>/libeclipse_peer.so`, which Android installs executable beside the app's libraries.
 - **Files**: settings and pairings live in the app's private storage; translations, the controller database and
