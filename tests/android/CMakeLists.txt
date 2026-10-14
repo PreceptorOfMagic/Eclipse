@@ -111,3 +111,35 @@ target_include_directories(test_android_paths_launch PRIVATE ${CMAKE_SOURCE_DIR}
 target_include_directories(test_android_paths_launch SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
 target_link_libraries(test_android_paths_launch PRIVATE commons-uuidstr commons-logging ${SDL2_LIBRARIES})
 add_test(NAME test_android_paths_launch COMMAND test_android_paths_launch)
+
+# config.h as the Android build makes it (CMakeLists.txt, TARGET_ANDROID: always fullscreen, the in-app language
+# setting, no libcec), for tests that compile the app's Android code.
+function(eclipse_android_config dir)
+    set(FEATURE_FORCE_FULLSCREEN ON)
+    set(FEATURE_I18N_LANGUAGE_SETTINGS ON)
+    set(FEATURE_SURROUND_SOUND ON)
+    set(FEATURE_CHECK_MODULE_OS_VERSION OFF)
+    set(FEATURE_INPUT_EVMOUSE OFF)
+    set(FEATURE_INPUT_LIBCEC OFF)
+    set(FEATURE_WINDOW_FULLSCREEN_DESKTOP ON)
+    set(FEATURE_EMBEDDED_SHELL OFF)
+    configure_file(${CMAKE_SOURCE_DIR}/src/app/config.h.in ${dir}/config.h @ONLY)
+endfunction()
+eclipse_android_config(${CMAKE_CURRENT_BINARY_DIR}/android-config)
+
+# The Android TV remote during a stream (session_keyboard.c and keyboard_android.c, compiled for Android).
+add_executable(test_android_remote_keys test_remote_keys.c)
+target_compile_definitions(test_android_remote_keys PRIVATE TARGET_ANDROID=1 _GNU_SOURCE
+        KEYBOARD_SOURCE="${CMAKE_SOURCE_DIR}/src/app/platform/android/keyboard_android.c"
+        SESSION_KEYBOARD_SOURCE="${CMAKE_SOURCE_DIR}/src/app/stream/input/session_keyboard.c")
+target_include_directories(test_android_remote_keys BEFORE PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/android-config)
+target_include_directories(test_android_remote_keys PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android
+        ${CMAKE_SOURCE_DIR}/src/app ${CMAKE_SOURCE_DIR}/core/moonlight-common-c/src
+        ${CMAKE_SOURCE_DIR}/third_party/ss4s/include ${CMAKE_SOURCE_DIR}/third_party/commons/util/linked-list
+        ${CMAKE_SOURCE_DIR}/core/libgamestream/libgamestream ${CMAKE_SOURCE_DIR}/core/libgamestream)
+target_include_directories(test_android_remote_keys SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(test_android_remote_keys PRIVATE lvgl commons-logging commons-uuidstr commons-lazy commons-refcounter
+        commons-executor commons-linked-list commons-ss4s-modules-list commons-os-info commons-version-info
+        commons-array-list commons-sockaddr commons-hostport commons-wol commons-ini-writer commons-copyfile
+        commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
+add_test(NAME test_android_remote_keys COMMAND test_android_remote_keys)
