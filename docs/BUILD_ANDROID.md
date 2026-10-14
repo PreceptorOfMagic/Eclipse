@@ -105,12 +105,20 @@ panel does the same itself. Some devices only switch when their own frame-rate m
 The resolution and frame rate lists are limited to what the TV's current mode and the decoder support, as on
 webOS.
 
+### Audio output
+
+**Settings → Audio → Audio output device** lists the TV's outputs by kind and product, for example
+**HDMI: LG TV**, **HDMI ARC: Sonos Arc** or **Bluetooth: WH-1000XM5**, as the desktop builds list the PC's. As on
+the desktop, a choice applies from the next start of Eclipse; **System default** follows Android's own routing.
+Android numbers its outputs differently after every restart or reconnection, so Eclipse stores the name and looks
+the output up when a stream starts. If the chosen output is not connected then, Eclipse waits up to five seconds for
+it (Bluetooth reconnecting) and otherwise plays no sound rather than sound somewhere you did not choose, as on the
+desktop. A chosen output plays through Android's AAudio; **System default** uses OpenSL ES.
+
 ### Differences from the other platforms
 
 These follow from what Android allows an app to do, not from missing work:
 
-- **Audio output device**: not offered. Android routes a TV app's sound itself (HDMI, Bluetooth), and the device
-  list it gives SDL has no names.
 - **Use the wired network**: the host-side wired pin needs the network card's hardware address, which Android hides
   from apps. Eclipse behaves as on a device without a wired adapter; Android itself prefers Ethernet when it is
   connected.
@@ -179,7 +187,8 @@ a new one.
 ## 6. Testing
 
 **Host tests** run with the desktop build (`ctest -R test_android`): the translation catalogue reader against
-gettext, the UUID generator, the logcat backend, and the MediaCodec module's feeding against real H.264 and HEVC
+gettext, the UUID generator, the logcat backend, the audio output names and how a stream opens a chosen output
+(the SS4S SDL module with the activity faked), and the MediaCodec module's feeding against real H.264 and HEVC
 streams, including a co-op composite made by the shipping splice code, decoded by FFmpeg in strict mode.
 
 **Device smoke tests** run the real APK on an emulator (CI) or a device. They use a self-test build, which installs
@@ -195,7 +204,8 @@ tests/android/device_smoke.sh dist/eclipse-android-selftest.apk ./hevc_tilecols 
 adb uninstall io.github.preceptorofmagic.eclipse.selftest
 ```
 
-They check that the interface starts and survives d-pad input; that the co-op peer executable runs from the
+They check that the interface starts and survives d-pad input; that the audio outputs are listed by name and one
+opens by its current number on AAudio; that the co-op peer executable runs from the
 installed package and, spawned exactly as a co-op stream spawns it, starts up without a Java VM and answers the
 coordinator over the co-op control channel; and that a co-op composite, H.264, a narrow letterboxed HEVC picture and (with `--uhd`, for real
 hardware) 4K HEVC Main 10 play through the MediaCodec module onto the video surface with no codec errors. Logs and
@@ -212,8 +222,9 @@ follow the same checklist as for a webOS release.
   alpha channel: the same plane model as webOS, so the interface composites over the picture without copies. The
   decoder is put in low-latency mode where the device has one, and newer pictures replace older ones that missed
   their display slot.
-- **Audio** uses SS4S's SDL module (AAudio or OpenSL ES underneath), with the same clock and pull path as the
-  desktop.
+- **Audio** uses SS4S's SDL module, with the same clock and pull path as the desktop: OpenSL ES for the system
+  default output, AAudio for a chosen one (SDL carries `scripts/android/patches/sdl2-2.32.10-android-audio-hotplug.patch`
+  so outputs connected after start-up are offered too).
 - **Co-op** runs its second session in a separate process, as on every platform. The peer is an executable packaged
   as `lib/<abi>/libeclipse_peer.so`, which Android installs executable beside the app's libraries.
 - **Files**: settings and pairings live in the app's private storage; translations, the controller database and

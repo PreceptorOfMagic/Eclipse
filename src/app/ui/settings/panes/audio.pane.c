@@ -13,8 +13,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
+#if !defined(TARGET_WEBOS)
 #include <SDL.h>
+#endif
+#if defined(TARGET_ANDROID)
+#include "platform/android/android_platform.h"
 #endif
 
 typedef struct audio_pane_t {
@@ -29,7 +32,7 @@ typedef struct audio_pane_t {
     pref_dropdown_int_entry_t surround_entries[3];
     int surround_entries_len;
 
-#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
+#if !defined(TARGET_WEBOS)
     pref_dropdown_string_entry_t *device_entries;
     int device_entries_len;
 #endif
@@ -91,10 +94,15 @@ static void pane_ctor(lv_fragment_t *self, void *args) {
         entry->fallback = config.configuration == AUDIO_CONFIGURATION_STEREO;
         pane->surround_entries_len++;
     }
-#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
-    /* Not on Android: the system routes a TV app's sound (HDMI, Bluetooth), and SDL names its outputs by
-     * number only. */
+#if !defined(TARGET_WEBOS)
+#if defined(TARGET_ANDROID)
+    /* Android numbers its outputs and SDL names them by that number, which changes across reboots: the activity
+     * gives them names that last ("HDMI: LG TV"), and the SS4S SDL module finds the number when a stream starts. */
+    char *android_outputs[32];
+    const int num_devices = android_audio_output_names(android_outputs, 32);
+#else
     const int num_devices = SDL_GetNumAudioDevices(0);
+#endif
     pane->device_entries = calloc((size_t) (num_devices > 0 ? num_devices : 0) + 2,
                                   sizeof(*pane->device_entries));
     if (pane->device_entries != NULL) {
@@ -106,8 +114,12 @@ static void pane_ctor(lv_fragment_t *self, void *args) {
         bool saved_device_found = saved_device == NULL || saved_device[0] == '\0' ||
                                   strcmp(saved_device, "default") == 0;
         for (int i = 0; i < num_devices; ++i) {
+#if defined(TARGET_ANDROID)
+            char *owned_name = android_outputs[i];
+#else
             const char *name = SDL_GetAudioDeviceName(i, 0);
             char *owned_name = name != NULL ? strdup(name) : NULL;
+#endif
             if (owned_name == NULL) {
                 continue;
             }
@@ -136,13 +148,20 @@ static void pane_ctor(lv_fragment_t *self, void *args) {
             }
         }
     }
+#if defined(TARGET_ANDROID)
+    if (pane->device_entries == NULL) {
+        for (int i = 0; i < num_devices; ++i) {
+            free(android_outputs[i]);
+        }
+    }
+#endif
 #endif
 }
 
 static void pane_dtor(lv_fragment_t *self) {
     audio_pane_t *pane = (audio_pane_t *) self;
     free(pane->adec_entries);
-#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
+#if !defined(TARGET_WEBOS)
     for (int i = 1; i < pane->device_entries_len; ++i) {
         if (pane->device_entries[i].name != pane->device_entries[i].value) {
             free((void *) pane->device_entries[i].name);
@@ -179,7 +198,7 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
 
     pref_header(view, locstr("Audio Settings"));
 
-#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
+#if !defined(TARGET_WEBOS)
     if (controller->device_entries_len > 0) {
         pref_title_label(view, locstr("Audio output device"));
         lv_obj_t *device_dropdown = pref_dropdown_string(

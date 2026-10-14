@@ -11,6 +11,8 @@
 #   co-op      the co-op peer executable runs from the installed package (exits 1 on its unreachable socket),
 #              and, spawned by a real coordinator as a co-op stream spawns it, starts up without a Java VM and
 #              reports back over the co-op control channel
+#   audio      the outputs Settings -> Audio offers, by name, and the first of them opened as a stream opens a
+#              chosen output: by its current number, on SDL's AAudio driver
 #   video      composite.265 (a co-op composite), solo.264, left.265 (a narrow, letterboxed picture) and, with
 #              --uhd, uhd.265 (4K Main10) play through SS4S and the MediaCodec module onto the video surface
 #              under the UI: every access unit accepted, at least 90% of the pictures decoded, no codec error
@@ -135,6 +137,17 @@ if run_selftest coop --es selftest_video "$DATA/files/selftest/composite.265" --
         *) fail "co-op: start-up handshake (the peer's own lines are in $W/coop.logcat.txt)" ;;
     esac
     check_video coop composite.265
+fi
+
+# --- audio outputs --------------------------------------------------------------------------------------
+if run_selftest audio --ez selftest_audio true; then
+    grep -o "SELFTEST audio-outputs .*" "$W/audio.logcat.txt" | tail -1 | sed 's/^/  /' || true
+    audio="$(grep -o "SELFTEST audio output=.*" "$W/audio.logcat.txt" | tail -1 || true)"
+    echo "  ${audio:-no audio result}"
+    case "$audio" in
+        *result=PASS*) pass "audio: outputs listed by name, and one opened by its current number on AAudio" ;;
+        *) fail "audio: output list or open (see $W/audio.logcat.txt)" ;;
+    esac
 fi
 
 # --- single streams -------------------------------------------------------------------------------------

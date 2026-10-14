@@ -7,6 +7,8 @@ import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.net.wifi.WifiManager;
@@ -32,6 +34,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -108,6 +112,9 @@ public class EclipseActivity extends SDLActivity {
             }
             if (intent.getBooleanExtra("selftest_peer", false)) {
                 args.add("--selftest-peer");
+            }
+            if (intent.getBooleanExtra("selftest_audio", false)) {
+                args.add("--selftest-audio");
             }
         }
         return args.toArray(new String[0]);
@@ -315,6 +322,51 @@ public class EclipseActivity extends SDLActivity {
             default:
                 return 0;
         }
+    }
+
+    /* --- audio outputs ---------------------------------------------------------------------------------- */
+
+    private static final class Outputs {
+        final int[] ids;
+        final String[] labels;
+
+        Outputs(int[] ids, String[] labels) {
+            this.ids = ids;
+            this.labels = labels;
+        }
+    }
+
+    private static Outputs audioOutputs() {
+        EclipseActivity activity = sInstance;
+        AudioManager am = activity != null ? (AudioManager) activity.getSystemService(Context.AUDIO_SERVICE) : null;
+        AudioDeviceInfo[] devices = am != null ? am.getDevices(AudioManager.GET_DEVICES_OUTPUTS) : new AudioDeviceInfo[0];
+        devices = devices.clone();
+        Arrays.sort(devices, new Comparator<AudioDeviceInfo>() {
+            @Override
+            public int compare(AudioDeviceInfo a, AudioDeviceInfo b) {
+                return Integer.compare(a.getId(), b.getId());
+            }
+        });
+        int[] ids = new int[devices.length], types = new int[devices.length];
+        CharSequence[] products = new CharSequence[devices.length];
+        for (int i = 0; i < devices.length; ++i) {
+            ids[i] = devices[i].getId();
+            types[i] = devices[i].getType();
+            products[i] = devices[i].getProductName();
+        }
+        return new Outputs(ids, AudioOutputs.label(types, products));
+    }
+
+    /** The outputs a stream's sound can be sent to, "id|name" per line (the audio settings, android_platform.c). */
+    static String getAudioOutputs() {
+        Outputs outputs = audioOutputs();
+        return AudioOutputs.lines(outputs.ids, outputs.labels);
+    }
+
+    /** The current id of the output named @p name, 0 when it is not connected (the SS4S SDL module). */
+    static int getAudioOutputId(String name) {
+        Outputs outputs = audioOutputs();
+        return AudioOutputs.idOf(outputs.ids, outputs.labels, name);
     }
 
     /* --- display ---------------------------------------------------------------------------------------- */

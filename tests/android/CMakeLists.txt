@@ -47,3 +47,34 @@ target_compile_definitions(test_android_logging PRIVATE _DEFAULT_SOURCE)
 target_include_directories(test_android_logging PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ndk-stubs/include
         ${CMAKE_SOURCE_DIR}/third_party/commons/util/logging)
 add_test(NAME test_android_logging COMMAND test_android_logging)
+
+# The Android app's plain-Java helpers, on the host JDK.
+find_package(Java COMPONENTS Development Runtime QUIET)
+if (Java_FOUND)
+    set(ECLIPSE_ANDROID_JAVA ${CMAKE_SOURCE_DIR}/deploy/android/app/src/main/java/io/github/preceptorofmagic/eclipse)
+    add_test(NAME test_android_audio_outputs COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_java_test.sh
+            ${Java_JAVAC_EXECUTABLE} ${Java_JAVA_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/java-audio-outputs
+            io.github.preceptorofmagic.eclipse.AudioOutputsTest ${ECLIPSE_ANDROID_JAVA}/AudioOutputs.java
+            ${CMAKE_CURRENT_SOURCE_DIR}/java/io/github/preceptorofmagic/eclipse/AudioOutputsTest.java)
+endif ()
+
+# The SS4S SDL audio module's Android output choice, with the activity and SDL's device open faked.
+if (JNI_FOUND)
+    add_executable(test_android_sdl_audio_output test_sdl_audio_output.c
+            ${CMAKE_SOURCE_DIR}/third_party/ss4s/modules/utils/ringbuf/ringbuf.c)
+    target_compile_definitions(test_android_sdl_audio_output PRIVATE __ANDROID__=1 SDL_MAIN_HANDLED
+            MODULE_SOURCE="${CMAKE_SOURCE_DIR}/third_party/ss4s/modules/sdl/sdl.c")
+    target_include_directories(test_android_sdl_audio_output PRIVATE ${JNI_INCLUDE_DIRS}
+            ${CMAKE_SOURCE_DIR}/third_party/ss4s/include ${CMAKE_SOURCE_DIR}/third_party/ss4s/modules/interface/include
+            ${CMAKE_SOURCE_DIR}/third_party/ss4s/modules/utils/ringbuf)
+    target_link_libraries(test_android_sdl_audio_output PRIVATE ${SDL2_LIBRARIES})
+    add_test(NAME test_android_sdl_audio_output COMMAND test_android_sdl_audio_output)
+endif ()
+
+# The audio outputs list as the settings read it.
+add_executable(test_android_audio_outputs_parse test_audio_outputs_parse.c
+        ${CMAKE_SOURCE_DIR}/src/app/platform/android/audio_outputs_android.c)
+target_include_directories(test_android_audio_outputs_parse PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android
+        ${CMAKE_SOURCE_DIR}/src/app)
+target_include_directories(test_android_audio_outputs_parse SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
+add_test(NAME test_android_audio_outputs_parse COMMAND test_android_audio_outputs_parse)

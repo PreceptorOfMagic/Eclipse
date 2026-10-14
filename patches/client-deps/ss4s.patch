@@ -3174,10 +3174,10 @@ index 6f02d7fe51dc1ad45949a495e2fac548fa214e49..80edd10939b6f2a9ea11c7d86f509750
      free(instance);
  }
 diff --git a/modules/sdl/sdl.c b/modules/sdl/sdl.c
-index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003cea02614 100644
+index b0f27b53c5e51a3968078fbd605190699b4c2510..30c55a0e4733b78cc02dba665bd18809f9cdf304 100644
 --- a/modules/sdl/sdl.c
 +++ b/modules/sdl/sdl.c
-@@ -1,40 +1,125 @@
+@@ -1,40 +1,179 @@
  #include <stdlib.h>
 +#include <string.h>
  #include "ss4s/modapi.h"
@@ -3186,6 +3186,11 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
  #include <SDL2/SDL.h>
 +#ifndef _WIN32
 +#include <time.h>
++#endif
++#if defined(__ANDROID__)
++#include <stdio.h>
++#include <SDL2/SDL_system.h>
++#include <jni.h>
 +#endif
 +
 +/* Written only by callback, read by Close only after SDL joins it. */
@@ -3275,11 +3280,60 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
 +        (unsigned long long) instance->pull_deadline_misses, (unsigned long long) instance->pull_publish_skips);
 +}
 +
++#if defined(__ANDROID__)
++static bool NamedDevice(const char *device) {
++    return device != NULL && device[0] != '\0' && strcmp(device, "default") != 0;
++}
++
++/* ANDROID NUMBERS ITS OUTPUTS, and the numbers change across reboots and reconnections, so Eclipse stores a name
++ * built from what stays ("HDMI: LG TV", deploy/android/.../AudioOutputs.java) and the activity says which
++ * output carries that name now. 0: not connected now. -1: there is no activity to ask (the co-op peer has no
++ * Java VM, and plays nothing itself: its sound goes to the primary over the co-op audio socket). */
++static int AndroidOutputId(const char *name) {
++    if (getenv("ECLIPSE_ANDROID_PEER") != NULL) {
++        return -1;
++    }
++    JNIEnv *env = (JNIEnv *) SDL_AndroidGetJNIEnv();
++    jobject activity = env != NULL ? (jobject) SDL_AndroidGetActivity() : NULL;
++    if (activity == NULL) {
++        return -1;
++    }
++    jclass cls = (*env)->GetObjectClass(env, activity);
++    (*env)->DeleteLocalRef(env, activity);
++    int id = 0;
++    jmethodID method = cls != NULL ? (*env)->GetStaticMethodID(env, cls, "getAudioOutputId", "(Ljava/lang/String;)I")
++                                   : NULL;
++    if (method != NULL) {
++        jstring jname = (*env)->NewStringUTF(env, name);
++        if (jname != NULL) {
++            id = (int) (*env)->CallStaticIntMethod(env, cls, method, jname);
++            (*env)->DeleteLocalRef(env, jname);
++        }
++    }
++    if ((*env)->ExceptionCheck(env)) {
++        (*env)->ExceptionClear(env);
++        id = 0;
++    }
++    if (cls != NULL) {
++        (*env)->DeleteLocalRef(env, cls);
++    }
++    return id;
++}
++#endif
++
  static int Init(int argc, char *argv[]) {
      (void) argc;
      (void) argv;
 -    SDL_InitSubSystem(SDL_INIT_AUDIO);
 -    return 0;
++#if defined(__ANDROID__)
++    /* OpenSL ES, SDL's first choice on Android, plays only to the default output. A chosen output needs AAudio,
++     * which SDL opens on a given device; the default keeps OpenSL ES. Like the desktop's device setting, the
++     * choice takes effect when the app starts. An SDL_AUDIODRIVER already set (the co-op peer's "dummy") wins. */
++    if (NamedDevice(LibContext->Audio.device) && SDL_GetHint(SDL_HINT_AUDIODRIVER) == NULL) {
++        SDL_SetHint(SDL_HINT_AUDIODRIVER, "AAudio,openslES");
++    }
++#endif
 +    return SDL_InitSubSystem(SDL_INIT_AUDIO);
  }
  
@@ -3310,7 +3364,7 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
  
      SDL_AudioSpec want, have;
      SDL_zero(want);
-@@ -45,52 +130,223 @@ static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance
+@@ -45,52 +184,257 @@ static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance
      want.channels = info->numOfChannels;
      want.samples = info->samplesPerFrame;
  
@@ -3321,6 +3375,39 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
 +    if (device_name != NULL && (device_name[0] == '\0' || strcmp(device_name, "default") == 0)) {
 +        device_name = NULL;
 +    }
++#if defined(__ANDROID__)
++    /* The stored name -> the output's current number, which is SDL's name for it. As below, a named output can be
++     * momentarily absent (Bluetooth reconnecting as the stream starts): look again for up to 5 s, and never fall
++     * back to the default, which would put the sound somewhere the user did not choose. */
++    if (device_name != NULL && AndroidOutputId(device_name) < 0) {
++        device_name = NULL;   /* nothing to resolve the name with: no Java VM in this process */
++    }
++    if (device_name != NULL) {
++        for (int attempt = 0; attempt <= 20 && newInstance->device == 0; attempt++) {
++            if (attempt > 0) {
++                SDL_Delay(250);
++            }
++            const int id = AndroidOutputId(device_name);
++            if (id > 0) {
++                char id_name[16];
++                snprintf(id_name, sizeof(id_name), "%d", id);
++                newInstance->device = SDL_OpenAudioDevice(id_name, 0, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
++                if (newInstance->device != 0) {
++                    LibContext->Log(SS4S_LogLevelInfo, "SDLAudio", "Opened output \"%s\" (device %d)%s", device_name,
++                                    id, attempt > 0 ? " after waiting for it" : "");
++                } else if (attempt == 0) {
++                    LibContext->Log(SS4S_LogLevelWarn, "SDLAudio", "Output \"%s\" (device %d) did not open: %s",
++                                    device_name, id, SDL_GetError());
++                }
++            } else if (attempt == 0) {
++                LibContext->Log(SS4S_LogLevelWarn, "SDLAudio", "Output \"%s\" is not connected: waiting up to 5 s",
++                                device_name);
++            }
++        }
++    } else {
++        newInstance->device = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
++    }
++#else
 +    newInstance->device = SDL_OpenAudioDevice(device_name, 0, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
 +    /* A NAMED DEVICE CAN BE MOMENTARILY ABSENT. NVIDIA's HDMI/DP audio drops and re-creates its endpoints whenever
 +     * the display layout changes -- which a co-op host on THIS PC does at the very moment the stream starts
@@ -3349,6 +3436,7 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
 +            }
 +        }
 +    }
++#endif
 +    if (newInstance->device == 0) {
 +        LibContext->Log(SS4S_LogLevelError, "SDLAudio", "Can't open audio device %s: %s",
 +                        device_name != NULL ? device_name : "default", SDL_GetError());
@@ -3557,7 +3645,7 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
      }
      free(instance);
  }
-@@ -110,4 +366,4 @@ SS4S_EXPORTED bool SS4S_ModuleOpen_SDL(SS4S_Module *module, const SS4S_LibraryCo
+@@ -110,4 +454,4 @@ SS4S_EXPORTED bool SS4S_ModuleOpen_SDL(SS4S_Module *module, const SS4S_LibraryCo
      module->AudioDriver = &SDLDriver;
      LibContext = context;
      return true;

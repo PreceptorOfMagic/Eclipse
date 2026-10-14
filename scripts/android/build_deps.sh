@@ -61,9 +61,11 @@ URL[freetype]=https://downloads.sourceforge.net/project/freetype/freetype2/2.14.
 SHA[freetype]=36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f
 STEPS=(mbedtls curl opus inih expat freetype sdl2 sdl2image)
 CURL_PATCH="$ROOT/scripts/linux/portable/patches/curl-8.22.0-mbedtls-pem-key-blob.patch"
+SDL_PATCH="$ROOT/scripts/android/patches/sdl2-2.32.10-android-audio-hotplug.patch"
 
 # A step's stamp records everything that decides its output; a changed pin, patch, NDK or API rebuilds it.
 STAMP_INPUTS="api=$API ndk=$(basename "$NDK") script=$(sha256sum "${BASH_SOURCE[0]}" | cut -c1-16)"
+STAMP_INPUTS="$STAMP_INPUTS patches=$(cat "$CURL_PATCH" "$SDL_PATCH" | sha256sum | cut -c1-16)"
 
 mkdir -p "$DL"
 archive_name() {
@@ -164,13 +166,16 @@ step_freetype() {   # static, no optional codecs: the UI loads TrueType/OpenType
 }
 step_sdl2() {   # shared: SDLActivity loads libSDL2.so before libmain.so; HIDAPI for USB/BLE controllers
     local abi=$1 d; d="$(unpack sdl2 "$abi")"
+    patch -d "$d" -p1 --forward --quiet < "$SDL_PATCH"
     cmake_dep "$abi" "$d" -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF -DSDL_TESTS=OFF \
         -DSDL_HIDAPI=ON -DSDL_HIDAPI_JOYSTICK=ON -DSDL2_DISABLE_SDL2MAIN=ON -DSDL2_DISABLE_UNINSTALL=ON
-    # The Java half of SDL must be the SAME release as libSDL2.so (its native method table is version-bound).
-    if [ ! -d "$OUT/sdl-java/org/libsdl/app" ] || [ "$(cat "$OUT/sdl-java/VERSION" 2>/dev/null)" != "${SHA[sdl2]}" ]; then
+    # The Java half of SDL must be the SAME release as libSDL2.so (its native method table is version-bound),
+    # with the same patch.
+    local java_version; java_version="${SHA[sdl2]} $(sha256sum "$SDL_PATCH" | cut -c1-16)"
+    if [ ! -d "$OUT/sdl-java/org/libsdl/app" ] || [ "$(cat "$OUT/sdl-java/VERSION" 2>/dev/null)" != "$java_version" ]; then
         rm -rf "$OUT/sdl-java"; mkdir -p "$OUT/sdl-java"
         cp -R "$d/android-project/app/src/main/java/org" "$OUT/sdl-java/"
-        echo "${SHA[sdl2]}" > "$OUT/sdl-java/VERSION"
+        echo "$java_version" > "$OUT/sdl-java/VERSION"
         install -m644 "$d/LICENSE.txt" "$OUT/sdl-java/LICENSE.txt"
     fi
 }

@@ -15,6 +15,8 @@
  *                                pointed at a host that is not paired: it must connect, start up (settings,
  *                                certificates, SS4S modules -- all without a Java VM) and report "host not
  *                                paired" over the co-op control channel
+ *   --selftest-audio          the audio outputs the settings offer, by name; then the path a chosen output takes:
+ *                             SDL on AAudio, the output opened by its current number, half a second of silence
  *
  * Results are "SELFTEST ..." lines in the log (logcat), then the app quits.
  */
@@ -41,7 +43,7 @@ static struct {
     char video[PATH_MAX];
     SS4S_VideoCodec codec;
     int width, height;
-    bool peer;
+    bool peer, audio;
 } selftest;
 
 void android_selftest_parse(int argc, char *argv[]) {
@@ -59,6 +61,8 @@ void android_selftest_parse(int argc, char *argv[]) {
             ++i;
         } else if (strcmp(argv[i], "--selftest-peer") == 0) {
             selftest.peer = true;
+        } else if (strcmp(argv[i], "--selftest-audio") == 0) {
+            selftest.audio = true;
         }
     }
 }
@@ -116,6 +120,53 @@ static void selftest_coop_handshake(void) {
     commons_log_info("SELFTEST", "SELFTEST coop-handshake pid=%d after=%ums peer-said=\"%s\" result=%s",
                      pid, elapsed, ready ? "ready" : why,
                      pid > 0 && reported_host ? "PASS" : "FAIL");
+}
+
+static void silence(void *userdata, Uint8 *stream, int len) {
+    (void) userdata;
+    memset(stream, 0, (size_t) len);
+}
+
+static void selftest_audio(void) {
+    char *names[32];
+    const int count = android_audio_output_names(names, 32);
+    char list[1024] = "";
+    for (int i = 0; i < count; ++i) {
+        const size_t used = strlen(list);
+        snprintf(list + used, sizeof(list) - used, "%s\"%s\"", i > 0 ? ", " : "", names[i]);
+    }
+    commons_log_info("SELFTEST", "SELFTEST audio-outputs count=%d %s", count, list);
+    /* The first output by name, as a stream opens a chosen one: its current number, on SDL's AAudio driver
+     * (third_party/ss4s/modules/sdl/sdl.c). SDL_AudioInit restarts SDL's audio on that driver. */
+    const int id = count > 0 ? android_audio_output_id(names[0]) : 0;
+    bool aaudio = false, opened = false;
+    const char *error = "";
+    if (id > 0) {
+        aaudio = SDL_AudioInit("AAudio") == 0;
+        if (aaudio) {
+            char id_name[16];
+            snprintf(id_name, sizeof(id_name), "%d", id);
+            SDL_AudioSpec want = {.freq = 48000, .format = AUDIO_S16LSB, .channels = 2, .samples = 240,
+                    .callback = silence}, have;
+            const SDL_AudioDeviceID device = SDL_OpenAudioDevice(id_name, 0, &want, &have, 0);
+            opened = device != 0;
+            if (opened) {
+                SDL_PauseAudioDevice(device, 0);
+                SDL_Delay(500);
+                SDL_CloseAudioDevice(device);
+            }
+        }
+        if (!opened) {
+            error = SDL_GetError();
+        }
+        SDL_AudioInit(NULL);   /* back to SDL's own choice */
+    }
+    commons_log_info("SELFTEST", "SELFTEST audio output=\"%s\" id=%d aaudio=%d opened=%d %s result=%s",
+                     count > 0 ? names[0] : "", id, (int) aaudio, (int) opened, error,
+                     opened ? "PASS" : "FAIL");
+    for (int i = 0; i < count; ++i) {
+        free(names[i]);
+    }
 }
 
 /* Access units: a new one starts at the first parameter set, SEI or AUD -- or the first slice of a picture --
@@ -233,6 +284,9 @@ static int selftest_thread(void *arg) {
     if (selftest.video[0] != '\0') {
         selftest_video();
     }
+    if (selftest.audio) {
+        selftest_audio();
+    }
     commons_log_info("SELFTEST", "SELFTEST done");
     SDL_Event quit = {.type = SDL_QUIT};
     SDL_PushEvent(&quit);
@@ -240,7 +294,7 @@ static int selftest_thread(void *arg) {
 }
 
 void android_selftest_start(void) {
-    if (!selftest.peer && selftest.video[0] == '\0') {
+    if (!selftest.peer && !selftest.audio && selftest.video[0] == '\0') {
         return;
     }
     SDL_Thread *thread = SDL_CreateThread(selftest_thread, "selftest", NULL);

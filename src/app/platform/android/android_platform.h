@@ -77,6 +77,19 @@ bool android_display_mode(int *width, int *height, int *refresh_x100, int *max_r
  */
 void android_display_request_refresh(int refresh_x100);
 
+/**
+ * The audio outputs a stream can play to, by the names the audio setting stores ("HDMI: LG TV", see
+ * deploy/android/.../AudioOutputs.java): at most @p max, each malloc'd for the caller. 0 in the co-op peer.
+ * The SS4S SDL module turns the stored name into the output's current number when a stream opens its sound.
+ */
+int android_audio_output_names(char **names, int max);
+
+/** The current number of the output called @p name (SDL's name for it is that number); 0 if not connected. */
+int android_audio_output_id(const char *name);
+
+/** The "id|name" lines of EclipseActivity.getAudioOutputs() -> names, as above (audio_outputs_android.c). */
+int android_audio_outputs_parse(const char *text, char **names, int max);
+
 #if defined(ECLIPSE_ANDROID_SELFTEST)
 /* TEST BUILDS ONLY: the emulator smoke tests (selftest_android.c). */
 void android_selftest_parse(int argc, char *argv[]);

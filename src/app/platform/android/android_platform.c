@@ -167,6 +167,60 @@ void android_display_request_refresh(int refresh_x100) {
     call_static_void_int("requestRefreshRate", refresh_x100);
 }
 
+int android_audio_output_names(char **names, int max) {
+    JNIEnv *env = activity_env();
+    if (env == NULL) {
+        return 0;
+    }
+    jclass cls = activity_class(env);
+    if (cls == NULL) {
+        return 0;
+    }
+    int count = 0;
+    jmethodID method = (*env)->GetStaticMethodID(env, cls, "getAudioOutputs", "()Ljava/lang/String;");
+    if (method != NULL) {
+        jstring result = (jstring) (*env)->CallStaticObjectMethod(env, cls, method);
+        clear_exception(env, "getAudioOutputs");
+        if (result != NULL) {
+            const char *text = (*env)->GetStringUTFChars(env, result, NULL);
+            if (text != NULL) {
+                count = android_audio_outputs_parse(text, names, max);
+                (*env)->ReleaseStringUTFChars(env, result, text);
+            }
+            (*env)->DeleteLocalRef(env, result);
+        }
+    } else {
+        clear_exception(env, "getAudioOutputs lookup");
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    return count;
+}
+
+int android_audio_output_id(const char *name) {
+    JNIEnv *env = activity_env();
+    if (env == NULL || name == NULL) {
+        return 0;
+    }
+    jclass cls = activity_class(env);
+    if (cls == NULL) {
+        return 0;
+    }
+    int id = 0;
+    jmethodID method = (*env)->GetStaticMethodID(env, cls, "getAudioOutputId", "(Ljava/lang/String;)I");
+    if (method != NULL) {
+        jstring jname = (*env)->NewStringUTF(env, name);
+        if (jname != NULL) {
+            id = (int) (*env)->CallStaticIntMethod(env, cls, method, jname);
+            (*env)->DeleteLocalRef(env, jname);
+        }
+        clear_exception(env, "getAudioOutputId");
+    } else {
+        clear_exception(env, "getAudioOutputId lookup");
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    return id;
+}
+
 /* EclipseActivity.nativeTvKey(int key, boolean pressed): a remote key SDL2 leaves unmapped (see
  * android_platform.h). Called on the UI thread; SDL_PushEvent is thread safe. */
 JNIEXPORT void JNICALL
