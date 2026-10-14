@@ -97,9 +97,12 @@ A full keyboard's Menu key is the host's Applications key, as on a PC.
 
 ### Display
 
-When a stream starts, Eclipse asks the TV to switch to the stream's refresh rate (or the rate chosen in
-**Settings → Basic**) at the TV's current resolution, and returns it to the system's choice afterwards: the webOS
-panel does the same itself. Some devices only switch when their own frame-rate matching option is on (SHIELD:
+Before a stream starts, Eclipse switches the TV to the mode that shows it best at the TV's current resolution:
+the stream's rate (or the rate chosen in **Settings → Basic**), else the smallest whole multiple of it (a 30 FPS
+stream on 60 Hz), else the TV's highest rate. It returns the TV to the system's choice when the stream ends: the
+webOS panel does the same by itself. If the TV has no mode for the frame rate but has its NTSC equivalent
+(59.94 Hz for 60 FPS), Eclipse asks the PC for that rate, as the webOS build asks for its panel's, so the game is
+paced to the screen. Some devices only switch when their own frame-rate matching option is on (SHIELD:
 **Settings → Device Preferences → Display & Sound → Advanced settings → Match content frame rate**).
 
 The resolution and frame rate lists are limited to what the TV's current mode and the decoder support, as on
@@ -204,8 +207,9 @@ tests/android/device_smoke.sh dist/eclipse-android-selftest.apk ./hevc_tilecols 
 adb uninstall io.github.preceptorofmagic.eclipse.selftest
 ```
 
-They check that the interface starts and survives d-pad input; that the audio outputs are listed by name and one
-opens by its current number on AAudio; that the co-op peer executable runs from the
+They check that the interface starts and survives d-pad input; that the TV's refresh rates are read and the mode
+for a 60 FPS stream takes effect; that the audio outputs are listed by name and one opens by its current number on
+AAudio; that the co-op peer executable runs from the
 installed package and, spawned exactly as a co-op stream spawns it, starts up without a Java VM and answers the
 coordinator over the co-op control channel; and that a co-op composite, H.264, a narrow letterboxed HEVC picture and (with `--uhd`, for real
 hardware) 4K HEVC Main 10 play through the MediaCodec module onto the video surface with no codec errors. Logs and

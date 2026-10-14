@@ -90,6 +90,23 @@ int android_audio_output_id(const char *name);
 /** The "id|name" lines of EclipseActivity.getAudioOutputs() -> names, as above (audio_outputs_android.c). */
 int android_audio_outputs_parse(const char *text, char **names, int max);
 
+/**
+ * The display's refresh rates (hundredths of a Hz) at its current resolution, at most @p max. The primary asks
+ * the activity and leaves the list in the environment for the co-op peer, which has no Java VM to ask.
+ */
+int android_display_refresh_rates(int *rates_x100, int max);
+
+/**
+ * The clientRefreshRateX100 a stream at @p fps should ask its host for, given the display's @p rates_x100:
+ * @p requested_x100 when the user chose an exact rate; the NTSC rate (60 -> 5994) when the display has no mode
+ * that shows @p fps evenly but has one for the NTSC rate, as the webOS build asks for its panel's; else 0 (the
+ * whole frame rate). display_android.c.
+ */
+int android_stream_refresh_x100(int fps, int requested_x100, const int *rates_x100, int count);
+
+/** "5994,6000" -> rates, at most @p max (the peer's copy of the display's rates). display_android.c. */
+int android_parse_rates(const char *text, int *rates_x100, int max);
+
 #if defined(ECLIPSE_ANDROID_SELFTEST)
 /* TEST BUILDS ONLY: the emulator smoke tests (selftest_android.c). */
 void android_selftest_parse(int argc, char *argv[]);

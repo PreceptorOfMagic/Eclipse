@@ -269,13 +269,6 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
                     app_set_mouse_grab(&app->input, true);
                 }
                 app_set_keep_awake(app, true);
-#if TARGET_ANDROID
-                /* The TV's mode follows the stream (the webOS panel does this itself): the requested refresh
-                 * rate, or the frame rate when none was chosen. */
-                android_display_request_refresh(app_configuration->client_refresh_rate_x100 > 0
-                                                ? app_configuration->client_refresh_rate_x100
-                                                : app_configuration->stream.fps * 100);
-#endif
                 streaming_enter_fullscreen(app->session);
                 last_pts = 0;
                 return true;
@@ -292,7 +285,7 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
 //                }
                 app_set_keep_awake(app, false);
 #if TARGET_ANDROID
-                android_display_request_refresh(0);   /* back to the system's choice */
+                android_display_request_refresh(0);   /* back to the system's choice (set: session_worker.c) */
 #endif
                 app_input_reset_stream_overrides(&app->input);
                 if (session_has_input(app->session)) {

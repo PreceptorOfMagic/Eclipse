@@ -11,6 +11,7 @@
 #   co-op      the co-op peer executable runs from the installed package (exits 1 on its unreachable socket),
 #              and, spawned by a real coordinator as a co-op stream spawns it, starts up without a Java VM and
 #              reports back over the co-op control channel
+#   display    the TV's refresh rates, and the display mode a 60 FPS stream asks for taking effect
 #   audio      the outputs Settings -> Audio offers, by name, and the first of them opened as a stream opens a
 #              chosen output: by its current number, on SDL's AAudio driver
 #   video      composite.265 (a co-op composite), solo.264, left.265 (a narrow, letterboxed picture) and, with
@@ -139,14 +140,20 @@ if run_selftest coop --es selftest_video "$DATA/files/selftest/composite.265" --
     check_video coop composite.265
 fi
 
-# --- audio outputs --------------------------------------------------------------------------------------
-if run_selftest audio --ez selftest_audio true; then
-    grep -o "SELFTEST audio-outputs .*" "$W/audio.logcat.txt" | tail -1 | sed 's/^/  /' || true
-    audio="$(grep -o "SELFTEST audio output=.*" "$W/audio.logcat.txt" | tail -1 || true)"
+# --- display mode and audio outputs ---------------------------------------------------------------------
+if run_selftest platform --ez selftest_display true --ez selftest_audio true; then
+    display="$(grep -o "SELFTEST display .*" "$W/platform.logcat.txt" | tail -1 || true)"
+    echo "  ${display:-no display result}"
+    case "$display" in
+        *result=PASS*) pass "display: the TV's refresh rates read, and the mode for a 60 FPS stream taken" ;;
+        *) fail "display: refresh rates or mode change (see $W/platform.logcat.txt)" ;;
+    esac
+    grep -o "SELFTEST audio-outputs .*" "$W/platform.logcat.txt" | tail -1 | sed 's/^/  /' || true
+    audio="$(grep -o "SELFTEST audio output=.*" "$W/platform.logcat.txt" | tail -1 || true)"
     echo "  ${audio:-no audio result}"
     case "$audio" in
         *result=PASS*) pass "audio: outputs listed by name, and one opened by its current number on AAudio" ;;
-        *) fail "audio: output list or open (see $W/audio.logcat.txt)" ;;
+        *) fail "audio: output list or open (see $W/platform.logcat.txt)" ;;
     esac
 fi
 

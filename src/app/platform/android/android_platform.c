@@ -221,6 +221,47 @@ int android_audio_output_id(const char *name) {
     return id;
 }
 
+#define ANDROID_ENV_REFRESH_RATES "ECLIPSE_ANDROID_REFRESH_RATES"
+
+int android_display_refresh_rates(int *rates_x100, int max) {
+    JNIEnv *env = activity_env();
+    jclass cls = env != NULL ? activity_class(env) : NULL;
+    if (cls == NULL) {
+        /* The co-op peer: the primary's list, inherited. */
+        return android_parse_rates(getenv(ANDROID_ENV_REFRESH_RATES), rates_x100, max);
+    }
+    int count = 0;
+    jmethodID method = (*env)->GetStaticMethodID(env, cls, "getRefreshRates", "()[I");
+    if (method != NULL) {
+        jintArray result = (jintArray) (*env)->CallStaticObjectMethod(env, cls, method);
+        clear_exception(env, "getRefreshRates");
+        if (result != NULL) {
+            const jsize length = (*env)->GetArrayLength(env, result);
+            count = length < max ? (int) length : max;
+            jint values[64];
+            if (count > 64) {
+                count = 64;
+            }
+            (*env)->GetIntArrayRegion(env, result, 0, count, values);
+            char list[64 * 7] = "";
+            size_t used = 0;
+            for (int i = 0; i < count; ++i) {
+                rates_x100[i] = values[i];
+                used += (size_t) snprintf(list + used, sizeof(list) - used, "%s%d", i > 0 ? "," : "", values[i]);
+                if (used >= sizeof(list)) {
+                    break;
+                }
+            }
+            setenv(ANDROID_ENV_REFRESH_RATES, list, 1);
+            (*env)->DeleteLocalRef(env, result);
+        }
+    } else {
+        clear_exception(env, "getRefreshRates lookup");
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    return count;
+}
+
 /* EclipseActivity.nativeTvKey(int key, boolean pressed): a remote key SDL2 leaves unmapped (see
  * android_platform.h). Called on the UI thread; SDL_PushEvent is thread safe. */
 JNIEXPORT void JNICALL

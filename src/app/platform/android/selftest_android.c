@@ -15,6 +15,8 @@
  *                                pointed at a host that is not paired: it must connect, start up (settings,
  *                                certificates, SS4S modules -- all without a Java VM) and report "host not
  *                                paired" over the co-op control channel
+ *   --selftest-display        the display's refresh rates, the rate a 60 FPS stream asks its host for, and a
+ *                             requested mode taking effect (the TV following a stream, as the webOS panel does)
  *   --selftest-audio          the audio outputs the settings offer, by name; then the path a chosen output takes:
  *                             SDL on AAudio, the output opened by its current number, half a second of silence
  *
@@ -43,7 +45,7 @@ static struct {
     char video[PATH_MAX];
     SS4S_VideoCodec codec;
     int width, height;
-    bool peer, audio;
+    bool peer, audio, display;
 } selftest;
 
 void android_selftest_parse(int argc, char *argv[]) {
@@ -63,6 +65,8 @@ void android_selftest_parse(int argc, char *argv[]) {
             selftest.peer = true;
         } else if (strcmp(argv[i], "--selftest-audio") == 0) {
             selftest.audio = true;
+        } else if (strcmp(argv[i], "--selftest-display") == 0) {
+            selftest.display = true;
         }
     }
 }
@@ -120,6 +124,31 @@ static void selftest_coop_handshake(void) {
     commons_log_info("SELFTEST", "SELFTEST coop-handshake pid=%d after=%ums peer-said=\"%s\" result=%s",
                      pid, elapsed, ready ? "ready" : why,
                      pid > 0 && reported_host ? "PASS" : "FAIL");
+}
+
+static void selftest_display(void) {
+    int rates[32];
+    const int count = android_display_refresh_rates(rates, 32);
+    char list[256] = "";
+    for (int i = 0; i < count; ++i) {
+        const size_t used = strlen(list);
+        snprintf(list + used, sizeof(list) - used, "%s%d", i > 0 ? "," : "", rates[i]);
+    }
+    const int asks = android_stream_refresh_x100(60, 0, rates, count);
+    int before = 0, after = 0, width = 0, height = 0;
+    android_display_mode(&width, &height, &before, NULL, NULL);
+    /* As a stream does (session_worker.c): the mode for 60 FPS, then back to the system's choice. */
+    android_display_request_refresh(asks > 0 ? asks : 6000);
+    SDL_Delay(2000);   /* an HDMI mode change takes a moment */
+    android_display_mode(NULL, NULL, &after, NULL, NULL);
+    android_display_request_refresh(0);
+    /* 60 FPS shows at the asked rate or an even multiple of it; any rate when the display has only one. */
+    const int want = asks > 0 ? asks : 6000;
+    const int n = want > 0 ? (after + want / 2) / want : 0;
+    const bool even = n >= 1 && (after - n * want <= n && n * want - after <= n);
+    commons_log_info("SELFTEST", "SELFTEST display %dx%d rates=%s stream60-asks=%d refresh-before=%d after=%d "
+                                 "result=%s", width, height, list, asks, before, after,
+                     count > 0 && (even || count == 1) ? "PASS" : "FAIL");
 }
 
 static void silence(void *userdata, Uint8 *stream, int len) {
@@ -284,6 +313,9 @@ static int selftest_thread(void *arg) {
     if (selftest.video[0] != '\0') {
         selftest_video();
     }
+    if (selftest.display) {
+        selftest_display();
+    }
     if (selftest.audio) {
         selftest_audio();
     }
@@ -294,7 +326,7 @@ static int selftest_thread(void *arg) {
 }
 
 void android_selftest_start(void) {
-    if (!selftest.peer && !selftest.audio && selftest.video[0] == '\0') {
+    if (!selftest.peer && !selftest.audio && !selftest.display && selftest.video[0] == '\0') {
         return;
     }
     SDL_Thread *thread = SDL_CreateThread(selftest_thread, "selftest", NULL);

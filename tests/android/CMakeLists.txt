@@ -78,3 +78,16 @@ target_include_directories(test_android_audio_outputs_parse PRIVATE ${CMAKE_SOUR
         ${CMAKE_SOURCE_DIR}/src/app)
 target_include_directories(test_android_audio_outputs_parse SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
 add_test(NAME test_android_audio_outputs_parse COMMAND test_android_audio_outputs_parse)
+if (Java_FOUND)
+    add_test(NAME test_android_display_modes COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_java_test.sh
+            ${Java_JAVAC_EXECUTABLE} ${Java_JAVA_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/java-display-modes
+            io.github.preceptorofmagic.eclipse.DisplayModesTest ${ECLIPSE_ANDROID_JAVA}/DisplayModes.java
+            ${CMAKE_CURRENT_SOURCE_DIR}/java/io/github/preceptorofmagic/eclipse/DisplayModesTest.java)
+endif ()
+
+# The refresh rate an Android stream asks its host for.
+add_executable(test_android_display_refresh test_display_refresh.c
+        ${CMAKE_SOURCE_DIR}/src/app/platform/android/display_android.c)
+target_include_directories(test_android_display_refresh PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android
+        ${CMAKE_SOURCE_DIR}/src/app)
+add_test(NAME test_android_display_refresh COMMAND test_android_display_refresh)

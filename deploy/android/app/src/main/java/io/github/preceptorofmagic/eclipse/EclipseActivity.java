@@ -116,6 +116,9 @@ public class EclipseActivity extends SDLActivity {
             if (intent.getBooleanExtra("selftest_audio", false)) {
                 args.add("--selftest-audio");
             }
+            if (intent.getBooleanExtra("selftest_display", false)) {
+                args.add("--selftest-display");
+            }
         }
         return args.toArray(new String[0]);
     }
@@ -392,6 +395,34 @@ public class EclipseActivity extends SDLActivity {
         return false;
     }
 
+    /** The display's modes at its current resolution: a stream changes the refresh rate, never the size. */
+    private static Display.Mode[] modesAtCurrentSize(Display d) {
+        Display.Mode current = d.getMode();
+        List<Display.Mode> same = new ArrayList<>();
+        for (Display.Mode m : d.getSupportedModes()) {
+            if (m.getPhysicalWidth() == current.getPhysicalWidth() &&
+                    m.getPhysicalHeight() == current.getPhysicalHeight()) {
+                same.add(m);
+            }
+        }
+        return same.toArray(new Display.Mode[0]);
+    }
+
+    private static int[] ratesX100(Display.Mode[] modes) {
+        int[] rates = new int[modes.length];
+        for (int i = 0; i < modes.length; ++i) {
+            rates[i] = Math.round(modes[i].getRefreshRate() * 100f);
+        }
+        return rates;
+    }
+
+    /** The refresh rates (x100) the display offers at its current resolution (android_platform.c: the rate a
+     *  stream asks its host for, as the webOS build asks for its panel's). */
+    static int[] getRefreshRates() {
+        Display d = display();
+        return d != null ? ratesX100(modesAtCurrentSize(d)) : new int[0];
+    }
+
     /** {width, height, current refresh x100, highest refresh x100 at that size, HDR10 0/1} (android_platform.c). */
     static int[] getDisplayMode() {
         Display d = display();
@@ -428,19 +459,9 @@ public class EclipseActivity extends SDLActivity {
             WindowManager.LayoutParams params = activity.getWindow().getAttributes();
             int modeId = 0;
             if (refreshX100 > 0) {
-                Display.Mode current = d.getMode();
-                float want = refreshX100 / 100f, best = Float.MAX_VALUE;
-                for (Display.Mode m : d.getSupportedModes()) {
-                    if (m.getPhysicalWidth() != current.getPhysicalWidth() ||
-                            m.getPhysicalHeight() != current.getPhysicalHeight()) {
-                        continue;
-                    }
-                    float diff = Math.abs(m.getRefreshRate() - want);
-                    if (diff < best || (diff == best && m.getRefreshRate() > want)) {
-                        best = diff;
-                        modeId = m.getModeId();
-                    }
-                }
+                Display.Mode[] modes = modesAtCurrentSize(d);
+                int best = DisplayModes.pick(ratesX100(modes), refreshX100);
+                modeId = best >= 0 ? modes[best].getModeId() : 0;
             }
             if (params.preferredDisplayModeId != modeId) {
                 params.preferredDisplayModeId = modeId;
