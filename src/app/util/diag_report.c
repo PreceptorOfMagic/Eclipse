@@ -32,6 +32,10 @@
 #include <netinet/in.h>
 #include <sys/utsname.h>
 #include <unistd.h>
+#if defined(TARGET_ANDROID)
+#include <dlfcn.h>
+#include "platform/android/android_platform.h"
+#endif
 #endif
 
 #ifndef ECLIPSE_BUILD_COMMIT
@@ -186,6 +190,15 @@ static FILE *open_own_binary(void) {
     }
     WideCharToMultiByte(CP_UTF8, 0, wpath, -1, binary_path, sizeof(binary_path), NULL, NULL);
     return _wfopen(wpath, L"rb");
+#elif defined(TARGET_ANDROID)
+    /* The program is libmain.so (or, in the co-op peer, the peer executable): /proc/self/exe is the zygote's
+     * app_process, the same on every Android device. */
+    Dl_info info;
+    if (dladdr((const void *) open_own_binary, &info) == 0 || info.dli_fname == NULL) {
+        return NULL;
+    }
+    snprintf(binary_path, sizeof(binary_path), "%s", info.dli_fname);
+    return fopen(binary_path, "rb");
 #else
     ssize_t n = readlink("/proc/self/exe", binary_path, sizeof(binary_path) - 1);
     if (n <= 0) {
@@ -312,6 +325,8 @@ static void section_identity(sbuf_t *b, const char *title) {
     const char *platform =
 #if defined(TARGET_WEBOS)
             "webOS";
+#elif defined(TARGET_ANDROID)
+            "Android";
 #elif defined(_WIN32)
             "Windows";
 #elif defined(__linux__)
@@ -416,6 +431,8 @@ static void section_system(sbuf_t *b, app_t *app) {
     if (model[0] != '\0' || hw[0] != '\0') {
         sb_add(b, "Device: %s %s\n", model, hw);
     }
+#elif defined(TARGET_ANDROID)
+    sb_add(b, "Android: API %d; device %s\n", android_sdk_int(), android_device_name());
 #elif defined(__linux__)
     char distro[128] = "unknown";
     read_keyed("/etc/os-release", "PRETTY_NAME", '=', distro, sizeof(distro));
@@ -491,6 +508,13 @@ static void section_displays(sbuf_t *b) {
     SDL_webOSGetPanelResolution(&pw, &ph);
     SDL_webOSGetRefreshRate(&rate);
     sb_add(b, "Panel: %dx%d, %d Hz\n", pw, ph, rate);
+#elif defined(TARGET_ANDROID)
+    int pw = 0, ph = 0, rate_x100 = 0, max_x100 = 0;
+    bool hdr10 = false;
+    if (android_display_mode(&pw, &ph, &rate_x100, &max_x100, &hdr10)) {
+        sb_add(b, "Panel: %dx%d, %d.%02d Hz now (up to %d.%02d Hz at this size), HDR10 %s\n", pw, ph,
+               rate_x100 / 100, rate_x100 % 100, max_x100 / 100, max_x100 % 100, yes_no(hdr10));
+    }
 #endif
 }
 

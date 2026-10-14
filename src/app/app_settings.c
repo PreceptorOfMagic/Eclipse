@@ -21,6 +21,9 @@
 #if defined(TARGET_WEBOS)
 #include <SDL_system.h>
 #endif
+#if defined(TARGET_ANDROID)
+#include "platform/android/android_platform.h"
+#endif
 
 #include "util/ini_ext.h"
 #include "util/nullable.h"
@@ -145,6 +148,14 @@ void settings_initialize(app_settings_t *config, char *conf_dir) {
     int native_w = 1920, native_h = 1080;
 #if defined(TARGET_WEBOS)
     if (!SDL_webOSGetPanelResolution(&native_w, &native_h) || native_w <= 0 || native_h <= 0) {
+        native_w = 1920;
+        native_h = 1080;
+    }
+    config->stream_size_defaulted = false;
+#elif defined(TARGET_ANDROID)
+    /* As on webOS, the panel itself: the display's physical mode, not the 1080p surface Android TV gives an
+     * app (SDL would report that one). The activity answers this before SDL's video subsystem is up. */
+    if (!android_display_mode(&native_w, &native_h, NULL, NULL, NULL) || native_w <= 0 || native_h <= 0) {
         native_w = 1920;
         native_h = 1080;
     }

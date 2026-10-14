@@ -22,6 +22,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#if defined(TARGET_ANDROID)
+#include "platform/android/android_platform.h"
+#endif
 
 static void exit_streaming(lv_event_t *event);
 
@@ -114,6 +117,14 @@ static float streaming_render_fps(float decodedFps) {
     int displayRate = 60;
     if (SDL_webOSGetRefreshRate(&displayRate) && displayRate > 0 && renderFps > (float) displayRate) {
         renderFps = (float) displayRate;
+    }
+#elif defined(TARGET_ANDROID)
+    /* The mode the TV is in NOW: the activity switches it for the stream, which SDL's display list does not
+     * follow (platform/android). */
+    int refresh_x100 = 0;
+    if (android_display_mode(NULL, NULL, &refresh_x100, NULL, NULL) && refresh_x100 > 0 &&
+        renderFps > (float) refresh_x100 / 100.0f) {
+        renderFps = (float) refresh_x100 / 100.0f;
     }
 #else
     SDL_DisplayMode mode;

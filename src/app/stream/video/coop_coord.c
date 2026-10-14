@@ -22,6 +22,9 @@
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
+#ifdef __ANDROID__
+#include "util/path.h"
+#endif
 #include <signal.h>
 #include <sys/time.h>
 #endif
@@ -405,7 +408,13 @@ static bool coord_executable_path(const char *link, char path[PATH_MAX]) {
  * Whether old orphans caused the September 8 launch failure remains unproven. */
 int coop_coord_reap_orphan_secondaries(const char *socket_path) {
     char self_exe[PATH_MAX];
+#if defined(__ANDROID__)
+    /* /proc/self/exe is the zygote's app_process on Android; a secondary is the packaged peer executable,
+     * which path_self_executable() names (platform/android/path_android.c). */
+    if (!path_self_executable(self_exe, sizeof(self_exe))) { return 0; }
+#else
     if (!coord_executable_path("/proc/self/exe", self_exe)) { return 0; }
+#endif
     DIR *proc = opendir("/proc");
     if (proc == NULL) {
         return 0;

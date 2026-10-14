@@ -252,7 +252,7 @@ int app_init(app_t *app, app_settings_loader *settings_loader, int argc, char *a
             input_names_start();
         }
         app_ui_init(&app->ui, app);
-#if !defined(TARGET_WEBOS)
+#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
         /* Ask the display which actually owns the restored window. Display 0 is not
          * necessarily the monitor the user selected, especially when Eclipse starts
          * fullscreen on a saved secondary monitor. settings_initialize() cannot do

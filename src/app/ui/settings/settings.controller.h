@@ -77,7 +77,7 @@ typedef struct {
     bool needs_locale_reapply;
     /** Avoid rewriting after a successful transactional save initiated by close. */
     bool save_complete;
-#if TARGET_WEBOS
+#if TARGET_WEBOS || TARGET_ANDROID
     int panel_width;
     int panel_height;
     int panel_fps;

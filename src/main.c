@@ -11,9 +11,34 @@
 
 #endif
 
+#if defined(TARGET_ANDROID)
+
+#include <stdlib.h>
+#include <string.h>
+#include "platform/android/android_platform.h"
+
+#endif
+
 static int settings_load(app_settings_t *settings);
 
 int main(int argc, char *argv[]) {
+#if defined(TARGET_ANDROID)
+    /* libmain.so's main() is SDL_main, called by SDLActivity. The co-op peer is the same program built as a
+     * plain executable (libeclipse_peer.so) and exec'd by the primary; SDL must be told its entry point
+     * was handled, as SDL_main.h does for SDLActivity. */
+    bool android_peer = false;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] != NULL && strcmp(argv[i], "--coop-secondary") == 0) {
+            android_peer = true;
+        }
+    }
+#if defined(ECLIPSE_ANDROID_PEER)
+    SDL_SetMainReady();
+#endif
+    if (!android_platform_init(android_peer)) {
+        return 1;
+    }
+#endif
 #ifdef TARGET_WEBOS
     if (getenv("EGL_PLATFORM") == NULL) {
         setenv("EGL_PLATFORM", "wayland", 0);
@@ -76,6 +101,12 @@ int main(int argc, char *argv[]) {
     app_launch_param_free(params);
 
     app_deinit(&app);
+#if defined(TARGET_ANDROID)
+    /* SDLActivity may start SDL_main again in this same process (a relaunch after the activity finished),
+     * and none of this program's static state would be reset. End the process with the program, as on every
+     * other platform. */
+    exit(ret);
+#endif
     return ret;
 }
 

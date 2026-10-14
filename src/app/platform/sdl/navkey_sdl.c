@@ -6,6 +6,10 @@
 
 NAVKEY navkey_from_sdl_webos(const SDL_Event *ev);
 
+#elif TARGET_ANDROID
+
+NAVKEY navkey_from_sdl_android(const SDL_Event *ev);
+
 #endif
 
 static NAVKEY navkey_gamepad_map(SDL_JoystickID which, Uint8 button);
@@ -86,6 +90,11 @@ NAVKEY navkey_from_sdl(const SDL_Event *ev, bool *pressed) {
 #if TARGET_WEBOS
                     NAVKEY navkey;
                     if ((navkey = navkey_from_sdl_webos(ev)) != NAVKEY_UNKNOWN) {
+                        return navkey;
+                    }
+#elif TARGET_ANDROID
+                    NAVKEY navkey;
+                    if ((navkey = navkey_from_sdl_android(ev)) != NAVKEY_UNKNOWN) {
                         return navkey;
                     }
 #endif

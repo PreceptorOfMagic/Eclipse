@@ -1,0 +1,81 @@
+/*
+ * Android TV platform layer (NVIDIA Shield and other Android 9+ TV devices).
+ *
+ * THE SHAPE. Eclipse runs inside SDL2's Android activity (deploy/android, EclipseActivity extends
+ * SDLActivity): Java owns the window, the video surface under it and a few system services, and calls
+ * SDL_main() -- this program's main() -- on SDL's own thread. Everything else is the same C program as on the
+ * TV and the desktops. Java publishes what the C side needs before SDL_main runs, as environment variables
+ * (SDLActivity.nativeSetenv), because the co-op peer is a separate exec'd process with no JVM: it inherits
+ * the environment and nothing else.
+ */
+#pragma once
+
+#include <stdbool.h>
+
+/* Environment published by EclipseActivity (deploy/android) before SDL_main. */
+#define ANDROID_ENV_FILES_DIR "ECLIPSE_ANDROID_FILES_DIR"     /* Context.getFilesDir(): settings, pairing */
+#define ANDROID_ENV_CACHE_DIR "ECLIPSE_ANDROID_CACHE_DIR"     /* Context.getCacheDir(): cover art, runtime */
+#define ANDROID_ENV_ASSETS_DIR "ECLIPSE_ANDROID_ASSETS_DIR"   /* APK assets, unpacked once per version */
+#define ANDROID_ENV_NATIVE_DIR "ECLIPSE_ANDROID_NATIVE_DIR"   /* ApplicationInfo.nativeLibraryDir */
+#define ANDROID_ENV_SDK_INT "ECLIPSE_ANDROID_SDK_INT"         /* Build.VERSION.SDK_INT */
+#define ANDROID_ENV_DEVICE "ECLIPSE_ANDROID_DEVICE"           /* Build.MANUFACTURER + " " + Build.MODEL */
+
+/* The co-op peer executable, packaged as lib/<abi>/libeclipse_peer.so (see CMakeLists.txt). */
+#define ANDROID_PEER_EXECUTABLE "libeclipse_peer.so"
+
+/*
+ * TV REMOTE KEYS SDL2 DOES NOT MAP. SDL's Android keymap leaves the colour keys, the channel keys and the
+ * info/guide/settings keys as SDL_SCANCODE_UNKNOWN, so EclipseActivity.dispatchKeyEvent() forwards them through
+ * nativeTvKey() and they arrive as ordinary SDL_KEYDOWN/SDL_KEYUP events carrying these scancodes. They sit
+ * far above SDL_NUM_SCANCODES so they can never collide with a real key, and they are pushed with
+ * SDL_PushEvent, so SDL's own keyboard state array never sees them. The numbering after the base matches
+ * EclipseActivity.TV_KEY_*.
+ */
+#define ANDROID_SCANCODE_TV_BASE 0x10000
+#define ANDROID_SCANCODE_RED (ANDROID_SCANCODE_TV_BASE + 1)
+#define ANDROID_SCANCODE_GREEN (ANDROID_SCANCODE_TV_BASE + 2)
+#define ANDROID_SCANCODE_YELLOW (ANDROID_SCANCODE_TV_BASE + 3)
+#define ANDROID_SCANCODE_BLUE (ANDROID_SCANCODE_TV_BASE + 4)
+#define ANDROID_SCANCODE_CH_UP (ANDROID_SCANCODE_TV_BASE + 5)
+#define ANDROID_SCANCODE_CH_DOWN (ANDROID_SCANCODE_TV_BASE + 6)
+/* Info, guide and settings: on webOS the EXIT key's job in a stream (open the overlay). */
+#define ANDROID_SCANCODE_OVERLAY (ANDROID_SCANCODE_TV_BASE + 7)
+#define ANDROID_SCANCODE_TV_LAST ANDROID_SCANCODE_OVERLAY
+
+/* Back held this long in a stream opens the overlay instead of sending Escape (as the remote OK key's hold
+ * becomes a right click, session_keyboard.c). Android TV remotes have no EXIT key and many lack MENU. */
+#define ANDROID_BACK_OVERLAY_HOLD_MS 600
+
+/**
+ * Called first in main(), before app_init: checks the environment EclipseActivity published, makes the
+ * private directories, and points SS4S at its module list. A peer process does the same with the inherited
+ * environment. Returns false if the app's storage is unusable.
+ */
+bool android_platform_init(bool peer);
+
+/** Android API level of the device (Build.VERSION.SDK_INT), 0 if unknown. */
+int android_sdk_int(void);
+
+/** "NVIDIA SHIELD Android TV" and the like, for logs and the support report. */
+const char *android_device_name(void);
+
+/**
+ * The physical display: resolution of the current mode (not the 1080p UI surface Android TV gives an app),
+ * the current refresh rate and the highest one any mode of that resolution offers (hundredths of a Hz; the
+ * activity switches modes for a stream, see android_display_request_refresh), and whether the display
+ * accepts HDR10. Any pointer may be NULL. False if unknown, and always in the co-op peer.
+ */
+bool android_display_mode(int *width, int *height, int *refresh_x100, int *max_refresh_x100, bool *hdr10);
+
+/**
+ * Ask Android for the display mode that best matches a stream at @p refresh_x100 (0 restores the system's
+ * choice). The webOS build switches the panel through SDL_webOS; on Android the activity's
+ * preferredDisplayModeId (and Surface.setFrameRate on Android 11+) does it.
+ */
+void android_display_request_refresh(int refresh_x100);
+
+/** Ask the system to keep the screen on while streaming (FLAG_KEEP_SCREEN_ON). */
+void android_keep_screen_on(bool on);
+
+/** Leave the app to the TV's home screen (webOS opens its ribbon for the same key). */
+void android_open_home(void);

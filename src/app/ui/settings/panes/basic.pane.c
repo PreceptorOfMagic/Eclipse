@@ -89,7 +89,7 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
     int max_width = (int) app->ss4s.video_cap.maxWidth, max_height = (int) app->ss4s.video_cap.maxHeight;
     int native_width = app->ui.width, native_height = app->ui.height;
 
-#if TARGET_WEBOS
+#if TARGET_WEBOS || TARGET_ANDROID
     if (parent->panel_width > 0 && parent->panel_height > 0) {
         native_width = parent->panel_width;
         native_height = parent->panel_height;
@@ -121,7 +121,7 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
     lv_obj_add_event_cb(res_dropdown, on_res_chosen, LV_EVENT_VALUE_CHANGED, NULL);
 
     unsigned int max_fps = app->ss4s.video_cap.maxFps;
-#if TARGET_WEBOS
+#if TARGET_WEBOS || TARGET_ANDROID
     if (parent->panel_fps > 0 && (max_fps == 0 || parent->panel_fps < max_fps)) {
         max_fps = parent->panel_fps;
     }

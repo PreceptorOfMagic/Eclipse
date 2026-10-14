@@ -15,12 +15,16 @@ static char *gamecontrollerdb_builtin_path();
 
 static char *gamecontrollerdb_extra_path();
 
-#if defined(OS_WINDOWS) || (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK))
+/* Android ships the desktops' pinned CA bundle too, so the controller updater trusts the same roots on every
+ * client whatever the device's own store holds (and wherever a given Android release keeps it). */
+#if defined(OS_WINDOWS) || defined(TARGET_ANDROID) || \
+    (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK))
 static char *portable_tls_ca_path();
 #endif
 
 void app_input_init_gamepad_mapping(app_input_t *input, executor_t *executor, const app_settings_t *settings) {
-#if defined(OS_WINDOWS) || (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK))
+#if defined(OS_WINDOWS) || defined(TARGET_ANDROID) || \
+    (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK))
     input->gcdb_ca_path = portable_tls_ca_path();
     input->gcdb_updater.ca_path = input->gcdb_ca_path;
 #else
@@ -104,7 +108,8 @@ static char *gamecontrollerdb_extra_path() {
     return condb;
 }
 
-#if defined(OS_WINDOWS) || (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK))
+#if defined(OS_WINDOWS) || defined(TARGET_ANDROID) || \
+    (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK))
 static char *portable_tls_ca_path() {
     /* MSYS2's OpenSSL-backed libcurl is built with an MSYS2-local CA path. That
      * path does not exist on a machine which only has the portable package, so

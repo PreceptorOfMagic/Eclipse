@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(TARGET_WEBOS)
+#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
 #include <SDL.h>
 #endif
 
@@ -29,7 +29,7 @@ typedef struct audio_pane_t {
     pref_dropdown_int_entry_t surround_entries[3];
     int surround_entries_len;
 
-#if !defined(TARGET_WEBOS)
+#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
     pref_dropdown_string_entry_t *device_entries;
     int device_entries_len;
 #endif
@@ -91,7 +91,9 @@ static void pane_ctor(lv_fragment_t *self, void *args) {
         entry->fallback = config.configuration == AUDIO_CONFIGURATION_STEREO;
         pane->surround_entries_len++;
     }
-#if !defined(TARGET_WEBOS)
+#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
+    /* Not on Android: the system routes a TV app's sound (HDMI, Bluetooth), and SDL names its outputs by
+     * number only. */
     const int num_devices = SDL_GetNumAudioDevices(0);
     pane->device_entries = calloc((size_t) (num_devices > 0 ? num_devices : 0) + 2,
                                   sizeof(*pane->device_entries));
@@ -140,7 +142,7 @@ static void pane_ctor(lv_fragment_t *self, void *args) {
 static void pane_dtor(lv_fragment_t *self) {
     audio_pane_t *pane = (audio_pane_t *) self;
     free(pane->adec_entries);
-#if !defined(TARGET_WEBOS)
+#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
     for (int i = 1; i < pane->device_entries_len; ++i) {
         if (pane->device_entries[i].name != pane->device_entries[i].value) {
             free((void *) pane->device_entries[i].name);
@@ -177,7 +179,7 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
 
     pref_header(view, locstr("Audio Settings"));
 
-#if !defined(TARGET_WEBOS)
+#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
     if (controller->device_entries_len > 0) {
         pref_title_label(view, locstr("Audio output device"));
         lv_obj_t *device_dropdown = pref_dropdown_string(

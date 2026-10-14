@@ -18,6 +18,9 @@
 #include "lvgl/theme/lv_theme_moonlight_colors.h"
 
 #include "../launcher/launcher.controller.h"
+#if TARGET_ANDROID
+#include "platform/android/android_platform.h"
+#endif
 
 typedef struct {
     const char *icon;
@@ -188,6 +191,15 @@ static void settings_controller_ctor(lv_fragment_t *self, void *args) {
     if (!SDL_webOSGetRefreshRate(&fragment->panel_fps)) {
         fragment->panel_fps = 60;
     }
+#elif TARGET_ANDROID
+    /* The TV's physical mode and the fastest refresh it offers at that size: the activity switches the
+     * display to the stream's rate when a stream starts (platform/android, android_display_request_refresh). */
+    int max_refresh_x100 = 0;
+    if (!android_display_mode(&fragment->panel_width, &fragment->panel_height, NULL, &max_refresh_x100, NULL)) {
+        fragment->panel_width = 1920;
+        fragment->panel_height = 1080;
+    }
+    fragment->panel_fps = max_refresh_x100 > 0 ? (max_refresh_x100 + 50) / 100 : 60;
 #endif
 }
 

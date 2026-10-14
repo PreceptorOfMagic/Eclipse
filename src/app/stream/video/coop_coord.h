@@ -30,6 +30,12 @@
 #if defined(_WIN32) || (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK))
 #define COOP_PC_DECODER 1
 #endif
+/* ANDROID: MediaCodec is a strict hardware decoder of the same class (on the NVIDIA Shield, Tegra's NVDEC), so
+ * it takes the PC rules -- the TV-only exceptions above were measured on LG's decoder alone. To be confirmed on
+ * a Shield with the co-op procedure in docs/coop-modes.md before any of the rules is narrowed. */
+#if defined(TARGET_ANDROID)
+#define COOP_PC_DECODER 1
+#endif
 
 /**
  * Start listening and drain incoming access units in the background.

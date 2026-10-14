@@ -36,6 +36,10 @@ typedef struct stream_input_t {
     bool remoteOkPressed;
     uint32_t remoteOkPressedAt;
     char remoteOkModifiers;
+    /* Android TV remote Back: tap = Escape, hold = overlay (session_keyboard.c). */
+    bool remoteBackPressed;
+    uint32_t remoteBackPressedAt;
+    char remoteBackModifiers;
     bool pointerGestureActive;
     bool pointerGestureDragging;
     bool pointerGestureLeftDown;
