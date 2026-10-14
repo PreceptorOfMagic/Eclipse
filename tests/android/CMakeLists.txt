@@ -97,3 +97,17 @@ if (Python3_FOUND AND JNI_FOUND)
     add_test(NAME test_android_typecheck COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/typecheck_android.py
             ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/typecheck ${JNI_INCLUDE_DIRS})
 endif ()
+
+# Android's paths and launch arguments (app.h stood in for by tests/android/stubs/app.h).
+add_executable(test_android_paths_launch test_paths_launch.c
+        ${CMAKE_SOURCE_DIR}/src/app/platform/android/path_android.c
+        ${CMAKE_SOURCE_DIR}/src/app/platform/android/app_android.c
+        ${CMAKE_SOURCE_DIR}/src/app/util/path.c)
+target_compile_definitions(test_android_paths_launch PRIVATE TARGET_ANDROID=1 _GNU_SOURCE)
+target_include_directories(test_android_paths_launch BEFORE PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
+target_include_directories(test_android_paths_launch PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android
+        ${CMAKE_SOURCE_DIR}/src/app ${CMAKE_SOURCE_DIR}/core/moonlight-common-c/src
+        ${CMAKE_SOURCE_DIR}/third_party/ss4s/include)
+target_include_directories(test_android_paths_launch SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(test_android_paths_launch PRIVATE commons-uuidstr commons-logging ${SDL2_LIBRARIES})
+add_test(NAME test_android_paths_launch COMMAND test_android_paths_launch)
