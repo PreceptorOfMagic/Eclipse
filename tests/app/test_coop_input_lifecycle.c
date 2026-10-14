@@ -40,8 +40,14 @@ static void connect_peer(void) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
+#ifdef ECLIPSE_RUNTIME_ACTIVE
+    /* The coordinator listens where the runtime-files layer puts its sockets (the app's private runtime
+     * directory, platform/posix/runtime_files.c), not at the literal /tmp name: connect where it does. */
+    TEST_ASSERT_EQUAL_INT(0, eclipse_runtime_socket_path(COOP_INPUT_SOCKET, addr.sun_path, sizeof(addr.sun_path)));
+#else
     TEST_ASSERT_LESS_THAN_size_t(sizeof(addr.sun_path), strlen(COOP_INPUT_SOCKET));
     strcpy(addr.sun_path, COOP_INPUT_SOCKET);
+#endif
 
     peer_fd = coop_msg_socket();
     TEST_ASSERT_GREATER_OR_EQUAL_INT64(0, peer_fd);
