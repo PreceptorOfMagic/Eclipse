@@ -698,6 +698,51 @@ Regenerate with `python3 scripts/ctx/param_seed.py`. These rows are derived from
 source every time, so they cannot go stale; the curated sections above are what carries
 the meaning.
 
+## 28. Android — the environment the activity and the primary publish (2026-10-14)
+
+The Android build's paths and process roles reach native code as environment variables, so the co-op peer --
+an exec'd process with no Java VM -- resolves exactly what the primary does. They are set by code, never by a
+user, and `param_extract.py` does not enumerate `getenv` in the Android sources, so they are curated here.
+None exists on webOS, Windows or Linux.
+
+| name | default | class | evidence |
+|---|---|---|---|
+| `ECLIPSE_ANDROID_FILES_DIR` | unset (the app refuses to start: `android_platform_init`) | SRC | set `deploy/android/.../EclipseActivity.java:196` (`Context.getFilesDir()`); read `src/app/platform/android/path_android.c` (`path_pref`, kept logs); name `android_platform.h:16`. Tested: `tests/android/test_paths_launch.c`. |
+| `ECLIPSE_ANDROID_CACHE_DIR` | unset | SRC | set `EclipseActivity.java:197` (`getCacheDir()`); read `path_android.c` `path_cache` -> `<cache>/moonlight-tv`, whose `runtime/` holds the co-op sockets and sentinels (`platform/posix/runtime_files.c`). Tested: `test_paths_launch.c`. |
+| `ECLIPSE_ANDROID_ASSETS_DIR` | unset | SRC | set `EclipseActivity.java:198` (APK assets unpacked to `files/assets-<versionCode>-<lastUpdateTime>`); read `path_android.c` `path_assets`, and `android_platform.c:51-54` builds `SS4S_MODULES_INI` from it. |
+| `ECLIPSE_ANDROID_NATIVE_DIR` | unset | SRC | set `EclipseActivity.java:199` (`ApplicationInfo.nativeLibraryDir`); read `path_android.c` `path_self_executable` -> `libeclipse_peer.so`, the co-op peer the primary execs. Tested: `test_paths_launch.c` (absent / not executable / executable). |
+| `ECLIPSE_ANDROID_SDK_INT` | unset | SRC | set `EclipseActivity.java:200` (`Build.VERSION.SDK_INT`); read `android_platform.c` `android_sdk_int` (log, support report). |
+| `ECLIPSE_ANDROID_DEVICE` | unset | SRC | set `EclipseActivity.java:201` (`MANUFACTURER + " " + MODEL`); read `android_platform.c` `android_device_name` (log, support report). |
+| `ECLIPSE_ANDROID_PEER` | unset; `1` in the co-op peer | SRC | set `android_platform.c:60` when started with `--coop-secondary`; read `third_party/ss4s/modules/android/mediacodec.c:156` and `modules/sdl/sdl.c:111` (patches/client-deps/ss4s.patch): **no JNI** in that process. Tested: `test_sdl_audio_output.c` (the peer opens the default output at once). |
+| `ECLIPSE_MEDIACODEC_PROBE` | unset; the primary sets it at its first decoder probe | SRC | `mediacodec.c:253-261`: the primary's `probeVideoDecoders()` result (`display|hdr10`, then `mime|name|hw|lowLatency|main10|maxW|maxH` lines), inherited by the peer so its codec negotiation matches without Java. |
+| `ECLIPSE_ANDROID_REFRESH_RATES` | unset; the primary sets it when it reads the display | SRC | `android_platform.c:231` (read in the peer) / `:255` (set by the primary): the display's refresh rates at its current size, x100, comma-separated. Decides the stream's `clientRefreshRateX100` (`display_android.c`, §25's NTSC rule's Android form). Tested: `test_display_refresh.c`. |
+| `SS4S_MODULES_INI` | unset on desktop; `<assets>/ss4s_modules.ini` on Android | SRC | read `third_party/ss4s/modules/list-ini/modules_ini.c:27` under `__ANDROID__` only (ss4s.patch); set `android_platform.c:51-54` unless already set. The package manager extracts only `lib*.so` into the library directory, so the module list ships as an asset. |
+| `SDL_AUDIODRIVER` (Android) | unset; `dummy` in the co-op peer | DOC (SDL) | set `android_platform.c:64` in the peer (SDL's Android audio backends use JNI); the SDL module also sets the `AAudio,openslES` hint when an output is chosen (`sdl.c` `Init`). See the `SDL_AUDIODRIVER` rows below for SDL's own semantics. |
+
+**Launch extras.** `EclipseActivity.getArguments()` turns the launching Intent's extras into command-line
+arguments: `host_uuid`, `host_app_id`, `coop` are §30's webOS payload keys with the same meaning
+(`adb shell am start -n <pkg>/io.github.preceptorofmagic.eclipse.EclipseActivity --es host_uuid <uuid> --ei
+host_app_id <id> --ez coop true`; parsed by `src/app/platform/android/app_android.c`, tested by
+`tests/android/test_paths_launch.c`). Self-test builds only (`-DECLIPSE_ANDROID_SELFTEST=ON`,
+`selftest_android.c`; a release build ignores them):
+
+| name | type | class | evidence |
+|---|---|---|---|
+| `selftest_video` | string: a stream file in the app's own storage | SRC | play it through SS4S/MediaCodec; `SELFTEST video ... result=` |
+| `selftest_codec` | `h264` \| `hevc` | SRC | the codec of `selftest_video` |
+| `selftest_size` | `WxH` | SRC | the size of `selftest_video` |
+| `selftest_peer` | boolean | SRC | exec the co-op peer, then the full co-op start-up handshake; `SELFTEST peer` / `SELFTEST coop-handshake` |
+| `selftest_audio` | boolean | SRC | list the audio outputs by name and open the first on AAudio by its current id; `SELFTEST audio` |
+| `selftest_display` | boolean | SRC | the display's refresh rates and a mode request taking effect; `SELFTEST display` |
+| `selftest_keys` | boolean | SRC | every input device and SDL's joystick verdict, then log the SDL events of keys sent to it; `SELFTEST input-devices` / `SELFTEST key` |
+
+All are driven by `tests/android/device_smoke.sh`.
+
+**How to see them take effect:** `adb logcat -s Eclipse` -- the run-start line names the role
+(`role=primary` / `COOP-SECONDARY`); the decoder probe lines and `Display HDR10:` come from
+`ECLIPSE_MEDIACODEC_PROBE`'s source; `SELFTEST display ... rates=` (self-test builds) prints the
+refresh list. `tests/android/device_smoke.sh` checks all of these on a device.
+
 ## 27. `[COOP-AGE]` — the DURATION trace, and the feed fault injection (2026-09-12)
 
 Built for passover 07 §3 (Astra), whose first request was: *"Track uninterrupted hold duration in
