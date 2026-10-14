@@ -115,13 +115,13 @@ the output up when a stream starts. If the chosen output is not connected then, 
 it (Bluetooth reconnecting) and otherwise plays no sound rather than sound somewhere you did not choose, as on the
 desktop. A chosen output plays through Android's AAudio; **System default** uses OpenSL ES.
 
-### Differences from the other platforms
+### Settings that differ by platform
 
-These follow from what Android allows an app to do, not from missing work:
-
-- **Use the wired network**: the host-side wired pin needs the network card's hardware address, which Android hides
-  from apps. Eclipse behaves as on a device without a wired adapter; Android itself prefers Ethernet when it is
-  connected.
+- **Use the wired network (USB Ethernet adapter)** is a webOS setting; the Windows and Linux builds do not have it
+  either. It works around LG TVs that, with a USB Ethernet adapter and Wi-Fi on the same network, answer for their
+  wired address over Wi-Fi: Umbra then pins the TV's addresses to the adapter's hardware (MAC) address. Android
+  normally keeps one connection, Ethernet when it is plugged in, so the case does not arise; and Android 11 and
+  later do not tell apps a network card's hardware address, which the pin needs.
 - **Diagnostic logs** are shared through the same local web page as on webOS
   (**Settings → About → Keep diagnostic logs**, then **Share logs…**), because a TV app's files are out of reach.
   With ADB, `adb logcat -s Eclipse` shows the live log.
