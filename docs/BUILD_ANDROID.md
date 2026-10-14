@@ -196,7 +196,8 @@ adb uninstall io.github.preceptorofmagic.eclipse.selftest
 ```
 
 They check that the interface starts and survives d-pad input; that the co-op peer executable runs from the
-installed package; and that a co-op composite, H.264, a narrow letterboxed HEVC picture and (with `--uhd`, for real
+installed package and, spawned exactly as a co-op stream spawns it, starts up without a Java VM and answers the
+coordinator over the co-op control channel; and that a co-op composite, H.264, a narrow letterboxed HEVC picture and (with `--uhd`, for real
 hardware) 4K HEVC Main 10 play through the MediaCodec module onto the video surface with no codec errors. Logs and
 screenshots are left in `smoke/`. FFmpeg with libx264 and libx265 is needed to make the test streams.
 
@@ -228,6 +229,7 @@ follow the same checklist as for a webOS release.
 | Eclipse is not in the apps row | Some launchers list sideloaded apps only under **Settings → Apps**. Eclipse has a TV banner and appears on Android TV launchers. |
 | Picture stays black, sound plays | The decoder refused the stream. Try H.264 or a lower resolution in **Settings → Basic**, and attach the log (`adb logcat -s Eclipse`). |
 | Refresh rate does not change | Turn on the device's frame-rate matching option ([Display](#display)). |
+| Co-op ends with "the second co-op PC did not begin streaming in time" on Android 12 or newer | Android 12+ limits how many helper processes all apps together may run, and may stop Eclipse's co-op helper when many others are running. Restart the device, or turn on **Developer options → Disable child process restrictions** where offered. The SHIELD (Android 11) has no such limit. |
 
 ### Reporting
 

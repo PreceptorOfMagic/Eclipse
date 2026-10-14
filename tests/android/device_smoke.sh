@@ -8,7 +8,9 @@
 # into the app's own files with run-as, and has its own application ID: it installs beside a real Eclipse
 # without touching its paired hosts or settings (uninstall it afterwards with adb uninstall <its ID>). Every case launches the app as the launcher does and checks:
 #   launcher   the UI comes up and survives d-pad input (screenshots launcher.png, launcher-nav.png)
-#   co-op      the co-op peer executable runs from the installed package (exits 1 on its unreachable socket)
+#   co-op      the co-op peer executable runs from the installed package (exits 1 on its unreachable socket),
+#              and, spawned by a real coordinator as a co-op stream spawns it, starts up without a Java VM and
+#              reports back over the co-op control channel
 #   video      composite.265 (a co-op composite), solo.264, left.265 (a narrow, letterboxed picture) and, with
 #              --uhd, uhd.265 (4K Main10) play through SS4S and the MediaCodec module onto the video surface
 #              under the UI: every access unit accepted, at least 90% of the pictures decoded, no codec error
@@ -126,6 +128,12 @@ if run_selftest coop --es selftest_video "$DATA/files/selftest/composite.265" --
     peer="$(grep -o "SELFTEST peer .*" "$W/coop.logcat.txt" | tail -1 || true)"
     echo "  ${peer:-no peer result}"
     case "$peer" in *result=PASS*) pass "co-op: the peer executable runs from the package" ;; *) fail "co-op: peer" ;; esac
+    handshake="$(grep -o "SELFTEST coop-handshake .*" "$W/coop.logcat.txt" | tail -1 || true)"
+    echo "  ${handshake:-no co-op handshake result}"
+    case "$handshake" in
+        *result=PASS*) pass "co-op: the peer starts up without Java and answers the coordinator" ;;
+        *) fail "co-op: start-up handshake (the peer's own lines are in $W/coop.logcat.txt)" ;;
+    esac
     check_video coop composite.265
 fi
 

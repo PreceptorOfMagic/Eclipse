@@ -7,9 +7,14 @@
  *   --selftest-video <file>   play an Annex B H.264/H.265 file through SS4S, i.e. the MediaCodec module and
  *   --selftest-codec <c>      the video surface under the UI, exactly as a stream's pictures go (h264|hevc)
  *   --selftest-size <WxH>
- *   --selftest-peer           exec the co-op peer executable against a socket nothing listens on: it must
- *                             start, fail to reach the coordinator and exit 1 -- proving the package manager
- *                             extracted it executable and its libraries resolve beside it
+ *   --selftest-peer           the co-op peer, in two steps:
+ *                             1. exec it against a socket nothing listens on: it must start, fail to reach the
+ *                                coordinator and exit 1 -- the package manager extracted it executable and its
+ *                                libraries resolve beside it
+ *                             2. start a real coordinator and spawn the peer exactly as a co-op stream does,
+ *                                pointed at a host that is not paired: it must connect, start up (settings,
+ *                                certificates, SS4S modules -- all without a Java VM) and report "host not
+ *                                paired" over the co-op control channel
  *
  * Results are "SELFTEST ..." lines in the log (logcat), then the app quits.
  */
@@ -20,6 +25,7 @@
 #include "util/path.h"
 
 #include "ss4s.h"
+#include "stream/video/coop_coord.h"
 
 #include <SDL.h>
 #include <errno.h>
@@ -81,6 +87,35 @@ static void selftest_peer(void) {
     /* 1 = it ran, and refused the unreachable coordinator (main.c); 127 = exec failed; a signal = crashed. */
     commons_log_info("SELFTEST", "SELFTEST peer exe=%s %s=%d result=%s", exe, exited ? "exit" : "signal", code,
                      exited && code == 1 ? "PASS" : "FAIL");
+}
+
+/* The co-op start-up handshake, through the same calls as session_video.c's co-op spawn. */
+static void selftest_coop_handshake(void) {
+    static const char unpaired_host[] = "00000000-0000-4000-8000-00000000e5c1";
+    char exe[PATH_MAX];
+    if (!path_self_executable(exe, sizeof(exe))) {
+        commons_log_error("SELFTEST", "SELFTEST coop-handshake exe=UNRESOLVED result=FAIL");
+        return;
+    }
+    if (!coop_coord_start(COOP_COORD_SOCKET)) {
+        commons_log_error("SELFTEST", "SELFTEST coop-handshake coordinator did not start: %s result=FAIL",
+                          strerror(errno));
+        return;
+    }
+    const uint64_t started = SDL_GetTicks64();
+    const int pid = coop_coord_spawn_secondary_for(exe, COOP_COORD_SOCKET, unpaired_host, 1, 1280, 720);
+    const bool ready = pid > 0 && coop_coord_wait_secondary_ready(30000);
+    const char *why = coop_coord_start_error_message();
+    const unsigned elapsed = (unsigned) (SDL_GetTicks64() - started);
+    coop_coord_request_peer_shutdown();
+    coop_coord_reap_secondary();
+    coop_coord_stop();
+    /* "No longer paired" is the one answer that needs the peer to have connected, started up completely and
+     * looked the host up; a peer that died or never connected reads "did not begin streaming in time". */
+    const bool reported_host = !ready && strstr(why, "no longer paired") != NULL;
+    commons_log_info("SELFTEST", "SELFTEST coop-handshake pid=%d after=%ums peer-said=\"%s\" result=%s",
+                     pid, elapsed, ready ? "ready" : why,
+                     pid > 0 && reported_host ? "PASS" : "FAIL");
 }
 
 /* Access units: a new one starts at the first parameter set, SEI or AUD -- or the first slice of a picture --
@@ -193,6 +228,7 @@ static int selftest_thread(void *arg) {
     SDL_Delay(3000);   /* the UI and the video surface are up */
     if (selftest.peer) {
         selftest_peer();
+        selftest_coop_handshake();
     }
     if (selftest.video[0] != '\0') {
         selftest_video();
