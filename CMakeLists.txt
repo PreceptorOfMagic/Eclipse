@@ -282,6 +282,12 @@ target_include_directories(lvgl SYSTEM PRIVATE ${FREETYPE_INCLUDE_DIRS})
 target_compile_definitions(lvgl PUBLIC LV_CONF_PATH=../../../src/app/lvgl/lv_conf.h)
 target_link_libraries(lvgl PUBLIC ${SDL2_LIBRARIES} ${FREETYPE_LIBRARIES})
 
+if (TARGET_ANDROID AND NOT BUILD_TESTS)
+    # commons include(CTest)s unconditionally, which would build its test programs here too. Cross-compiled
+    # tests cannot run on the build machine, and theirs link -lpthread, which Bionic does not have (pthreads are
+    # in its libc).
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+endif ()
 add_subdirectory(third_party/commons)
 if (OS_WINDOWS)
     # commons selects os_info_generic.c when uname is absent, which is true on
