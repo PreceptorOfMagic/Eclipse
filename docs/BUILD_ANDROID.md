@@ -206,10 +206,11 @@ host's C library), which catches Android-only compile errors without an NDK; the
 catalogue reader against gettext, the UUID generator, the logcat backend, the audio output names and how a stream
 opens a chosen output (the SS4S SDL module with the activity faked), the display mode and refresh rate a stream asks
 for, and the MediaCodec module's feeding against real H.264 and HEVC streams, including a co-op composite made by
-the shipping splice code, decoded by FFmpeg in strict mode. The type-check compiles with the NDK's own
+the shipping splice code, decoded by FFmpeg in strict mode, and co-op composites with padding before their second
+slice fed without it (see [How it works](#7-how-it-works)), decoding to exactly the same pictures. The type-check compiles with the NDK's own
 `-Werror=format-security`. Configure the desktop build with a JDK on `PATH` (JDK 17, as for the APK): the
 type-check, the MediaCodec and SDL-audio tests and the Java tests need JNI or Java, and CMake leaves them out
-without one (`ctest -N | grep android` lists 14 when they are all there).
+without one (`ctest -N | grep android` lists 17 when they are all there).
 
 **Device smoke tests** run the real APK on an emulator (CI) or a device. They use a self-test build, which installs
 **beside** a real Eclipse (its own application ID, `io.github.preceptorofmagic.eclipse.selftest`) without touching
@@ -276,6 +277,14 @@ follow the same checklist as for a webOS release.
   searches only the system and each library's own `RUNPATH`, so the peer and every packaged library that needs
   another (curl, mbedTLS, `libmain.so`, the SS4S modules) carry `RUNPATH $ORIGIN`. CMake's Android platform ignores
   `BUILD_RPATH`, so it is passed to the linker directly (`CMakeLists.txt`, `scripts/android/build_deps.sh`).
+- **Co-op pictures** are fed to the decoder without the padding that comes before their second slice. Hosts may end
+  each picture with padding (`cabac_zero_words`), and a co-op picture puts one PC's last slice first, so that padding
+  then comes before the other PC's slice. The SHIELD TV's decoder does not decode a slice after such padding (the
+  second PC's pane is flat green, with no error), while other decoders skip it. The padding carries no picture data,
+  so on Android it is removed (`coop_au_strip_zero_words`, `src/app/stream/video/coop_splice.c`) and the picture is
+  the same (`test_android_hevc_zerowords`). Left/right co-op also opens the decoder at the composite's own size,
+  twice as wide as one PC's pane: MediaCodec sizes its buffers from it, where other platforms' decoders follow the
+  stream.
 - **Entropy**: mbedTLS reads `/dev/urandom` (`MBEDTLS_PLATFORM_DEV_RANDOM`, set by `build_deps.sh`). It uses
   `getrandom()` only with glibc, and its own default, `/dev/random`, blocks on kernels before 5.6: the SHIELD TV
   (Linux 4.9) hung at start-up in curl's first TLS set-up. `build_apk.sh` checks the packaged library.
