@@ -150,8 +150,16 @@ for abi in "${ABIS[@]}"; do
     unset seen
     # Every name must be lib*.so: the package manager extracts nothing else into the native library directory.
     for f in "$OUT"/*; do case "$(basename "$f")" in lib*.so) ;; *) die "$abi: $(basename "$f") would not be installed" ;; esac; done
-    # The peer finds its libraries beside it.
-    "$LLVM/llvm-readelf" -d "$OUT/libeclipse_peer.so" | grep -q 'RUNPATH.*\[\$ORIGIN\]' || die "$abi: the peer's RUNPATH is not \$ORIGIN"
+    # The peer finds its libraries beside it. It runs in the default linker namespace, where each object's own
+    # RUNPATH is the only way to a packaged library: whatever needs one carries $ORIGIN (CMakeLists.txt).
+    for f in "$OUT"/*.so; do
+        for n in $(needed "$f"); do
+            [ -e "$OUT/$n" ] || continue
+            "$LLVM/llvm-readelf" -d "$f" | grep -q 'RUNPATH.*\[\$ORIGIN\]' ||
+                die "$abi: $(basename "$f") needs $n beside it but its RUNPATH is not \$ORIGIN"
+            break
+        done
+    done
     # Unstripped copies for symbolising crash records; the APK gets stripped ones.
     for f in "$OUT"/*.so; do
         cp "$f" "$SYMBOLS/$abi/"

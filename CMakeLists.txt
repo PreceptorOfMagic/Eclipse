@@ -178,6 +178,12 @@ find_package(EXPAT REQUIRED)
 if (TARGET_ANDROID)
     # Android has no fontconfig: util/font.c loads the system's font files from /system/fonts directly.
     set(ECLIPSE_FONTCONFIG_LIBRARIES)
+    # THE CO-OP PEER'S LIBRARIES. The app loads libmain.so in its own linker namespace, which searches the native
+    # library directory; the peer is exec'd into the default namespace, which searches only the system and each
+    # object's OWN RUNPATH (Bionic has no inherited DT_RPATH). So every library here that needs a packaged one
+    # carries RUNPATH $ORIGIN, as build_deps.sh gives curl and mbedTLS; build_apk.sh checks it. Passed to the
+    # linker directly: CMake's Android platform blanks the RPATH flag (Modules/Platform/Android.cmake).
+    add_link_options("LINKER:--enable-new-dtags" "LINKER:-rpath,\$ORIGIN")
 else ()
     find_package(Fontconfig REQUIRED)
     set(ECLIPSE_FONTCONFIG_LIBRARIES Fontconfig::Fontconfig)
@@ -312,14 +318,12 @@ if (TARGET_ANDROID)
     # THE CO-OP PEER. The secondary session is a second process (moonlight-common-c keeps one session per
     # process), started exactly as on the TV and the desktops: fork + exec of this program with
     # --coop-secondary. An app may only exec files the package manager extracted into its native library
-    # directory, and it extracts only lib*.so -- hence the name. RUNPATH $ORIGIN finds libSDL2.so and the
-    # mbedTLS/curl libraries beside it. It is passed to the linker directly: CMake's Android platform blanks
-    # the RPATH flag (Modules/Platform/Android.cmake), so BUILD_RPATH/INSTALL_RPATH would do nothing.
+    # directory, and it extracts only lib*.so -- hence the name. RUNPATH $ORIGIN (above) finds libSDL2.so and
+    # the mbedTLS/curl libraries beside it.
     add_executable(eclipse-peer src/main.c)
     set_target_properties(eclipse-peer PROPERTIES OUTPUT_NAME libeclipse_peer SUFFIX ".so")
     target_compile_definitions(eclipse-peer PRIVATE ECLIPSE_ANDROID_PEER=1 SDL_MAIN_HANDLED=1)
     target_link_libraries(eclipse-peer PRIVATE moonlight-lib)
-    target_link_options(eclipse-peer PRIVATE "LINKER:--enable-new-dtags" "LINKER:-rpath,\$ORIGIN")
 else ()
     add_executable(moonlight src/main.c)
 endif ()

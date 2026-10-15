@@ -99,13 +99,15 @@ cmake_dep() {   # $1 = abi, $2 = source dir, rest = cmake options
         -DCMAKE_FIND_ROOT_PATH="$prefix" -DCMAKE_PREFIX_PATH="$prefix" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         "-DCMAKE_C_FLAGS=-ffile-prefix-map=$OUT=/deps" \
-        "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384" \
+        "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,--enable-new-dtags -Wl,-rpath,'\$ORIGIN'" \
         "$@" >"$src/_configure.log" 2>&1 || { tail -40 "$src/_configure.log"; die "configure failed: $src"; }
     cmake --build "$src/_build" -j "$JOBS" >"$src/_build.log" 2>&1 || { tail -60 "$src/_build.log"; die "build failed: $src"; }
     cmake --install "$src/_build" >"$src/_install.log" 2>&1 || { tail -20 "$src/_install.log"; die "install failed: $src"; }
 }
 
 # --- steps -------------------------------------------------------------------------------------------------
+# Shared libraries carry RUNPATH $ORIGIN: the co-op peer runs in the default linker namespace, where curl finds
+# mbedTLS (and mbedTLS its parts) only through its own RUNPATH. See the TARGET_ANDROID block of CMakeLists.txt.
 step_mbedtls() {   # ONE SHARED, THREAD-SAFE copy for curl, libgamestream and moonlight-common-c (see the Linux
                    # script: static copies in several .so files interposed inside one TLS handshake, 2026-09-29)
     local abi=$1 d; d="$(unpack mbedtls "$abi")"
