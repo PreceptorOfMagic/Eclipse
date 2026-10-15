@@ -38,6 +38,15 @@ if (JNI_FOUND)
             $<TARGET_FILE:test_android_mediacodec_feed> $<TARGET_FILE:test_android_hevc_tilecols>
             ${CMAKE_CURRENT_BINARY_DIR}/mediacodec-fixtures)
     set_tests_properties(test_android_mediacodec_feed PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(test_android_mediacodec_restart test_mediacodec_restart.c)
+    target_compile_definitions(test_android_mediacodec_restart PRIVATE __ANDROID__=1 SDL_MAIN_HANDLED
+            MEDIACODEC_SOURCE="${CMAKE_SOURCE_DIR}/third_party/ss4s/modules/android/mediacodec.c")
+    target_include_directories(test_android_mediacodec_restart PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ndk-stubs/include
+            ${JNI_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/third_party/ss4s/include
+            ${CMAKE_SOURCE_DIR}/third_party/ss4s/modules/interface/include)
+    target_include_directories(test_android_mediacodec_restart SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(test_android_mediacodec_restart PRIVATE ${SDL2_LIBRARIES} Threads::Threads)
+    add_test(NAME test_android_mediacodec_restart COMMAND test_android_mediacodec_restart)
 endif ()
 
 # commons' logcat backend.

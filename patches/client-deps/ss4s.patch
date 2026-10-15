@@ -261,10 +261,10 @@ index 0000000000000000000000000000000000000000..38d1acae782526a7701fe2d28ae0bc49
 +target_link_libraries(${SS4S_MODULE_TARGET} PRIVATE ${SDL2_LIBRARIES} mediandk android log)
 diff --git a/modules/android/mediacodec.c b/modules/android/mediacodec.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..fda6e579b5debbce4447229673d9f37e2a90e10d
+index 0000000000000000000000000000000000000000..3ebcf36001cdfaa850f2397a1b0975b4190b8625
 --- /dev/null
 +++ b/modules/android/mediacodec.c
-@@ -0,0 +1,843 @@
+@@ -0,0 +1,891 @@
 +/*
 + * SS4S video module: Android MediaCodec, for Android TV devices (the NVIDIA Shield first).
 + *
@@ -319,6 +319,12 @@ index 0000000000000000000000000000000000000000..fda6e579b5debbce4447229673d9f37e
 +#define OUTPUT_WAIT_US 20000
 +/* Surface: the activity creates it with the window; a stream can start before Android has made it. */
 +#define SURFACE_WAIT_MS 3000
++/* A restart of the decoder that fails is retried at the next keyframes for this long before the stream is ended as
++ * a decoder error: Android abandons the video surface when the screen turns off (the TV switched input, the device
++ * slept), before the activity reports going to the background, and every start on the dead surface fails. */
++#ifndef RESTART_GRACE_US
++#define RESTART_GRACE_US 3000000u
++#endif
 +
 +static const SS4S_LibraryContext *LibContext = NULL;
 +
@@ -366,6 +372,7 @@ index 0000000000000000000000000000000000000000..fda6e579b5debbce4447229673d9f37e
 +    SS4S_VideoHDRInfo hdr;
 +    bool reconfigure_at_keyframe;  /* HDR changed: take effect at the next IDR, as the TV reloads its pipeline */
 +    bool need_keyframe;            /* a picture was lost: everything until the next IDR would be garbage */
++    uint64_t restart_failing_since; /* a restart failed (MonotonicUs), 0 when the decoder is running */
 +
 +    ParamSets params;              /* the last parameter sets sent as codec config */
 +    unsigned long fed, rendered, dropped_output, lost_input, errors;
@@ -549,34 +556,44 @@ index 0000000000000000000000000000000000000000..fda6e579b5debbce4447229673d9f37e
 +    return NULL;
 +}
 +
++/* The activity's video surface as it is now, or NULL; *no_vm (optional) is set when there is no Java VM to ask. */
++static ANativeWindow *CurrentWindow(int width, int height, bool *no_vm) {
++    ANativeWindow *window = NULL;
++    jclass cls = NULL;
++    JNIEnv *env = ActivityEnv(&cls);
++    if (no_vm != NULL) {
++        *no_vm = env == NULL;
++    }
++    if (env == NULL) {
++        return NULL;
++    }
++    jmethodID size = (*env)->GetStaticMethodID(env, cls, "setVideoSize", "(II)V");
++    if (size != NULL) {
++        /* Letterbox a stream whose shape is not the screen's, as the TV's video plane does. */
++        (*env)->CallStaticVoidMethod(env, cls, size, (jint) width, (jint) height);
++    }
++    ClearException(env, "setVideoSize");
++    jmethodID get = (*env)->GetStaticMethodID(env, cls, "getVideoSurface", "()Landroid/view/Surface;");
++    if (get != NULL) {
++        jobject surface = (*env)->CallStaticObjectMethod(env, cls, get);
++        if (!ClearException(env, "getVideoSurface") && surface != NULL) {
++            window = ANativeWindow_fromSurface(env, surface);
++            (*env)->DeleteLocalRef(env, surface);
++        }
++    } else {
++        ClearException(env, "getVideoSurface lookup");
++    }
++    (*env)->DeleteLocalRef(env, cls);
++    return window;
++}
++
 +/* The video surface, waiting for Android to create it if a stream starts first. */
 +static ANativeWindow *AcquireWindow(int width, int height) {
-+    ANativeWindow *window = NULL;
 +    const uint64_t deadline = MonotonicUs() + (uint64_t) SURFACE_WAIT_MS * 1000u;
 +    do {
-+        jclass cls = NULL;
-+        JNIEnv *env = ActivityEnv(&cls);
-+        if (env == NULL) {
-+            return NULL;
-+        }
-+        jmethodID size = (*env)->GetStaticMethodID(env, cls, "setVideoSize", "(II)V");
-+        if (size != NULL) {
-+            /* Letterbox a stream whose shape is not the screen's, as the TV's video plane does. */
-+            (*env)->CallStaticVoidMethod(env, cls, size, (jint) width, (jint) height);
-+        }
-+        ClearException(env, "setVideoSize");
-+        jmethodID get = (*env)->GetStaticMethodID(env, cls, "getVideoSurface", "()Landroid/view/Surface;");
-+        if (get != NULL) {
-+            jobject surface = (*env)->CallStaticObjectMethod(env, cls, get);
-+            if (!ClearException(env, "getVideoSurface") && surface != NULL) {
-+                window = ANativeWindow_fromSurface(env, surface);
-+                (*env)->DeleteLocalRef(env, surface);
-+            }
-+        } else {
-+            ClearException(env, "getVideoSurface lookup");
-+        }
-+        (*env)->DeleteLocalRef(env, cls);
-+        if (window != NULL) {
++        bool no_vm = false;
++        ANativeWindow *window = CurrentWindow(width, height, &no_vm);
++        if (window != NULL || no_vm) {
 +            return window;
 +        }
 +        SDL_Delay(20);
@@ -946,17 +963,48 @@ index 0000000000000000000000000000000000000000..fda6e579b5debbce4447229673d9f37e
 +    const bool keyframe = (flags & SS4S_VIDEO_FEED_DATA_KEYFRAME) != 0;
 +    pthread_mutex_lock(&instance->lock);
 +    if (keyframe && instance->reconfigure_at_keyframe) {
-+        /* The HDR state changed: restart at a picture that needs nothing before it. */
++        /* The HDR state changed, or the codec failed: restart at a picture that needs nothing before it. */
 +        instance->reconfigure_at_keyframe = false;
 +        StopCodecLocked(instance);
++        if (instance->restart_failing_since != 0) {
++            /* The last start failed: the activity may have a new surface by now (it came back to the screen). */
++            const int width = instance->width, height = instance->height;
++            pthread_mutex_unlock(&instance->lock);
++            ANativeWindow *window = CurrentWindow(width, height, NULL);
++            pthread_mutex_lock(&instance->lock);
++            if (window != NULL) {
++                if (instance->window != NULL) {
++                    ANativeWindow_release(instance->window);
++                }
++                instance->window = window;
++            }
++        }
 +        if (!StartCodecLocked(instance)) {
++            const uint64_t now = MonotonicUs();
++            if (instance->restart_failing_since == 0) {
++                instance->restart_failing_since = now;
++            }
++            if (now - instance->restart_failing_since < RESTART_GRACE_US) {
++                /* Drop pictures and try again at the next keyframe: if the surface went with the screen, the
++                 * session ends cleanly as the app goes to the background; if it comes back, the stream goes on. */
++                instance->reconfigure_at_keyframe = true;
++                pthread_mutex_unlock(&instance->lock);
++                return SS4S_VIDEO_FEED_NOT_READY;
++            }
 +            pthread_mutex_unlock(&instance->lock);
 +            return SS4S_VIDEO_FEED_ERROR;
 +        }
++        if (instance->restart_failing_since != 0) {
++            LogMsg(SS4S_LogLevelInfo, "Decoder restarted after %.1f s", (MonotonicUs() - instance->restart_failing_since) / 1e6);
++        }
++        instance->restart_failing_since = 0;
 +    }
 +    if (instance->mc == NULL) {
++        const bool retrying = instance->reconfigure_at_keyframe && instance->restart_failing_since != 0 &&
++                              MonotonicUs() - instance->restart_failing_since < RESTART_GRACE_US;
 +        pthread_mutex_unlock(&instance->lock);
-+        return SS4S_VIDEO_FEED_ERROR;
++        /* Waiting to retry the start: ask for the keyframe it needs (the session spaces the requests out). */
++        return retrying ? SS4S_VIDEO_FEED_REQUEST_KEYFRAME : SS4S_VIDEO_FEED_ERROR;
 +    }
 +    if (instance->need_keyframe && !keyframe) {
 +        /* Everything until the next IDR refers to a picture the decoder never had. */
@@ -4017,7 +4065,7 @@ index 330a1651ea05d99a679e16c918d750c7527ded56..8da6e0bb9e12ece105c3450a168f96b4
      .Close = CloseVideo,
  };
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 151012e..e4ca8f4 100644
+index 151012eba5a633a95975184a6d37b307158d7c1e..e4ca8f4b52463cb290568613943d255b1ec61017 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -12,6 +12,9 @@ else ()
