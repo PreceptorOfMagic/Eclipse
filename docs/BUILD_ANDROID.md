@@ -97,6 +97,12 @@ The keys mean what they mean on the webOS remote wherever the remotes share them
 
 A full keyboard's Menu key is the host's Applications key, as on a PC.
 
+A TV's own remote reaches a box plugged into the TV only as buttons, over HDMI-CEC: an LG Magic Remote's pointer
+and wheel stay with the TV (measured with the SHIELD TV on an LG G5: no input event reached the SHIELD while the
+pointer was moved, and Home was handled by the TV). For a pointer in a stream, pair a pointer remote or a mouse with
+the Android device itself: Android reports it as a mouse, and Eclipse sends it to the PC as one, through the same
+path as the desktop builds' mouse.
+
 ### Display
 
 Before a stream starts, Eclipse switches the TV to the mode that shows it best at the TV's current resolution:
