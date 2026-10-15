@@ -11,9 +11,10 @@
 #   co-op      the co-op peer executable runs from the installed package (exits 1 on its unreachable socket),
 #              and, spawned by a real coordinator as a co-op stream spawns it, starts up without a Java VM and
 #              reports back over the co-op control channel
-#   keys       no keyboard-with-a-d-pad (a TV remote) is a joystick to SDL; on an emulator, Up and Back sent
-#              through its own such keyboard arrive as SDL's Up and AC Back keys -- not Escape, not joystick
-#              buttons -- which the remote's Back (tap/hold) and OK (hold: right click) depend on
+#   keys       no keyboard-with-a-d-pad (a TV remote) is a joystick to SDL; on an emulator, a remote is plugged
+#              in (tests/android/test_remote_uinput.c) and its Up and Back arrive as SDL's Up and AC Back keys --
+#              not Escape, not joystick buttons -- which the remote's Back (tap/hold) and OK (hold: right click)
+#              depend on
 #   display    the TV's refresh rates, and the display mode a 60 FPS stream asks for taking effect
 #   audio      the outputs Settings -> Audio offers, by name, and the first of them opened as a stream opens a
 #              chosen output: by its current number, on SDL's AAudio driver
@@ -156,21 +157,49 @@ if run_selftest coop --es selftest_video "$DATA/files/selftest/composite.265" --
 fi
 
 # --- remote keys ----------------------------------------------------------------------------------------
+# On an emulator, a TV remote is plugged in for this case: tests/android/test_remote_uinput.c, from the
+# self-test APK, run as adb's shell user (adb emu event send reached no input device on emulator 37.2).
 EMULATOR="$(adb shell getprop ro.kernel.qemu | tr -d '\r')"
-send_emulator_keys() {   # once the self-test listens: Up and Back through the emulator's keyboard-with-a-d-pad
+REMOTE=/data/local/tmp/eclipse-test-remote
+start_test_remote() {
+    local abi
+    abi="$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
+    python3 -c 'import sys, zipfile; sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]))' \
+        "$APK" "lib/$abi/libeclipse_test_remote.so" >"$W/eclipse-test-remote" || return 1
+    adb push "$W/eclipse-test-remote" "$REMOTE" >/dev/null && adb shell chmod 755 "$REMOTE" || return 1
+    adb shell "$REMOTE" 90 >"$W/test-remote.txt" 2>&1 &
+    remote_pid=$!
+    local start=$SECONDS
+    while [ $((SECONDS - start)) -lt 15 ]; do
+        adb shell dumpsys input | grep -q "Eclipse test remote" && return 0
+        sleep 1
+    done
+    return 1
+}
+stop_test_remote() {
+    adb shell 'kill -TERM $(pidof eclipse-test-remote)' >/dev/null 2>&1 || true
+    if [ -n "${remote_pid:-}" ]; then
+        wait "$remote_pid" 2>/dev/null || true
+    fi
+    adb shell rm -f "$REMOTE" >/dev/null 2>&1 || true
+}
+send_emulator_keys() {   # once the self-test listens: Up and Back from the plugged-in remote
     local start=$SECONDS
     while [ $((SECONDS - start)) -lt 30 ]; do
         log_dump | grep -q "SELFTEST keys ready" && break
         sleep 1
     done
     sleep 1
-    adb emu event send EV_KEY:KEY_UP:1 EV_KEY:KEY_UP:0 >/dev/null
-    sleep 1
-    adb emu event send EV_KEY:KEY_BACK:1 EV_KEY:KEY_BACK:0 >/dev/null
+    adb shell 'kill -USR1 $(pidof eclipse-test-remote)' >/dev/null   # (toybox pkill reads -USR1 as -U SR1)
 }
 if [ "$EMULATOR" = 1 ]; then
-    send_emulator_keys &
-    sender=$!
+    if start_test_remote; then
+        trap stop_test_remote EXIT
+        send_emulator_keys &
+        sender=$!
+    else
+        fail "keys: the test remote could not be plugged in (see $W/test-remote.txt)"
+    fi
 fi
 if run_selftest keys --ez selftest_keys true; then
     grep -o "SELFTEST input-device .*" "$W/keys.logcat.txt" | sed 's/^/  /' || true
@@ -180,6 +209,9 @@ if run_selftest keys --ez selftest_keys true; then
         *result=PASS*) pass "keys: no TV-remote-like device is a joystick to SDL" ;;
         *) fail "keys: a keyboard with a d-pad is a joystick to SDL (see $W/keys.logcat.txt)" ;;
     esac
+    if [ "$EMULATOR" = 1 ] && ! grep -q 'SELFTEST input-device name="Eclipse test remote"' "$W/keys.logcat.txt"; then
+        fail "keys: the self-test did not see the test remote among the input devices"
+    fi
     if [ "$EMULATOR" = 1 ]; then
         grep -o "SELFTEST key .*" "$W/keys.logcat.txt" | sed 's/^/  /' || true
         if grep -q "SELFTEST key down scancode=.*(82)" "$W/keys.logcat.txt" &&
@@ -195,6 +227,10 @@ if run_selftest keys --ez selftest_keys true; then
 fi
 if [ -n "${sender:-}" ]; then
     wait "$sender" 2>/dev/null || true
+fi
+if [ "$EMULATOR" = 1 ]; then
+    stop_test_remote
+    trap - EXIT
 fi
 
 # --- display mode and audio outputs ---------------------------------------------------------------------

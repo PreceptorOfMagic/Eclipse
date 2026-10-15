@@ -123,6 +123,9 @@ for abi in "${ABIS[@]}"; do
     install -m755 "$(built libeclipse_peer.so)" "$OUT/libeclipse_peer.so"
     # Shared on every platform but Windows (src/app/backend/pcmanager/discovery/impl), as the Linux package ships it.
     install -m644 "$(built libmicrodns.so)" "$OUT/libmicrodns.so"
+    if [ "$SELFTEST" = ON ]; then   # tests/android/test_remote_uinput.c, for tests/android/device_smoke.sh
+        install -m755 "$(built libeclipse_test_remote.so)" "$OUT/libeclipse_test_remote.so"
+    fi
     MODULES_DIR="$(dirname "$(built libss4s-mediacodec.so)")"
     for f in "$MODULES_DIR"/libss4s-*.so; do install -m644 "$f" "$OUT/$(basename "$f")"; done
     [ -f "$OUT/libss4s-sdl.so" ] || die "the $abi build has no SDL audio module"
