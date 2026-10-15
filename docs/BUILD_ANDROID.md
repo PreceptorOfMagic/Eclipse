@@ -9,8 +9,9 @@ It is distributed by **sideloading** only, like the rest of the project: there i
 developer account and no fee. Google's developer-verification requirement for sideloaded apps does not apply to
 Android TV devices, and installs over ADB are exempt everywhere.
 
-> **Status.** The port is new. Its host tests pass; the APK build and emulator smoke tests run in CI
-> (`.github/workflows/build-android.yml`). It has **not yet been tested on SHIELD hardware**: please report results
+> **Status.** The port is new. Its host tests pass; the APK builds for all three ABIs, and the emulator smoke tests
+> pass on Android 11 (API 30, as CI runs them: `.github/workflows/build-android.yml`) and on the Android TV 16
+> (API 36) image. It has **not yet been tested on SHIELD hardware**: please report results
 > (see [Reporting](#reporting)).
 
 ---
@@ -161,7 +162,8 @@ Outputs:
 | `build/android-symbols/<abi>/` | Unstripped libraries, for symbolising crash records |
 
 The script checks what it packages: every library a packaged binary needs is packaged or is an Android system
-library, every file in `lib/` is installable, and the co-op peer finds its libraries beside it.
+library, every file in `lib/` is installable, and the co-op peer finds its libraries beside it: every packaged library
+that needs another packaged one carries `RUNPATH $ORIGIN` ([section 7](#7-how-it-works)).
 
 ## 5. Signing
 
@@ -195,7 +197,10 @@ host's C library), which catches Android-only compile errors without an NDK; the
 catalogue reader against gettext, the UUID generator, the logcat backend, the audio output names and how a stream
 opens a chosen output (the SS4S SDL module with the activity faked), the display mode and refresh rate a stream asks
 for, and the MediaCodec module's feeding against real H.264 and HEVC streams, including a co-op composite made by
-the shipping splice code, decoded by FFmpeg in strict mode.
+the shipping splice code, decoded by FFmpeg in strict mode. The type-check compiles with the NDK's own
+`-Werror=format-security`. Configure the desktop build with a JDK on `PATH` (JDK 17, as for the APK): the
+type-check, the MediaCodec and SDL-audio tests and the Java tests need JNI or Java, and CMake leaves them out
+without one (`ctest -N | grep android` lists 14 when they are all there).
 
 **Device smoke tests** run the real APK on an emulator (CI) or a device. They use a self-test build, which installs
 **beside** a real Eclipse (its own application ID, `io.github.preceptorofmagic.eclipse.selftest`) without touching
@@ -215,10 +220,27 @@ and, on an emulator, that Up and Back from a d-pad device arrive as the keys the
 (hold) depend on; that the TV's refresh rates are read and the mode
 for a 60 FPS stream takes effect; that the audio outputs are listed by name and one opens by its current number on
 AAudio; that the co-op peer executable runs from the
-installed package and, spawned exactly as a co-op stream spawns it, starts up without a Java VM and answers the
+installed package (it must exit saying it cannot reach the coordinator: the dynamic linker's failure exits 1 too)
+and, spawned exactly as a co-op stream spawns it, starts up without a Java VM and answers the
 coordinator over the co-op control channel; and that a co-op composite, H.264, a narrow letterboxed HEVC picture and (with `--uhd`, for real
 hardware) 4K HEVC Main 10 play through the MediaCodec module onto the video surface with no codec errors. Logs and
-screenshots are left in `smoke/`. FFmpeg with libx264 and libx265 is needed to make the test streams.
+screenshots are left in `smoke/`. FFmpeg with libx264 and libx265 is needed to make the test streams, and `python3`
+to unpack the test remote.
+
+- **The test remote.** On an emulator the keys case plugs in a TV remote of its own: `libeclipse_test_remote.so`
+  (`tests/android/test_remote_uinput.c`, in self-test APKs only), a uinput device with a remote's keys, which Android
+  classifies as a keyboard with a d-pad (`SOURCE_KEYBOARD | SOURCE_DPAD`) as it does a SHIELD remote. It runs as
+  adb's shell user; the emulator's own key injection (`adb emu event send`) reaches no input device on current
+  emulators. On a device, press Back and OK during a stream instead.
+- **Emulator images.** CI's is `system-images;android-30;google_apis;x86_64` with the emulator runner's default
+  device (a 320x640 screen); an AVD made with `avdmanager create avd` and no `-d` matches it. The app asks for
+  landscape, so on that portrait screen the first seconds of a case can be a rotation. Android TV images are 32-bit
+  `x86` up to API 34, which the APK does not build; the TV image to use is
+  `system-images;android-36;android-tv;x86_64`.
+- **Screenshots.** The video cases play under the launcher, whose background is opaque, so their screenshots show
+  the launcher, not the picture: these cases check the decoder's counts. The picture itself is checked in a stream.
+- Each case reads only the log written since it started (`logcat -T`): `logcat -c` alone can leave the previous
+  case's lines, and its "SELFTEST done".
 
 Stream tests against an Umbra host (picture, sound, input, latency, co-op with two hosts) need a person at the TV;
 follow the same checklist as for a webOS release.
@@ -233,13 +255,21 @@ follow the same checklist as for a webOS release.
   their display slot.
 - **Audio** uses SS4S's SDL module, with the same clock and pull path as the desktop: OpenSL ES for the system
   default output, AAudio for a chosen one (SDL carries `scripts/android/patches/sdl2-2.32.10-android-audio-hotplug.patch`
-  so outputs connected after start-up are offered too).
+  so outputs connected after start-up are offered too, and `sdl2-2.32.10-android-aaudio-close-race.patch`: unpatched,
+  closing an AAudio output could crash the event thread, which checks the stream on every event pump).
 - **Remote and controllers**: a TV remote reaches Eclipse as keys (SDL carries
   `scripts/android/patches/sdl2-2.32.10-android-tv-remote.patch`; unpatched SDL 2 takes any device with a d-pad
   for a joystick, which turned Back into Escape and OK into Enter), and, as on webOS, nothing remote-like is ever
   offered to a game as a player's controller.
 - **Co-op** runs its second session in a separate process, as on every platform. The peer is an executable packaged
-  as `lib/<abi>/libeclipse_peer.so`, which Android installs executable beside the app's libraries.
+  as `lib/<abi>/libeclipse_peer.so`, which Android installs executable beside the app's libraries. The app loads its
+  libraries in its own linker namespace, which searches that directory; the peer runs in the default one, which
+  searches only the system and each library's own `RUNPATH`, so the peer and every packaged library that needs
+  another (curl, mbedTLS, `libmain.so`, the SS4S modules) carry `RUNPATH $ORIGIN`. CMake's Android platform ignores
+  `BUILD_RPATH`, so it is passed to the linker directly (`CMakeLists.txt`, `scripts/android/build_deps.sh`).
+- **Quitting** ends the process when the program ends, so a relaunch never sees stale state: with `_exit`, as
+  `exit()` would also run Android's own libraries' destructors under their running render threads (Android 16
+  aborts on that).
 - **Files**: settings and pairings live in the app's private storage; translations, the controller database and
   the CA bundle are unpacked from the APK's assets at the first start of each version.
 - **Logging**: to logcat (tag `Eclipse`) and, when diagnostic logs are kept, to their files.
