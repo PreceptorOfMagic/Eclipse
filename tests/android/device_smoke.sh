@@ -133,6 +133,9 @@ adb exec-out screencap -p >"$W/launcher-nav.png" || true
 log_dump >"$W/launcher.logcat.txt"
 if crashed "$W/launcher.logcat.txt"; then
     fail "launcher: the app crashed (see $W/launcher.logcat.txt)"
+elif grep -q "\[APP\].*Fatal error: " "$W/launcher.logcat.txt"; then
+    # Up, but showing the fatal-error dialog (src/app/ui/fatal_error.c): not a working launcher.
+    fail "launcher: $(grep -o "Fatal error: .*" "$W/launcher.logcat.txt" | head -1)"
 elif [ -z "$(adb shell pidof "$PKG" | tr -d '\r')" ]; then
     fail "launcher: the app is not running after start-up and d-pad input"
 else
