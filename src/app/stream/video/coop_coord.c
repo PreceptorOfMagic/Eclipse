@@ -897,6 +897,19 @@ bool coop_coord_wait_secondary_ready(unsigned timeout_ms) {
         }
         uint32_t child_status = 0;
         if (coop_coord_child_exited(&child_status)) {
+            /* A secondary that refuses to start says why and exits at once (coop_secondary.c), so it is often
+             * gone before coord_worker has accepted its connection (it polls every 50 ms) or read the frame.
+             * The bytes are still in the socket: let the worker deliver them before calling it a lost
+             * connection, or every refusal reads "did not begin streaming in time" (2026-10-15). */
+            for (unsigned grace = 0; grace < 500; grace += 10) {
+                pthread_mutex_lock(&coord_lock);
+                const bool failed = coord_start_state == COOP_COORD_FAILED;
+                pthread_mutex_unlock(&coord_lock);
+                if (failed) {
+                    return false;
+                }
+                usleep(10000);
+            }
             pthread_mutex_lock(&coord_lock);
             if (coord_start_error == 0) {
                 coord_start_error = COOP_IPC_CTL_FAIL_CONNECTION;
