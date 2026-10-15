@@ -134,9 +134,3 @@ size_t coop_au_splice_halves(const coop_au_t *a, const coop_au_t *b,
                              const coop_poc_params_t *composite, unsigned peer_addr,
                              const unsigned char *nonvcl, size_t nonvcl_len,
                              unsigned char *out, size_t cap);
-
-/** Re-emit a ONE-COLUMN tiled composite (two tile rows) untiled: same picture, no tiles, for decoders
- *  that mishandle tile rows. @p params caches the tiled parameter sets across AUs. Returns bytes
- *  written, or 0 (feed the original) if anything is refused. */
-size_t coop_au_untile(const unsigned char *au, size_t len, coop_poc_params_t *params,
-                      unsigned char *out, size_t out_cap);

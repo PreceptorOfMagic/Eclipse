@@ -14,10 +14,7 @@
  * geometry-agnostic: the row-ness or column-ness lives entirely in those parameter sets and in
  * the peer's CTB address, which is why it is reused here unchanged.
  *
- * With --rows it builds the HORIZONTAL composite instead -- coop_nonvcl_tile_rows(), the first
- * pane on top and the second below -- for tests of what a decoder makes of tile rows.
- *
- * Usage: hevc_tilecols_cli [--rows] <left.265> <right.265> <out.265> [frames]
+ * Usage: hevc_tilecols_cli <left.265> <right.265> <out.265> [frames]
  */
 #include "coop_splice.h"
 #include "coop_poc.h"
@@ -71,14 +68,8 @@ static int split_aus(const unsigned char *d, size_t n, au_t *out, int maxn) {
 }
 
 int main(int argc, char **argv) {
-    const bool rows = argc > 1 && strcmp(argv[1], "--rows") == 0;
-    if (rows) {
-        argv[1] = argv[0];
-        argv++;
-        argc--;
-    }
     if (argc < 4) {
-        fprintf(stderr, "usage: %s [--rows] <left.265> <right.265> <out.265> [frames]\n", argv[0]);
+        fprintf(stderr, "usage: %s <left.265> <right.265> <out.265> [frames]\n", argv[0]);
         return 2;
     }
     size_t ln = 0, rn = 0;
@@ -98,10 +89,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "left AU 0 has no parameter sets\n");
         return 1;
     }
-    const size_t comp_n = rows
-            ? coop_nonvcl_tile_rows(a0.non_vcl, a0.non_vcl_len, comp_nonvcl, sizeof(comp_nonvcl))
-            : coop_nonvcl_tile_columns(a0.non_vcl, a0.non_vcl_len, comp_nonvcl, sizeof(comp_nonvcl));
-    if (comp_n == 0) { fprintf(stderr, "composite parameter sets REFUSED\n"); return 1; }
+    const size_t comp_n = coop_nonvcl_tile_columns(a0.non_vcl, a0.non_vcl_len,
+                                                   comp_nonvcl, sizeof(comp_nonvcl));
+    if (comp_n == 0) { fprintf(stderr, "coop_nonvcl_tile_columns REFUSED\n"); return 1; }
 
     coop_poc_params_t a_src, b_src, comp;
     if (!coop_poc_params_parse(L + la[0].start, la[0].len, &a_src) ||
@@ -113,16 +103,15 @@ int main(int argc, char **argv) {
     printf("left pane %ux%u CTBs, right %ux%u, composite %ux%u  tiles=%d\n",
            a_src.w_ctbs, a_src.h_ctbs, b_src.w_ctbs, b_src.h_ctbs,
            comp.w_ctbs, comp.h_ctbs, (int) comp.tiles_enabled);
-    if (rows ? comp.h_ctbs != a_src.h_ctbs + b_src.h_ctbs : comp.w_ctbs != a_src.w_ctbs + b_src.w_ctbs) {
-        fprintf(stderr, "GEOMETRY: the panes do not add up to the composite (%ux%u CTBs)\n",
-                comp.w_ctbs, comp.h_ctbs);
+    if (comp.w_ctbs != a_src.w_ctbs + b_src.w_ctbs) {
+        fprintf(stderr, "GEOMETRY: %u + %u != %u CTBs wide\n",
+                a_src.w_ctbs, b_src.w_ctbs, comp.w_ctbs);
         return 1;
     }
     /* The peer's pane is tile column 1: its first CTB is row 0, column w/2, and
-     * slice_segment_address is a RASTER address, so that is simply w_ctbs / 2. As tile row 1
-     * it starts at the bottom half's first CTB. */
-    const unsigned peer_addr = rows ? coop_bottom_half_addr(&comp) : comp.w_ctbs / 2;
-    printf("peer tile %s starts at CTB raster address %u\n", rows ? "row" : "column", peer_addr);
+     * slice_segment_address is a RASTER address, so that is simply w_ctbs / 2. */
+    const unsigned peer_addr = comp.w_ctbs / 2;
+    printf("peer tile column starts at CTB raster address %u\n", peer_addr);
 
     FILE *out = fopen(argv[3], "wb");
     if (out == NULL) { return 1; }

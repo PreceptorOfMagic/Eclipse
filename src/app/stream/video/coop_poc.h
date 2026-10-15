@@ -253,18 +253,6 @@ size_t coop_slice_to_tile(const coop_poc_params_t *src, const coop_poc_params_t 
                           const unsigned char *nal, size_t len, unsigned addr,
                           unsigned char *out, size_t out_cap);
 
-/** Rewrite a ONE-COLUMN tiled composite's PPS with tiles off (the grid removed, loop filtering across
- *  slices off so the seam stays unfiltered, everything else kept). With one column, tile scan is raster
- *  scan, so the composite's slices then carry the same picture untiled -- for decoders that mishandle
- *  tile rows. Refuses (0) more than one column, WPP, or explicit row heights. */
-size_t coop_pps_disable_tiles(const unsigned char *nal, size_t len, unsigned char *out, size_t out_cap);
-
-/** Rewrite a slice of such a composite for the untiled PPS: removes num_entry_point_offsets (which
- *  must be 0: one tile per slice) and slice_loop_filter_across_slices_enabled_flag. @p tiled is parsed
- *  from the TILED parameter sets. */
-size_t coop_slice_untile(const coop_poc_params_t *tiled, const unsigned char *nal, size_t len,
-                         unsigned char *out, size_t out_cap);
-
 /** Read first_slice_segment_in_pic_flag and slice_segment_address from a slice. */
 bool coop_slice_address(const coop_poc_params_t *p, const unsigned char *nal, size_t len,
                         bool *first_out, unsigned *addr_out);

@@ -209,15 +209,6 @@ static bool coop_hh_tiles = false;
  * first two live tiles runs did, while the primitives themselves decode cleanly offline
  * (tests/coop/test_tile_compose.c). Gate the feed rather than trust every branch. */
 static bool coop_hh_tiled_ok = false;
-#if TARGET_ANDROID
-/* TILE ROWS, FED UNTILED. The SHIELD TV's Tegra decoder renders the second tile row of this composite as
- * green garbage, while it decodes tile COLUMNS and the same picture without tiles correctly (Android's own
- * player, 2026-10-15). With one tile column, tile scan is raster scan, so coop_au_untile() re-emits the
- * same picture untiled -- FFmpeg decodes both bit-identically -- and every composite is fed that way on
- * Android. Reset with the session, because the composite's parameter sets are. */
-static coop_poc_params_t coop_untile_params;
-static unsigned coop_untile_fed = 0, coop_untile_refused = 0;
-#endif
 static unsigned coop_hh_untiled_blocked = 0;
 /* THE PEER'S PANE AS RECEIVED, gated on /tmp/coop-dump-peer. The primary's own pane is already
  * capturable (/tmp/coop-dump) but the PEER's never was, and without it no offline harness can
@@ -1665,24 +1656,6 @@ static SS4S_VideoFeedResult diag_feed(feed_site_t site, const unsigned char *buf
         }
     }
     avsync_probe_video(len);
-#if TARGET_ANDROID
-    if (coop_hh_tiles) {
-        static unsigned char untiled[4u * 1024u * 1024u + 4096u];
-        const size_t got = coop_au_untile(buf, len, &coop_untile_params, untiled, sizeof(untiled));
-        if (got > 0) {
-            buf = untiled;
-            len = got;
-            if (coop_untile_fed++ == 0 && diag_log != NULL) {
-                fprintf(diag_log, "[COOP-HH] feeding the tile rows UNTILED (one tile column = raster scan; "
-                                  "the same picture for decoders that mishandle tile rows)\n");
-                fflush(diag_log);
-            }
-        } else if (coop_untile_refused++ < 5 && diag_log != NULL) {
-            fprintf(diag_log, "[COOP-HH] untile refused an AU (len=%zu): fed as composed\n", len);
-            fflush(diag_log);
-        }
-    }
-#endif
     SS4S_VideoFeedResult r = SS4S_PlayerVideoFeed(player, buf, len, flags);
     if (tracing) { coop_trace_emit(r, len, fe, coop_trace_now_ms()); }
     if (diag_fail_every > 0 && site == diag_fail_site) {
@@ -3541,10 +3514,6 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
     coop_hh_mended = 0;
     coop_hh_poc_fail = 0;
     coop_hh_tiles = access("/tmp/coop-hh-tiles", F_OK) == 0;
-#if TARGET_ANDROID
-    memset(&coop_untile_params, 0, sizeof(coop_untile_params));
-    coop_untile_fed = coop_untile_refused = 0;
-#endif
     coop_hh_tiled_ok = false;
     coop_hh_untiled_blocked = 0;
     coop_peer_dump_n = 0;
