@@ -324,6 +324,13 @@ if (TARGET_ANDROID)
     set_target_properties(eclipse-peer PROPERTIES OUTPUT_NAME libeclipse_peer SUFFIX ".so")
     target_compile_definitions(eclipse-peer PRIVATE ECLIPSE_ANDROID_PEER=1 SDL_MAIN_HANDLED=1)
     target_link_libraries(eclipse-peer PRIVATE moonlight-lib)
+    # setenv/unsetenv that never free what another thread may be reading: Android's own RenderThread calls getenv
+    # while SDL_main starts (src/app/platform/android/env_android.c). Every target with setenv calls of ours.
+    add_library(eclipse-android-env STATIC src/app/platform/android/env_android.c)
+    foreach (target moonlight eclipse-peer ss4s-module-mediacodec)
+        target_link_libraries(${target} PRIVATE eclipse-android-env)
+        target_link_options(${target} PRIVATE "LINKER:--wrap=setenv" "LINKER:--wrap=unsetenv")
+    endforeach ()
     if (ECLIPSE_ANDROID_SELFTEST)
         # Self-test APKs only: the TV remote tests/android/device_smoke.sh plugs into the emulator.
         add_executable(eclipse-test-remote tests/android/test_remote_uinput.c)
