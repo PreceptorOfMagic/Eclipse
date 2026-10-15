@@ -4016,6 +4016,22 @@ index 330a1651ea05d99a679e16c918d750c7527ded56..8da6e0bb9e12ece105c3450a168f96b4
 +    .SetDisplayArea = SetDisplayArea,
      .Close = CloseVideo,
  };
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 151012e..e4ca8f4 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -12,6 +12,9 @@ else ()
+     endif ()
+     if (HAS_PTHREAD)
+         target_sources(ss4s PRIVATE mutex_pthread.c)
+-        target_link_libraries(ss4s PRIVATE pthread)
++        # Android's C library includes pthreads and has no libpthread to link.
++        if (NOT ANDROID)
++            target_link_libraries(ss4s PRIVATE pthread)
++        endif ()
+     endif ()
+ endif ()
+\ No newline at end of file
 diff --git a/src/audio.c b/src/audio.c
 index 8c92fc5ff6d0b9197977bc132baad69c22309b99..d9494a5574dd8ff0a19471424aa1bb7d463a054b 100644
 --- a/src/audio.c
