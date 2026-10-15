@@ -104,8 +104,9 @@ the stream's rate (or the rate chosen in **Settings → Basic**), else the small
 stream on 60 Hz), else the TV's highest rate. It returns the TV to the system's choice when the stream ends: the
 webOS panel does the same by itself. If the TV has no mode for the frame rate but has its NTSC equivalent
 (59.94 Hz for 60 FPS), Eclipse asks the PC for that rate, as the webOS build asks for its panel's, so the game is
-paced to the screen. Some devices only switch when their own frame-rate matching option is on (SHIELD:
-**Settings → Device Preferences → Display & Sound → Advanced settings → Match content frame rate**).
+paced to the screen. On the 2019 SHIELD TV (Android 11) this needs no setting: its Advanced display settings have
+no frame-rate matching switch, and the self-test measured the requested mode taking effect (59.94 Hz to 60 Hz).
+Some other devices only switch when their own frame-rate matching option is on.
 
 The resolution and frame rate lists are limited to what the TV's current mode and the decoder support, as on
 webOS.
@@ -269,6 +270,12 @@ follow the same checklist as for a webOS release.
   searches only the system and each library's own `RUNPATH`, so the peer and every packaged library that needs
   another (curl, mbedTLS, `libmain.so`, the SS4S modules) carry `RUNPATH $ORIGIN`. CMake's Android platform ignores
   `BUILD_RPATH`, so it is passed to the linker directly (`CMakeLists.txt`, `scripts/android/build_deps.sh`).
+- **Entropy**: mbedTLS reads `/dev/urandom` (`MBEDTLS_PLATFORM_DEV_RANDOM`, set by `build_deps.sh`). It uses
+  `getrandom()` only with glibc, and its own default, `/dev/random`, blocks on kernels before 5.6: the SHIELD TV
+  (Linux 4.9) hung at start-up in curl's first TLS set-up. `build_apk.sh` checks the packaged library.
+- **Environment**: `libmain.so`, the peer and the MediaCodec module link with `--wrap=setenv,--wrap=unsetenv`
+  (`src/app/platform/android/env_android.c`): Bionic's `setenv` frees the old `environ` array for every new name
+  while Android's RenderThread may be reading it in `getenv` (a crash at start-up on the SHIELD TV).
 - **Quitting** ends the process when the program ends, so a relaunch never sees stale state: with `_exit`, as
   `exit()` would also run Android's own libraries' destructors under their running render threads (Android 16
   aborts on that).
