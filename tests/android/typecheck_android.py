@@ -4,7 +4,7 @@
 Without an NDK this is the next best thing to building: each source file the Android build compiles into
 the app is compiled with -fsyntax-only, with the desktop build's flags (compile_commands.json) turned into
 the Android build's -- TARGET_ANDROID, OS_ANDROID, __ANDROID__, the Android feature switches from
-CMakeLists.txt -- with the NDK media/window/log headers stubbed (tests/android/ndk-stubs) and the JDK's
+CMakeLists.txt, the NDK's -Werror=format-security -- with the NDK media/window/log headers stubbed (tests/android/ndk-stubs) and the JDK's
 jni.h. The C library's headers are the host's (glibc), with __GLIBC__ undefined so code that tests for
 glibc takes its Android branch. Functions the Android C library lacks are not detected here.
 
@@ -92,7 +92,10 @@ def main():
     stubs = os.path.join(ROOT, 'tests/android/ndk-stubs/include')
     defines = ['-DTARGET_ANDROID=1', '-DOS_ANDROID=1', '-D__ANDROID__=1', '-D__ANDROID_API__=28',
                '-DAPPID="io.github.preceptorofmagic.eclipse"', '-DGAMECONTROLLERDB_PLATFORM="Android"',
-               '-DECLIPSE_ANDROID_SELFTEST=1']
+               '-DECLIPSE_ANDROID_SELFTEST=1',
+               # The NDK's own defaults (build/cmake/flags.cmake): a printf-style call whose format is not a
+               # literal and has no arguments does not compile for Android.
+               '-Wformat', '-Werror=format-security']
     def check(c):
         compiler, flags = android_flags(c['command'])
         cmd = [compiler, '-include', os.path.join(WORK, 'no_glibc.h'), '-I' + WORK] + flags + defines + \
