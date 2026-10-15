@@ -9,8 +9,9 @@
  *   --selftest-size <WxH>
  *   --selftest-peer           the co-op peer, in two steps:
  *                             1. exec it against a socket nothing listens on: it must start, fail to reach the
- *                                coordinator and exit 1 -- the package manager extracted it executable and its
- *                                libraries resolve beside it
+ *                                coordinator and exit 1 saying so (main.c) -- the package manager extracted it
+ *                                executable and its libraries resolve beside it. The message is required:
+ *                                the dynamic linker exits 1 too when a library is missing
  *                             2. start a real coordinator and spawn the peer exactly as a co-op stream does,
  *                                pointed at a host that is not paired: it must connect, start up (settings,
  *                                certificates, SS4S modules -- all without a Java VM) and report "host not
@@ -82,13 +83,40 @@ static void selftest_peer(void) {
         commons_log_error("SELFTEST", "SELFTEST peer exe=UNRESOLVED result=FAIL");
         return;
     }
+    int err[2];
+    if (pipe(err) != 0) {
+        commons_log_error("SELFTEST", "SELFTEST peer exe=%s pipe failed: %s result=FAIL", exe, strerror(errno));
+        return;
+    }
     const pid_t pid = fork();
     if (pid == 0) {
         sigset_t all;
         sigfillset(&all);
         sigprocmask(SIG_UNBLOCK, &all, NULL);
+        close(err[0]);
+        dup2(err[1], STDERR_FILENO);
+        close(err[1]);
         execl(exe, exe, "--coop-secondary", "/proc/self/fd/-1/selftest.sock", (char *) NULL);
         _exit(127);
+    }
+    close(err[1]);
+    char said[512];
+    size_t len = 0;
+    for (ssize_t n; len < sizeof(said) - 1 && (n = read(err[0], said + len, sizeof(said) - 1 - len)) != 0;) {
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        len += (size_t) n;
+    }
+    said[len] = '\0';
+    close(err[0]);
+    for (char *c = said; *c != '\0'; c++) {
+        if (*c == '\n' || *c == '"') {
+            *c = ' ';
+        }
     }
     int status = 0;
     if (pid < 0 || waitpid(pid, &status, 0) != pid) {
@@ -97,9 +125,11 @@ static void selftest_peer(void) {
     }
     const bool exited = WIFEXITED(status);
     const int code = exited ? WEXITSTATUS(status) : WTERMSIG(status);
-    /* 1 = it ran, and refused the unreachable coordinator (main.c); 127 = exec failed; a signal = crashed. */
-    commons_log_info("SELFTEST", "SELFTEST peer exe=%s %s=%d result=%s", exe, exited ? "exit" : "signal", code,
-                     exited && code == 1 ? "PASS" : "FAIL");
+    /* 1 and main.c's message = it ran, and refused the unreachable coordinator; 1 without it = the dynamic
+     * linker could not load it (CANNOT LINK EXECUTABLE); 127 = exec failed; a signal = crashed. */
+    const bool refused = strstr(said, "cannot reach coordinator") != NULL;
+    commons_log_info("SELFTEST", "SELFTEST peer exe=%s %s=%d said=\"%s\" result=%s", exe, exited ? "exit" : "signal",
+                     code, said, exited && code == 1 && refused ? "PASS" : "FAIL");
 }
 
 /* The co-op start-up handshake, through the same calls as session_video.c's co-op spawn. */
