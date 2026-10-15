@@ -117,7 +117,14 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
             {
                 SDL_Keycode sym = e.key.keysym.sym;
                 if (sym == SDLK_UP || sym == SDLK_DOWN || sym == SDLK_LEFT || sym == SDLK_RIGHT
-                    || sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
+                    || sym == SDLK_RETURN || sym == SDLK_KP_ENTER
+#if TARGET_ANDROID
+                    /* An Android TV remote's OK is the d-pad centre, not Return (read_android_key makes it
+                     * LV_KEY_ENTER). Without it here OK went to the host as Enter and no key of the on-screen
+                     * keyboard could be pressed with the remote -- "&123" did nothing (SHIELD TV, 2026-10-16). */
+                    || e.key.keysym.scancode == SDL_SCANCODE_SELECT
+#endif
+                    ) {
                     nav_to_lvgl = read_keyboard(input, &e.key, state);
                 }
             }
