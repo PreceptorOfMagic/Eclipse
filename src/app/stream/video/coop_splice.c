@@ -544,3 +544,82 @@ size_t coop_au_splice_halves(const coop_au_t *a, const coop_au_t *b,
     }
     return n + got;
 }
+
+size_t coop_au_strip_zero_words(const unsigned char *au, size_t len, unsigned char *out, size_t cap,
+                                unsigned *removed) {
+    /* CABAC ZERO WORDS BEFORE ANOTHER SLICE. An encoder may end a picture's slice data with
+     * cabac_zero_words (0x0000, escaped 00 00 03) to meet the level's bin-to-bit limit, and the
+     * hosts do: 100 to 558 words after every picture's last slice, measured 2026-10-16. That is
+     * harmless where nothing follows. A co-op composite puts a host's last slice FIRST, so the
+     * padding now sits before the other host's slice -- and the SHIELD TV's decoder then does not
+     * decode that slice at all (flat green, no error), while FFmpeg and every other decoder skip
+     * the padding. Measured both ways on the SHIELD: a live composite with the words removed shows
+     * both panes, an x265 composite with 300 words added after its first slice goes green.
+     *
+     * A slice NAL can end in 00 00 03 only through cabac_zero_words: its RBSP otherwise ends in
+     * the byte holding rbsp_stop_one_bit, which is never 00, and a 03 that is the data's own last
+     * byte after 00 00 is preceded by an emulation prevention 03. So trailing 00 00 03 groups are
+     * removed whole. A picture's last slice keeps its words. */
+    size_t sc_len = 0;
+    size_t sc = next_start_code(au, len, 0, &sc_len);
+    size_t to_strip_at[64], to_strip_n[64];
+    unsigned groups = 0, words = 0;
+    size_t prev_vcl_end = 0, prev_vcl_trim = 0;
+    bool have_prev_vcl = false;
+    while (sc < len) {
+        const size_t body = sc + sc_len;
+        size_t next_len = 0;
+        const size_t next = next_start_code(au, len, body, &next_len);
+        size_t end = next;
+        while (end > body && au[end - 1] == 0) {
+            --end;                              /* trailing_zero_8bits */
+        }
+        if (body < len) {
+            const int type = (au[body] >> 1) & 0x3f;
+            if (type < 32) {
+                /* A slice follows the previous one: that one's padding goes. */
+                if (have_prev_vcl && prev_vcl_trim > 0) {
+                    if (groups == sizeof(to_strip_at) / sizeof(to_strip_at[0])) {
+                        return 0;
+                    }
+                    to_strip_at[groups] = prev_vcl_end - prev_vcl_trim;
+                    to_strip_n[groups] = prev_vcl_trim;
+                    groups++;
+                    words += (unsigned) (prev_vcl_trim / 3);
+                }
+                size_t trim = 0;
+                while (end - trim >= body + 2 + 3 && au[end - trim - 3] == 0 && au[end - trim - 2] == 0 &&
+                       au[end - trim - 1] == 3) {
+                    trim += 3;
+                }
+                have_prev_vcl = true;
+                prev_vcl_end = end;
+                prev_vcl_trim = trim;
+            }
+        }
+        sc = next;
+        sc_len = next_len;
+    }
+    if (groups == 0) {
+        return 0;
+    }
+    size_t w = 0, r = 0;
+    for (unsigned g = 0; g < groups; ++g) {
+        const size_t keep = to_strip_at[g] - r;
+        if (w + keep > cap) {
+            return 0;
+        }
+        memcpy(out + w, au + r, keep);
+        w += keep;
+        r = to_strip_at[g] + to_strip_n[g];
+    }
+    if (w + (len - r) > cap) {
+        return 0;
+    }
+    memcpy(out + w, au + r, len - r);
+    w += len - r;
+    if (removed != NULL) {
+        *removed = words;
+    }
+    return w;
+}

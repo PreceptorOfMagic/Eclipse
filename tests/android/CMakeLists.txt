@@ -38,6 +38,13 @@ if (JNI_FOUND)
             $<TARGET_FILE:test_android_mediacodec_feed> $<TARGET_FILE:test_android_hevc_tilecols>
             ${CMAKE_CURRENT_BINARY_DIR}/mediacodec-fixtures)
     set_tests_properties(test_android_mediacodec_feed PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(test_android_hevc_zerowords ${CMAKE_SOURCE_DIR}/tests/coop/hevc_zerowords_cli.c
+            ${CMAKE_SOURCE_DIR}/src/app/stream/video/coop_splice.c ${CMAKE_SOURCE_DIR}/src/app/stream/video/coop_poc.c)
+    target_include_directories(test_android_hevc_zerowords PRIVATE ${CMAKE_SOURCE_DIR}/src/app/stream/video)
+    add_test(NAME test_android_hevc_zerowords COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_zerowords_test.sh
+            $<TARGET_FILE:test_android_hevc_tilecols> $<TARGET_FILE:test_android_hevc_zerowords>
+            ${CMAKE_CURRENT_BINARY_DIR}/zerowords-fixtures)
+    set_tests_properties(test_android_hevc_zerowords PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(test_android_mediacodec_restart test_mediacodec_restart.c)
     target_compile_definitions(test_android_mediacodec_restart PRIVATE __ANDROID__=1 SDL_MAIN_HANDLED
             MEDIACODEC_SOURCE="${CMAKE_SOURCE_DIR}/third_party/ss4s/modules/android/mediacodec.c")
