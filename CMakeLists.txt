@@ -313,13 +313,13 @@ if (TARGET_ANDROID)
     # process), started exactly as on the TV and the desktops: fork + exec of this program with
     # --coop-secondary. An app may only exec files the package manager extracted into its native library
     # directory, and it extracts only lib*.so -- hence the name. RUNPATH $ORIGIN finds libSDL2.so and the
-    # mbedTLS/curl libraries beside it.
+    # mbedTLS/curl libraries beside it. It is passed to the linker directly: CMake's Android platform blanks
+    # the RPATH flag (Modules/Platform/Android.cmake), so BUILD_RPATH/INSTALL_RPATH would do nothing.
     add_executable(eclipse-peer src/main.c)
-    set_target_properties(eclipse-peer PROPERTIES OUTPUT_NAME libeclipse_peer SUFFIX ".so"
-            BUILD_RPATH "\$ORIGIN" INSTALL_RPATH "\$ORIGIN")
+    set_target_properties(eclipse-peer PROPERTIES OUTPUT_NAME libeclipse_peer SUFFIX ".so")
     target_compile_definitions(eclipse-peer PRIVATE ECLIPSE_ANDROID_PEER=1 SDL_MAIN_HANDLED=1)
     target_link_libraries(eclipse-peer PRIVATE moonlight-lib)
-    target_link_options(eclipse-peer PRIVATE "LINKER:--enable-new-dtags")
+    target_link_options(eclipse-peer PRIVATE "LINKER:--enable-new-dtags" "LINKER:-rpath,\$ORIGIN")
 else ()
     add_executable(moonlight src/main.c)
 endif ()
