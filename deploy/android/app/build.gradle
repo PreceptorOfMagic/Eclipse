@@ -24,6 +24,8 @@ def projectVersion = {
 android {
     namespace 'io.github.preceptorofmagic.eclipse'
     compileSdk 35
+    /* The build-tools docs/BUILD_ANDROID.md and CI install; without it AGP picks its own default (34) and downloads it. */
+    buildToolsVersion '35.0.0'
 
     defaultConfig {
         applicationId System.getenv('ECLIPSE_ANDROID_APPLICATION_ID') ?: 'io.github.preceptorofmagic.eclipse'
