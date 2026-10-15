@@ -13,8 +13,10 @@
 
 #if defined(TARGET_ANDROID)
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "platform/android/android_platform.h"
 
 #endif
@@ -107,8 +109,12 @@ int main(int argc, char *argv[]) {
 #if defined(TARGET_ANDROID)
     /* SDLActivity may start SDL_main again in this same process (a relaunch after the activity finished),
      * and none of this program's static state would be reset. End the process with the program, as on every
-     * other platform. */
-    exit(ret);
+     * other platform -- with _exit: exit() would also run the destructors of Android's own libraries while
+     * their render threads still run, which Android 16 aborts on ("FORTIFY: pthread_mutex_lock called on a
+     * destroyed mutex" in hwuiTask, a tombstone on every quit; emulator, 2026-10-15). Everything of ours is
+     * closed by app_deinit above. */
+    fflush(NULL);
+    _exit(ret);
 #endif
     return ret;
 }
