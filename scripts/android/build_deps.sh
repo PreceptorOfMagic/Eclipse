@@ -114,6 +114,12 @@ step_mbedtls() {   # ONE SHARED, THREAD-SAFE copy for curl, libgamestream and mo
     local abi=$1 d; d="$(unpack mbedtls "$abi")"
     python3 "$d/scripts/config.py" -f "$d/include/mbedtls/mbedtls_config.h" set MBEDTLS_THREADING_C
     python3 "$d/scripts/config.py" -f "$d/include/mbedtls/mbedtls_config.h" set MBEDTLS_THREADING_PTHREAD
+    # Entropy: mbedTLS uses getrandom() on glibc only, so on Android it reads MBEDTLS_PLATFORM_DEV_RANDOM, which
+    # 3.6.7 made /dev/random. That blocks on kernels before 5.6 whenever the kernel's estimate runs low: the SHIELD
+    # (Linux 4.9) hung at start-up in curl's first mbedtls_ctr_drbg_seed (2026-10-15). /dev/urandom is mbedTLS's own
+    # advice for anything not running early after boot (mbedtls_config.h, MBEDTLS_PLATFORM_DEV_RANDOM); Android
+    # seeds it at boot, long before an app runs. build_apk.sh checks the result.
+    python3 "$d/scripts/config.py" -f "$d/include/mbedtls/mbedtls_config.h" set MBEDTLS_PLATFORM_DEV_RANDOM '"/dev/urandom"'
     cmake_dep "$abi" "$d" -DENABLE_PROGRAMS=OFF -DENABLE_TESTING=OFF -DMBEDTLS_FATAL_WARNINGS=OFF \
         -DUSE_SHARED_MBEDTLS_LIBRARY=ON -DUSE_STATIC_MBEDTLS_LIBRARY=OFF
     # Android installs only lib*.so files: an unversioned SONAME is what the loader looks for in the APK.

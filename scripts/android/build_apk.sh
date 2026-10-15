@@ -129,6 +129,10 @@ for abi in "${ABIS[@]}"; do
     MODULES_DIR="$(dirname "$(built libss4s-mediacodec.so)")"
     for f in "$MODULES_DIR"/libss4s-*.so; do install -m644 "$f" "$OUT/$(basename "$f")"; done
     [ -f "$OUT/libss4s-sdl.so" ] || die "the $abi build has no SDL audio module"
+    # mbedTLS must take its entropy from /dev/urandom: /dev/random blocks on older kernels (build_deps.sh).
+    grep -aq '/dev/urandom' "$ECLIPSE_ANDROID_DEPS/$abi/lib/libmbedcrypto.so" &&
+        ! grep -aq '/dev/random' "$ECLIPSE_ANDROID_DEPS/$abi/lib/libmbedcrypto.so" ||
+        die "$abi: libmbedcrypto.so would read /dev/random (see MBEDTLS_PLATFORM_DEV_RANDOM in build_deps.sh)"
     if [ -z "$MODULES_INI" ]; then MODULES_INI="$MODULES_DIR/ss4s_modules.ini"; fi
     cmp -s "$MODULES_INI" "$MODULES_DIR/ss4s_modules.ini" || die "the module list differs between ABIs"
 
