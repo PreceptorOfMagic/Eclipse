@@ -47,6 +47,18 @@ for f in "$W"/fixtures/*.265 "$W"/fixtures/*.264; do
     adb shell rm -f "/data/local/tmp/eclipse-$name"
 done
 
+# Each case reads only the log written since it began. adb logcat -c alone is not enough: on the API 30
+# emulator it left the previous case's lines in place, and its "SELFTEST done" ended the next case's wait
+# after a second, before that case had run (2026-10-15). -T takes the device's clock, whole seconds; the
+# cases are at least two seconds apart.
+log_mark() {
+    adb logcat -c || true
+    LOG_SINCE="$(adb shell date +%s | tr -d '\r').000"
+}
+log_dump() {
+    adb logcat -d -v threadtime -T "$LOG_SINCE"
+}
+
 crashed() {   # logcat file: a Java exception in the app, or a native crash of either process (a process that
               # ends normally, as the app does after a self-test, is not one)
     grep -qE "FATAL EXCEPTION|Fatal signal [0-9]+|>>> $PKG <<<" "$1"
@@ -57,12 +69,12 @@ crashed() {   # logcat file: a Java exception in the app, or a native crash of e
 run_selftest() {   # case name, then am start extras
     local name=$1
     shift
-    adb logcat -c
+    log_mark
     adb shell am start -W -S -n "$ACTIVITY" "$@" >/dev/null
     local start=$SECONDS shot=0 log="$W/$name.logcat.txt"
     while [ $((SECONDS - start)) -lt 180 ]; do
         sleep 1
-        adb logcat -d -v threadtime >"$log"
+        log_dump >"$log"
         if [ "$shot" = 0 ] && [ $((SECONDS - start)) -ge 5 ]; then
             adb exec-out screencap -p >"$W/$name.png" || true
             shot=1
@@ -71,7 +83,7 @@ run_selftest() {   # case name, then am start extras
         crashed "$log" && break
     done
     sleep 2
-    adb logcat -d -v threadtime >"$log"
+    log_dump >"$log"
     if crashed "$log"; then
         fail "$name: the app crashed (see $log)"
         return 1
@@ -107,7 +119,7 @@ check_video() {   # case name, stream
 }
 
 # --- the launcher ---------------------------------------------------------------------------------------
-adb logcat -c
+log_mark
 adb shell am start -W -S -n "$ACTIVITY" >/dev/null
 sleep 10
 adb exec-out screencap -p >"$W/launcher.png" || true
@@ -117,7 +129,7 @@ for key in DPAD_DOWN DPAD_RIGHT DPAD_RIGHT DPAD_LEFT DPAD_UP; do
 done
 sleep 2
 adb exec-out screencap -p >"$W/launcher-nav.png" || true
-adb logcat -d -v threadtime >"$W/launcher.logcat.txt"
+log_dump >"$W/launcher.logcat.txt"
 if crashed "$W/launcher.logcat.txt"; then
     fail "launcher: the app crashed (see $W/launcher.logcat.txt)"
 elif [ -z "$(adb shell pidof "$PKG" | tr -d '\r')" ]; then
@@ -148,7 +160,7 @@ EMULATOR="$(adb shell getprop ro.kernel.qemu | tr -d '\r')"
 send_emulator_keys() {   # once the self-test listens: Up and Back through the emulator's keyboard-with-a-d-pad
     local start=$SECONDS
     while [ $((SECONDS - start)) -lt 30 ]; do
-        adb logcat -d | grep -q "SELFTEST keys ready" && break
+        log_dump | grep -q "SELFTEST keys ready" && break
         sleep 1
     done
     sleep 1
