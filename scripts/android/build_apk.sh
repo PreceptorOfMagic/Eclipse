@@ -121,6 +121,8 @@ for abi in "${ABIS[@]}"; do
     built() { local f; f="$(find "$BUILD" -name "$1" -not -path '*/CMakeFiles/*' -print -quit)"; [ -n "$f" ] || die "the $abi build did not produce $1"; echo "$f"; }
     install -m644 "$(built libmain.so)" "$OUT/libmain.so"
     install -m755 "$(built libeclipse_peer.so)" "$OUT/libeclipse_peer.so"
+    # Shared on every platform but Windows (src/app/backend/pcmanager/discovery/impl), as the Linux package ships it.
+    install -m644 "$(built libmicrodns.so)" "$OUT/libmicrodns.so"
     MODULES_DIR="$(dirname "$(built libss4s-mediacodec.so)")"
     for f in "$MODULES_DIR"/libss4s-*.so; do install -m644 "$f" "$OUT/$(basename "$f")"; done
     [ -f "$OUT/libss4s-sdl.so" ] || die "the $abi build has no SDL audio module"
