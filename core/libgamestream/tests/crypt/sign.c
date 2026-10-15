@@ -46,7 +46,8 @@ int main(int argc, char *argv[])
     assert(mbedtls_ctr_drbg_random(&ctr_drbg, msg, sizeof(msg)) == 0);
 
     char sig[1024];
-    size_t siglen;
+    /* mbedTLS 3.2.1 and later read it as the size of sig (generateSignature, src/crypto.h). */
+    size_t siglen = sizeof(sig);
 
     assert(generateSignature(msg, sizeof(msg), sig, &siglen, &key, &ctr_drbg));
     assert(verifySignature_openssl(msg, sizeof(msg), sig, siglen, crtbuf));
