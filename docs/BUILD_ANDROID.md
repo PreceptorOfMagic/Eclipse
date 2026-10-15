@@ -34,7 +34,8 @@ Android TV devices, and installs over ADB are exempt everywhere.
 - **Android 9 (API 28) or newer**, Android TV or Google TV. It also runs on phones and tablets with a game
   controller, keyboard or mouse, but it is designed for TVs.
 - **NVIDIA SHIELD TV** (2015, 2017, 2019 and Pro) on SHIELD Experience 9 (Android 11) is the primary target.
-- One APK holds `arm64-v8a`, `armeabi-v7a` (many TV sticks run 32-bit Android on a 64-bit CPU) and `x86_64`.
+- One APK holds `arm64-v8a`, `armeabi-v7a` (many TV devices run 32-bit Android on a 64-bit CPU: the 2019 SHIELD TV
+  does) and `x86_64`.
 - Video: H.264 and HEVC through the device's hardware decoder. HDR10 is available when the decoder supports Main 10
   and the TV reports HDR10, as on webOS.
 
@@ -143,7 +144,8 @@ Requirements (Linux or macOS; on Windows use WSL):
 export ANDROID_HOME=~/Android/Sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018
 ./scripts/android/build_apk.sh                  # all three ABIs -> dist/eclipse-android*.apk (+ .sha256)
-./scripts/android/build_apk.sh --abi arm64-v8a  # one ABI, faster (fine for a SHIELD)
+./scripts/android/build_apk.sh --abi armeabi-v7a  # one ABI, faster: the device's first ABI
+                                                 # (adb shell getprop ro.product.cpu.abilist)
 ```
 
 The first build compiles the dependencies (`scripts/android/build_deps.sh`: SDL2, SDL2_image, mbedTLS, curl, Opus,
@@ -207,7 +209,7 @@ without one (`ctest -N | grep android` lists 14 when they are all there).
 its hosts or settings:
 
 ```sh
-./scripts/android/build_apk.sh --selftest --abi arm64-v8a       # dist/eclipse-android-selftest.apk
+./scripts/android/build_apk.sh --selftest --abi armeabi-v7a     # dist/eclipse-android-selftest.apk (the device's ABI)
 cc -O2 -o hevc_tilecols tests/coop/hevc_tilecols_cli.c src/app/stream/video/coop_splice.c \
    src/app/stream/video/coop_poc.c -Isrc/app/stream/video
 adb connect <SHIELD IP>:5555
