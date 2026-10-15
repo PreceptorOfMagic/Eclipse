@@ -3111,6 +3111,16 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
          * pane, so the two halves stop being two monitors). Slices per picture and pane height
          * are now INDEPENDENT: the panes stay half-height and each host may cut its own pane
          * into as many slices as the encoder needs. */
+#if TARGET_ANDROID
+        /* LEFT/RIGHT DOUBLES THE WIDTH. Each host sends a half-WIDTH pane there (session.c), so the composite
+         * is twice as wide, not twice as tall. Other decoders follow the stream's SPS whatever they are opened
+         * at, so elsewhere this stays as it was; MediaCodec on the SHIELD TV sizes its buffers from what it is
+         * configured with, and opened at 960x2160 for a 1920x1080 composite it showed a sliver of one pane and
+         * green beside it (2026-10-16). */
+        if (access("/tmp/coop-vmirror", F_OK) == 0) {
+            width *= 2;
+        } else
+#endif
         height *= 2;
     }
     coop_pump_start();   /* starfish/SMP callbacks need a pumped GLib context */
