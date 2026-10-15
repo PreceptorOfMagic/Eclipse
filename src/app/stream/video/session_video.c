@@ -209,6 +209,15 @@ static bool coop_hh_tiles = false;
  * first two live tiles runs did, while the primitives themselves decode cleanly offline
  * (tests/coop/test_tile_compose.c). Gate the feed rather than trust every branch. */
 static bool coop_hh_tiled_ok = false;
+#if TARGET_ANDROID
+/* PADDING BEFORE THE SECOND SLICE. The hosts end each picture's slice data with cabac_zero_words, and a
+ * composite puts one host's last slice FIRST, so the padding then precedes the other host's slice. The
+ * SHIELD TV's decoder does not decode a slice after such padding: that pane is flat green, in both co-op
+ * layouts, with no decoder error (measured 2026-10-16; FFmpeg and webOS skip the padding). On Android every
+ * composite goes to the decoder through coop_au_strip_zero_words(), which removes only padding that has a
+ * slice after it -- the pictures are unchanged. Reset with the session. */
+static unsigned coop_zw_aus = 0, coop_zw_words = 0;
+#endif
 static unsigned coop_hh_untiled_blocked = 0;
 /* THE PEER'S PANE AS RECEIVED, gated on /tmp/coop-dump-peer. The primary's own pane is already
  * capturable (/tmp/coop-dump) but the PEER's never was, and without it no offline harness can
@@ -1656,6 +1665,23 @@ static SS4S_VideoFeedResult diag_feed(feed_site_t site, const unsigned char *buf
         }
     }
     avsync_probe_video(len);
+#if TARGET_ANDROID
+    if (coop_live || coop_vt_enabled) {
+        static unsigned char stripped[DECODER_BUFFER_MAX_SIZE];
+        unsigned words = 0;
+        const size_t got = coop_au_strip_zero_words(buf, len, stripped, sizeof(stripped), &words);
+        if (got > 0) {
+            buf = stripped;
+            len = got;
+            if (coop_zw_aus++ == 0 && diag_log != NULL) {
+                fprintf(diag_log, "[COOP] removing cabac_zero_words before a slice (%u in the first picture): "
+                                  "the decoder skips a slice after them\n", words);
+                fflush(diag_log);
+            }
+            coop_zw_words += words;
+        }
+    }
+#endif
     SS4S_VideoFeedResult r = SS4S_PlayerVideoFeed(player, buf, len, flags);
     if (tracing) { coop_trace_emit(r, len, fe, coop_trace_now_ms()); }
     if (diag_fail_every > 0 && site == diag_fail_site) {
@@ -3514,6 +3540,9 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
     coop_hh_mended = 0;
     coop_hh_poc_fail = 0;
     coop_hh_tiles = access("/tmp/coop-hh-tiles", F_OK) == 0;
+#if TARGET_ANDROID
+    coop_zw_aus = coop_zw_words = 0;
+#endif
     coop_hh_tiled_ok = false;
     coop_hh_untiled_blocked = 0;
     coop_peer_dump_n = 0;
@@ -3691,6 +3720,12 @@ void vdec_delegate_cleanup() {
     if (diag_log) {
         fprintf(diag_log, "=== session ended: ok=%u idr_sent=%u idr_throttled=%u errors=%u ===\n",
                 diag_feed_ok, diag_idr_sent, diag_idr_throttled, diag_feed_errors);
+#if TARGET_ANDROID
+        if (coop_zw_aus > 0) {
+            fprintf(diag_log, "[COOP] cabac_zero_words removed before a slice: %u pictures, %u words\n",
+                    coop_zw_aus, coop_zw_words);
+        }
+#endif
 
         /* snapshot UDP counters at session end — diff vs UDP_START shows drops */
         FILE *snmp = fopen("/proc/net/snmp", "r");
