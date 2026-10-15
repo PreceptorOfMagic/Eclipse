@@ -1,5 +1,5 @@
 diff --git a/cmake/ExternalMbedTLS.cmake b/cmake/ExternalMbedTLS.cmake
-index e801d7d982dbaf346f3512b30537143a9130be80..98f9ec03513c2d3944b0a656a44d8ea0c897d274 100644
+index e801d7d..98f9ec0 100644
 --- a/cmake/ExternalMbedTLS.cmake
 +++ b/cmake/ExternalMbedTLS.cmake
 @@ -10,6 +10,7 @@ endif ()
@@ -11,10 +11,10 @@ index e801d7d982dbaf346f3512b30537143a9130be80..98f9ec03513c2d3944b0a656a44d8ea0
          -DCMAKE_BUILD_TYPE:string=${CMAKE_BUILD_TYPE}
          -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
 diff --git a/device/gcdb-updater/CMakeLists.txt b/device/gcdb-updater/CMakeLists.txt
-index 37836438f5f0462c87235ceed102718b74353601..766102298ed015593889defbf8f63dc039cd4a12 100644
+index 3783643..9651421 100644
 --- a/device/gcdb-updater/CMakeLists.txt
 +++ b/device/gcdb-updater/CMakeLists.txt
-@@ -18,4 +18,8 @@ endif ()
+@@ -18,4 +18,14 @@ endif ()
  
  add_executable(test_gcdb_update test_gcdb_update.c)
  target_link_libraries(test_gcdb_update PRIVATE commons-gamecontrollerdb-updater commons-logging)
@@ -25,11 +25,17 @@ index 37836438f5f0462c87235ceed102718b74353601..766102298ed015593889defbf8f63dc0
 +add_executable(test_gcdb_atomic test_gcdb_atomic.c)
 +target_link_libraries(test_gcdb_atomic PRIVATE commons-gamecontrollerdb-updater)
 +add_test(test_gcdb_atomic test_gcdb_atomic)
++
++if (NOT WIN32)   # a local server on BSD sockets
++    add_executable(test_gcdb_deinit test_gcdb_deinit.c)
++    target_link_libraries(test_gcdb_deinit PRIVATE commons-gamecontrollerdb-updater commons-logging)
++    add_test(test_gcdb_deinit test_gcdb_deinit)
++endif ()
 diff --git a/device/gcdb-updater/gamecontrollerdb_updater.c b/device/gcdb-updater/gamecontrollerdb_updater.c
-index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28f42c89f2 100644
+index d013849..c53d28a 100644
 --- a/device/gcdb-updater/gamecontrollerdb_updater.c
 +++ b/device/gcdb-updater/gamecontrollerdb_updater.c
-@@ -2,12 +2,19 @@
+@@ -2,20 +2,47 @@
  
  #include <string.h>
  #include <stdlib.h>
@@ -49,8 +55,28 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
 +#include "gamecontrollerdb_updater_internal.h"
  #include "logging.h"
  
++/* What an update in flight shares with its updater. Cancelling a task that is already running does not stop
++ * it, so a transfer can outlive commons_gcdb_updater_deinit (the app quitting during the start-up update):
++ * the task reaches the callback only through this link, which deinit detaches, and keeps its own copies of
++ * everything else it reads. */
++struct commons_gcdb_link {
++    SDL_mutex *lock;
++    int refs;
++    bool attached;
++    commons_gcdb_callback *callback;
++    void *callback_ctx;
++};
++
  typedef struct write_context {
-@@ -16,6 +23,8 @@ typedef struct write_context {
+-    commons_gcdb_updater_t *updater;
++    struct commons_gcdb_link *link;
++    char *url;
++    char *path;
++    char *ca_path;
++    char *platform;
++    char *platform_match_substr;
++    size_t platform_match_substr_len;
+     CURL *curl;
      char *buf;
      size_t size;
      FILE *fp;
@@ -59,10 +85,22 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
      int status;
  } task_context;
  
-@@ -29,6 +38,18 @@ static void write_mapping_lines(task_context *ctx);
+@@ -25,9 +52,28 @@ static int update_task(void *arg);
  
- static void setup_headers(commons_gcdb_updater_t *updater, struct curl_slist **headers);
+ static void update_finalizer(void *arg, int result);
  
++static int transfer_progress(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal,
++                             curl_off_t ulnow);
++
+ static void write_mapping_lines(task_context *ctx);
+ 
+-static void setup_headers(commons_gcdb_updater_t *updater, struct curl_slist **headers);
++static void setup_headers(const char *path, struct curl_slist **headers);
++
++static void link_release(struct commons_gcdb_link *link);
++
++static void task_context_free(task_context *ctx);
++
 +static FILE *open_file(const char *path, const char *mode);
 +
 +static char *make_temp_path(const char *path);
@@ -74,11 +112,80 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
 +#if defined(_WIN32)
 +static wchar_t *utf8_to_wide(const char *value);
 +#endif
-+
+ 
  void commons_gcdb_updater_init(commons_gcdb_updater_t *updater, executor_t *executor) {
      assert(updater != NULL);
-     assert(updater->platform != NULL);
-@@ -94,8 +115,14 @@ static size_t body_cb(void *buffer, size_t size, size_t nitems, task_context *ct
+@@ -38,6 +84,11 @@ void commons_gcdb_updater_init(commons_gcdb_updater_t *updater, executor_t *exec
+ 
+     updater->executor = executor;
+     updater->lock = SDL_CreateMutex();
++    updater->link = calloc(1, sizeof(struct commons_gcdb_link));
++    assert(updater->link != NULL);
++    updater->link->lock = SDL_CreateMutex();
++    updater->link->refs = 1;
++    updater->link->attached = true;
+ 
+     const char *platform = updater->platform_use != NULL ? updater->platform_use : updater->platform;
+     // `platform:${platform},` => +10 chars
+@@ -55,6 +106,14 @@ void commons_gcdb_updater_deinit(commons_gcdb_updater_t *updater) {
+         updater->update_task = NULL;
+     }
+     SDL_UnlockMutex(updater->lock);
++    /* A transfer still running stops at its next progress report and never calls back. Taking the link's lock
++     * also waits for a callback in progress to return. */
++    SDL_LockMutex(updater->link->lock);
++    updater->link->attached = false;
++    updater->link->callback = NULL;
++    updater->link->callback_ctx = NULL;
++    SDL_UnlockMutex(updater->link->lock);
++    link_release(updater->link);
+     free(updater->platform_match_substr);
+     SDL_DestroyMutex(updater->lock);
+     memset(updater, 0, sizeof(*updater));
+@@ -73,16 +132,38 @@ bool commons_gcdb_updater_update(commons_gcdb_updater_t *updater) {
+     return started;
+ }
+ 
++static char *copy_or_null(const char *value) {
++    return value != NULL ? strdup(value) : NULL;
++}
++
+ static bool update_thread_start(commons_gcdb_updater_t *updater) {
+     task_context *ctx = calloc(1, sizeof(task_context));
+-    ctx->updater = updater;
++    if (ctx == NULL) {
++        return false;
++    }
++    ctx->url = copy_or_null(updater->url);
++    ctx->path = strdup(updater->path);
++    ctx->ca_path = copy_or_null(updater->ca_path);
++    ctx->platform = strdup(updater->platform);
++    ctx->platform_match_substr = strdup(updater->platform_match_substr);
++    ctx->platform_match_substr_len = updater->platform_match_substr_len;
+     ctx->curl = curl_easy_init();
+     ctx->buf = malloc(1);
++    if ((updater->url != NULL && ctx->url == NULL) || ctx->path == NULL ||
++        (updater->ca_path != NULL && ctx->ca_path == NULL) || ctx->platform == NULL ||
++        ctx->platform_match_substr == NULL || ctx->curl == NULL || ctx->buf == NULL) {
++        task_context_free(ctx);
++        return false;
++    }
++    SDL_LockMutex(updater->link->lock);
++    updater->link->refs++;
++    updater->link->callback = updater->callback;
++    updater->link->callback_ctx = updater->callback_ctx;
++    SDL_UnlockMutex(updater->link->lock);
++    ctx->link = updater->link;
+     const executor_task_t *task = executor_submit(updater->executor, update_task, update_finalizer, ctx);
+     if (task == NULL) {
+-        curl_easy_cleanup(ctx->curl);
+-        free(ctx->buf);
+-        free(ctx);
++        task_context_free(ctx);
+         return false;
+     }
+     updater->update_task = task;
+@@ -94,8 +175,14 @@ static size_t body_cb(void *buffer, size_t size, size_t nitems, task_context *ct
          return 0;
      }
      size_t realsize = size * nitems;
@@ -94,7 +201,7 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
      ctx->buf = allocated;
  
      memcpy(&(ctx->buf[ctx->size]), buffer, realsize);
-@@ -119,7 +146,10 @@ static void write_header_lines(task_context *ctx) {
+@@ -119,7 +206,10 @@ static void write_header_lines(task_context *ctx) {
              }
              char *headerValue = strstr(curLine, ": ");
              if (headerValue && strncasecmp(curLine, "etag", headerValue - curLine) == 0) {
@@ -106,7 +213,7 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
              }
              curLine = nextLine + 1;
          } else {
-@@ -132,38 +162,46 @@ static void write_header_lines(task_context *ctx) {
+@@ -132,38 +222,46 @@ static void write_header_lines(task_context *ctx) {
  }
  
  static size_t header_cb(char *buffer, size_t size, size_t nitems, task_context *ctx) {
@@ -151,7 +258,7 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
 -#endif
 -        } else {
 -            commons_log_error("GameControllerDB", "Failed to open file %s: %s", condb, strerror(errno));
-+        ctx->temp_path = make_temp_path(ctx->updater->path);
++        ctx->temp_path = make_temp_path(ctx->path);
 +        if (ctx->temp_path == NULL || (ctx->fp = open_file(ctx->temp_path, "wb")) == NULL) {
 +            commons_log_error("GameControllerDB", "Failed to open temporary controller db file: %s", strerror(errno));
              ctx->status = -1;
@@ -174,9 +281,13 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
      ctx->buf = allocated;
  
      memcpy(&(ctx->buf[ctx->size]), buffer, realsize);
-@@ -178,10 +216,10 @@ static int update_task(void *arg) {
+@@ -176,44 +274,63 @@ static size_t header_cb(char *buffer, size_t size, size_t nitems, task_context *
+ static int update_task(void *arg) {
+     task_context *ctx = arg;
      CURL *curl = ctx->curl;
-     static char *const url = "https://github.com/gabomdq/SDL_GameControllerDB/raw/master/gamecontrollerdb.txt";
+-    static char *const url = "https://github.com/gabomdq/SDL_GameControllerDB/raw/master/gamecontrollerdb.txt";
++    static char *const default_url = "https://github.com/gabomdq/SDL_GameControllerDB/raw/master/gamecontrollerdb.txt";
++    const char *url = ctx->url != NULL ? ctx->url : default_url;
      curl_easy_setopt(curl, CURLOPT_URL, url);
 -    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
 +    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -184,10 +295,15 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, body_cb);
 -    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10);
 +    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
++    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, transfer_progress);
++    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, ctx);
++    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
      struct curl_slist *headers = NULL;
-     setup_headers(ctx->updater, &headers);
+-    setup_headers(ctx->updater, &headers);
++    setup_headers(ctx->path, &headers);
      if (headers != NULL) {
-@@ -190,31 +228,43 @@ static int update_task(void *arg) {
+         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+     }
  
      curl_easy_setopt(curl, CURLOPT_WRITEDATA, ctx);
      curl_easy_setopt(curl, CURLOPT_HEADERDATA, ctx);
@@ -206,7 +322,7 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
 -        commons_log_warn("GameControllerDB", "Failed to fetch %s: (%d, curl %d)", url, ctx->status, code);
 -        result = COMMONS_GCDB_UPDATER_CURL_ERROR;
 +    CURLcode code;
-+    if (!configure_ca_bundle(curl, ctx->updater->ca_path)) {
++    if (!configure_ca_bundle(curl, ctx->ca_path)) {
 +        commons_log_warn("GameControllerDB", "Failed to load the configured TLS CA bundle");
 +        code = CURLE_SSL_CACERT_BADFILE;
 +        ctx->status = -1;
@@ -228,12 +344,15 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
 +            staged_file_ok = false;
 +        }
 +        ctx->fp = NULL;
-     }
- 
++    }
++
 +    commons_gcdb_status_t result = commons_gcdb_classify_response(code, ctx->status);
-+    if (result == COMMONS_GCDB_UPDATER_UPDATED) {
++    if (code == CURLE_ABORTED_BY_CALLBACK) {
++        /* Stopped by commons_gcdb_updater_deinit: nothing to report to an updater that is gone. */
++        result = COMMONS_GCDB_UPDATER_CURL_ERROR;
++    } else if (result == COMMONS_GCDB_UPDATER_UPDATED) {
 +        if (!staged_file_ok || ctx->mappings_written == 0 || ctx->size != 0 ||
-+            !commons_gcdb_replace_staged_file(ctx->temp_path, ctx->updater->path)) {
++            !commons_gcdb_replace_staged_file(ctx->temp_path, ctx->path)) {
 +            commons_log_warn("GameControllerDB", "Downloaded controller db failed validation or replacement; keeping existing file");
 +            result = COMMONS_GCDB_UPDATER_CURL_ERROR;
 +        } else {
@@ -245,38 +364,102 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
 +        commons_log_warn("GameControllerDB", "Failed to fetch %s: (HTTP %d)", url, ctx->status);
 +    } else if (result == COMMONS_GCDB_UPDATER_CURL_ERROR) {
 +        commons_log_warn("GameControllerDB", "Failed to fetch %s: (%d, curl %d)", url, ctx->status, code);
-+    }
+     }
 +    discard_temp_file(ctx);
-+
+ 
      if (headers) {
          curl_slist_free_all(headers);
-     }
-@@ -229,13 +279,18 @@ static void update_finalizer(void *arg, int result) {
-             ctx->updater->callback((commons_gcdb_status_t) result, ctx->updater->callback_ctx);
+@@ -225,17 +342,62 @@ static int update_task(void *arg) {
+ static void update_finalizer(void *arg, int result) {
+     task_context *ctx = arg;
+     if (result != ECANCELED) {
+-        if (ctx->updater->callback != NULL) {
+-            ctx->updater->callback((commons_gcdb_status_t) result, ctx->updater->callback_ctx);
++        SDL_LockMutex(ctx->link->lock);
++        if (ctx->link->attached && ctx->link->callback != NULL) {
++            ctx->link->callback((commons_gcdb_status_t) result, ctx->link->callback_ctx);
          }
++        SDL_UnlockMutex(ctx->link->lock);
      }
++    task_context_free(ctx);
++}
++
++/* libcurl's progress report, at least once a second during a transfer: a non-zero return stops it. */
++static int transfer_progress(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal,
++                             curl_off_t ulnow) {
++    (void) dltotal;
++    (void) dlnow;
++    (void) ultotal;
++    (void) ulnow;
++    task_context *ctx = clientp;
++    SDL_LockMutex(ctx->link->lock);
++    bool attached = ctx->link->attached;
++    SDL_UnlockMutex(ctx->link->lock);
++    return attached ? 0 : 1;
++}
++
++static void link_release(struct commons_gcdb_link *link) {
++    SDL_LockMutex(link->lock);
++    bool last = --link->refs == 0;
++    SDL_UnlockMutex(link->lock);
++    if (last) {
++        SDL_DestroyMutex(link->lock);
++        free(link);
++    }
++}
++
++static void task_context_free(task_context *ctx) {
 +    if (ctx->fp != NULL) {
 +        fclose(ctx->fp);
 +        ctx->fp = NULL;
 +    }
 +    discard_temp_file(ctx);
      free(ctx->buf);
-     curl_easy_cleanup(ctx->curl);
+-    curl_easy_cleanup(ctx->curl);
++    if (ctx->curl != NULL) {
++        curl_easy_cleanup(ctx->curl);
++    }
++    if (ctx->link != NULL) {
++        link_release(ctx->link);
++    }
++    free(ctx->url);
++    free(ctx->path);
++    free(ctx->ca_path);
++    free(ctx->platform);
++    free(ctx->platform_match_substr);
      free(ctx);
  }
  
- void setup_headers(commons_gcdb_updater_t *updater, struct curl_slist **headers) {
+-void setup_headers(commons_gcdb_updater_t *updater, struct curl_slist **headers) {
 -    FILE *fp = fopen(updater->path, "r");
-+    FILE *fp = open_file(updater->path, "r");
++void setup_headers(const char *path, struct curl_slist **headers) {
++    FILE *fp = open_file(path, "r");
      if (fp == NULL) {
          return;
      }
-@@ -276,7 +331,11 @@ void write_mapping_lines(task_context *ctx) {
+@@ -261,22 +423,25 @@ void write_mapping_lines(task_context *ctx) {
+     if (ctx->fp == NULL) {
+         return;
+     }
+-    commons_gcdb_updater_t *updater = ctx->updater;
+     char *curLine = ctx->buf;
+     while (curLine) {
+         char *nextLine = memchr(curLine, '\n', ctx->size - (curLine - ctx->buf));
+         if (nextLine) {
+             *nextLine = '\0';
+-            char *plat = strstr(curLine, updater->platform_match_substr);
++            char *plat = strstr(curLine, ctx->platform_match_substr);
+             if (plat) {
+-                char *platEnd = plat + updater->platform_match_substr_len;
++                char *platEnd = plat + ctx->platform_match_substr_len;
+                 if (platEnd < nextLine) {
+                     memmove(plat, platEnd, nextLine - platEnd);
+                     *(plat + (nextLine - platEnd)) = '\0';
                  } else {
                      *plat = '\0';
                  }
 -                fprintf(ctx->fp, "%splatform:%s,\n", curLine, updater->platform);
-+                if (fprintf(ctx->fp, "%splatform:%s,\n", curLine, updater->platform) < 0) {
++                if (fprintf(ctx->fp, "%splatform:%s,\n", curLine, ctx->platform) < 0) {
 +                    ctx->status = -1;
 +                    return;
 +                }
@@ -284,7 +467,7 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
              }
              curLine = nextLine + 1;
          } else {
-@@ -287,3 +346,146 @@ void write_mapping_lines(task_context *ctx) {
+@@ -287,3 +452,146 @@ void write_mapping_lines(task_context *ctx) {
          }
      }
  }
@@ -432,10 +615,10 @@ index d013849519bf4442bf1267fcd4e2666e0072fd21..8b5137af4a730f5045d88e96dfeeca28
 +}
 +#endif
 diff --git a/device/gcdb-updater/gamecontrollerdb_updater.h b/device/gcdb-updater/gamecontrollerdb_updater.h
-index bc5eed06605d2d14c83397560de874240c1b1acf..08fa18f8b42a099edb491627ba60f91c17be7c6d 100644
+index bc5eed0..c40a2be 100644
 --- a/device/gcdb-updater/gamecontrollerdb_updater.h
 +++ b/device/gcdb-updater/gamecontrollerdb_updater.h
-@@ -22,6 +22,10 @@ typedef struct commons_gcdb_updater_t {
+@@ -22,6 +22,13 @@ typedef struct commons_gcdb_updater_t {
      const char *path;
      const char *platform;
      const char *platform_use;
@@ -443,12 +626,24 @@ index bc5eed06605d2d14c83397560de874240c1b1acf..08fa18f8b42a099edb491627ba60f91c
 +     * passes the contents to libcurl, avoiding narrow-path handling in TLS
 +     * backends on Windows. The caller retains ownership. */
 +    const char *ca_path;
++    /* Optional: where to fetch the database from. NULL is the SDL_GameControllerDB repository (tests serve
++     * their own). The caller retains ownership. */
++    const char *url;
  
      commons_gcdb_callback *callback;
      void *callback_ctx;
+@@ -33,6 +40,8 @@ typedef struct commons_gcdb_updater_t {
+ 
+     executor_t *executor;
+     const executor_task_t *update_task;
++    /* Private: what an update in flight shares with this updater (gamecontrollerdb_updater.c). */
++    struct commons_gcdb_link *link;
+ } commons_gcdb_updater_t;
+ 
+ void commons_gcdb_updater_init(commons_gcdb_updater_t *updater, executor_t *executor);
 diff --git a/device/gcdb-updater/gamecontrollerdb_updater_internal.h b/device/gcdb-updater/gamecontrollerdb_updater_internal.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..911d9d67224a3f6d46b04870d4cecd333fa2e25d
+index 0000000..911d9d6
 --- /dev/null
 +++ b/device/gcdb-updater/gamecontrollerdb_updater_internal.h
 @@ -0,0 +1,11 @@
@@ -465,7 +660,7 @@ index 0000000000000000000000000000000000000000..911d9d67224a3f6d46b04870d4cecd33
 +bool commons_gcdb_replace_staged_file(const char *temp_path, const char *destination_path);
 diff --git a/device/gcdb-updater/test_gcdb_atomic.c b/device/gcdb-updater/test_gcdb_atomic.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2d09db130f8b9e33ad98660c510541e5f2d2e731
+index 0000000..2d09db1
 --- /dev/null
 +++ b/device/gcdb-updater/test_gcdb_atomic.c
 @@ -0,0 +1,46 @@
@@ -515,8 +710,124 @@ index 0000000000000000000000000000000000000000..2d09db130f8b9e33ad98660c510541e5
 +    assert(remove(destination_path) == 0);
 +    return 0;
 +}
+diff --git a/device/gcdb-updater/test_gcdb_deinit.c b/device/gcdb-updater/test_gcdb_deinit.c
+new file mode 100644
+index 0000000..1babbc5
+--- /dev/null
++++ b/device/gcdb-updater/test_gcdb_deinit.c
+@@ -0,0 +1,110 @@
++/* An updater deinitialised while its download is in flight, as when the app quits during the start-up update.
++ * Cancelling a task that is already running does not stop it, so the transfer outlives the updater: when the
++ * reply arrives it must not use the updater (deinit has zeroed it), nor what the caller freed after deinit,
++ * nor call back, and it must stop rather than run to the end. A local server sends the reply only after
++ * deinit. Plain checks, never assert(): the calls must run in a release build too. */
++#include <arpa/inet.h>
++#include <errno.h>
++#include <netinet/in.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <unistd.h>
++
++#include <SDL.h>
++
++#include "executor.h"
++#include "gamecontrollerdb_updater.h"
++#include "logging.h"
++
++#define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #x); return 1; } } while (0)
++
++static int listen_fd = -1;
++static SDL_atomic_t callbacks;
++
++static void on_updated(commons_gcdb_status_t result, void *context) {
++    (void) result;
++    (void) context;
++    SDL_AtomicIncRef(&callbacks);
++}
++
++/* Accepts the updater's connection, answers only after the test has deinitialised the updater, then sends the
++ * body slowly: a transfer that is not stopped keeps receiving for several seconds. */
++static int serve(void *arg) {
++    (void) arg;
++    int fd = accept(listen_fd, NULL, NULL);
++    if (fd < 0) {
++        return 1;
++    }
++    SDL_Delay(600);
++    static const char head[] = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nETag: \"deinit-test\"\r\n"
++                               "Content-Length: 4000\r\n\r\n";
++    send(fd, head, sizeof(head) - 1, MSG_NOSIGNAL);
++    static const char line[] = "03000000000000000000000000000000,Pad,a:b0,platform:Linux,\n";   /* 58 bytes */
++    for (int i = 0; i < 68; i++) {
++        if (send(fd, line, sizeof(line) - 1, MSG_NOSIGNAL) < 0) {
++            break;
++        }
++        SDL_Delay(50);
++    }
++    close(fd);
++    return 0;
++}
++
++int main() {
++    commons_logging_init("test");
++    SDL_AtomicSet(&callbacks, 0);
++
++    listen_fd = socket(AF_INET, SOCK_STREAM, 0);
++    CHECK(listen_fd >= 0);
++    struct sockaddr_in addr = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
++    CHECK(bind(listen_fd, (struct sockaddr *) &addr, sizeof(addr)) == 0);
++    CHECK(listen(listen_fd, 1) == 0);
++    socklen_t len = sizeof(addr);
++    CHECK(getsockname(listen_fd, (struct sockaddr *) &addr, &len) == 0);
++    char url[64];
++    snprintf(url, sizeof(url), "http://127.0.0.1:%d/gamecontrollerdb.txt", ntohs(addr.sin_port));
++    SDL_Thread *server = SDL_CreateThread(serve, "gcdb-server", NULL);
++    CHECK(server != NULL);
++
++    static const char name[] = "gcdb_deinit_test.txt";
++    unlink(name);
++    /* Owned by the caller and freed straight after deinit, as the app frees its CA bundle path. */
++    char *path = strdup(name);
++    char *ca_path = strdup("");
++    CHECK(path != NULL && ca_path != NULL);
++
++    executor_t *executor = executor_create("gcdb_deinit", 1);
++    commons_gcdb_updater_t updater = {
++            .platform = "Linux",
++            .path = path,
++            .ca_path = ca_path,
++            .url = url,
++            .callback = on_updated,
++    };
++    commons_gcdb_updater_init(&updater, executor);
++    CHECK(commons_gcdb_updater_update(&updater));
++    SDL_Delay(200);   /* connected, waiting for the reply */
++
++    commons_gcdb_updater_deinit(&updater);
++    memset(path, 'x', sizeof(name) - 1);
++    free(path);
++    free(ca_path);
++
++    /* The reply arrives now. Joining the worker must not wait for the whole body (68 x 50 ms). */
++    Uint32 start = SDL_GetTicks();
++    SDL_Delay(1000);
++    executor_destroy(executor);
++    Uint32 elapsed = SDL_GetTicks() - start;
++
++    CHECK(SDL_AtomicGet(&callbacks) == 0);
++    CHECK(access(name, F_OK) != 0 && errno == ENOENT);
++    CHECK(elapsed < 2500);
++
++    SDL_WaitThread(server, NULL);
++    close(listen_fd);
++    commons_logging_deinit();
++    printf("deinit during a download: no crash, no callback, no file, stopped after %u ms\n", (unsigned) elapsed);
++    return 0;
++}
 diff --git a/io/copyfile/CMakeLists.txt b/io/copyfile/CMakeLists.txt
-index 523737084ce07462d5ff744341753bb887b43fa0..a82bdbfe8826953623fbdfc2f51e962cdf99e1ee 100644
+index 5237370..a82bdbf 100644
 --- a/io/copyfile/CMakeLists.txt
 +++ b/io/copyfile/CMakeLists.txt
 @@ -9,4 +9,11 @@ if (HAVE_SENDFILE)
@@ -534,7 +845,7 @@ index 523737084ce07462d5ff744341753bb887b43fa0..a82bdbfe8826953623fbdfc2f51e962c
 +    add_test(test_copyfile_std test_copyfile_std)
 +endif ()
 diff --git a/io/copyfile/copyfile_std.c b/io/copyfile/copyfile_std.c
-index 813d437092c640375cb09575cb23110cc5d91fe0..cb3d32747a3e10119ce3e15e8ebc7018e8e49af5 100644
+index 813d437..cb3d327 100644
 --- a/io/copyfile/copyfile_std.c
 +++ b/io/copyfile/copyfile_std.c
 @@ -22,13 +22,23 @@ int copyfile(const char *source, const char *dest) {
@@ -568,7 +879,7 @@ index 813d437092c640375cb09575cb23110cc5d91fe0..cb3d32747a3e10119ce3e15e8ebc7018
 +}
 diff --git a/io/copyfile/test_copyfile_std.c b/io/copyfile/test_copyfile_std.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1b5e7cbfe26c0d569bbb88ea5832383585de8271
+index 0000000..1b5e7cb
 --- /dev/null
 +++ b/io/copyfile/test_copyfile_std.c
 @@ -0,0 +1,36 @@
@@ -609,7 +920,7 @@ index 0000000000000000000000000000000000000000..1b5e7cbfe26c0d569bbb88ea58323835
 +    return 0;
 +}
 diff --git a/util/logging/CMakeLists.txt b/util/logging/CMakeLists.txt
-index 2a118e1f36e0a13c9c5320912578218f84181b00..f63194ee18a4f4f4da2fcfef6de4c6c7af29ed3f 100644
+index 2a118e1..f63194e 100644
 --- a/util/logging/CMakeLists.txt
 +++ b/util/logging/CMakeLists.txt
 @@ -9,7 +9,10 @@ check_symbol_exists(syslog "syslog.h" HAVE_SYSLOG)
@@ -626,7 +937,7 @@ index 2a118e1f36e0a13c9c5320912578218f84181b00..f63194ee18a4f4f4da2fcfef6de4c6c7
      target_sources(commons-logging PRIVATE logging_pmlog.c)
 diff --git a/util/logging/logging_android.c b/util/logging/logging_android.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..d700df05788ef9a52239a14e41f2f5a46deed1f3
+index 0000000..d700df0
 --- /dev/null
 +++ b/util/logging/logging_android.c
 @@ -0,0 +1,66 @@
@@ -697,7 +1008,7 @@ index 0000000000000000000000000000000000000000..d700df05788ef9a52239a14e41f2f5a4
 +            index >= 0 && index < (int) sizeof(letters) ? letters[index] : '?', msg);
 +}
 diff --git a/util/uuidstr/CMakeLists.txt b/util/uuidstr/CMakeLists.txt
-index a9d291f3292e5269717fb934fd8c36734df1b517..be807093cffa4e81d728ae1f4d67fb12392e5f4a 100644
+index a9d291f..be80709 100644
 --- a/util/uuidstr/CMakeLists.txt
 +++ b/util/uuidstr/CMakeLists.txt
 @@ -1,7 +1,9 @@
@@ -713,7 +1024,7 @@ index a9d291f3292e5269717fb934fd8c36734df1b517..be807093cffa4e81d728ae1f4d67fb12
  else ()
 diff --git a/util/uuidstr/uuidstr_android.c b/util/uuidstr/uuidstr_android.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..03af4550d1646f5c776be3b8773547e574479aab
+index 0000000..03af455
 --- /dev/null
 +++ b/util/uuidstr/uuidstr_android.c
 @@ -0,0 +1,20 @@
