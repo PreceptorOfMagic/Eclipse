@@ -87,7 +87,7 @@ The keys mean what they mean on the webOS remote wherever the remotes share them
 
 | Key | In menus | During a stream |
 |---|---|---|
-| D-pad, OK | Navigate, select | Arrow keys, Enter. Holding OK is a right click. |
+| D-pad, OK | Navigate, select | Arrow keys, Enter. Holding OK is a right click. With the on-screen keyboard open, OK presses the selected key. |
 | Back | Back | Tap: Escape on the host. Hold: open the stream menu. Closes the on-screen keyboard first. |
 | Red, Yellow, Blue | As on the webOS remote | Red: open the stream menu. Blue: open the on-screen keyboard. Yellow: nothing. |
 | Menu (SHIELD ≡) | As the webOS Yellow key | Open the stream menu |
@@ -96,6 +96,22 @@ The keys mean what they mean on the webOS remote wherever the remotes share them
 | Green | | Nothing (as on webOS) |
 
 A full keyboard's Menu key is the host's Applications key, as on a PC.
+
+### Controllers
+
+Controllers work as on the other platforms, with the same combinations (Start + View + LB + RB for the stream menu,
+LB + right stick click for the virtual mouse, RB + right stick click for the on-screen keyboard), plus one for
+Android: **View + Start shows the TV's home screen**, acted on when both are let go; the PC sees neither button.
+
+A controller's Guide (Xbox) button goes to the PC, as on a PC, wherever Android delivers it. The SHIELD TV does
+not: its system package `com.nvidia.shieldtech.hooks` turns the Guide button into Home before any app sees it
+(measured: keycode 110 rewritten to 3, and the launcher started). Removing that package for the main user,
+`adb shell pm uninstall -k --user 0 com.nvidia.shieldtech.hooks`, is reported to let the Guide button reach apps
+during a stream (`adb shell cmd package install-existing com.nvidia.shieldtech.hooks` puts it back); this is a
+change to the SHIELD's own software and is untested here. View + Start is then the controller's way home.
+
+In co-op, each controller goes to the PC chosen for it on the co-op screen. The virtual mouse, as on every
+platform, moves the first PC's pointer whichever controller turned it on.
 
 A TV's own remote reaches a box plugged into the TV only as buttons, over HDMI-CEC: an LG Magic Remote's pointer
 and wheel stay with the TV (measured with the SHIELD TV on an LG G5: no input event reached the SHIELD while the
