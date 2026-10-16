@@ -23,6 +23,12 @@ static bool read_webos_key(app_ui_input_t *input, const SDL_KeyboardEvent *event
 
 static void webos_key_input_mode(app_ui_input_t *input, const SDL_KeyboardEvent *event);
 
+#elif TARGET_ANDROID
+
+#include "platform/android/android_platform.h"
+
+static bool read_android_key(app_ui_input_t *input, const SDL_KeyboardEvent *event, lv_drv_sdl_key_t *state);
+
 #endif
 
 static bool read_webos_channel_keys(const SDL_KeyboardEvent *event, lv_drv_sdl_key_t *state);
@@ -89,7 +95,7 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
 #endif
         bool nav_to_lvgl = false;
         bool back_closes_kbd = false;
-#if TARGET_WEBOS
+#if TARGET_WEBOS || TARGET_ANDROID
         if (app_ui_is_opened(&app->ui)
             && (app->session == NULL || ui_should_block_input())
             && read_webos_channel_keys(&e.key, state)) {
@@ -102,11 +108,23 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
                 bus_pushevent(USER_CLOSE_SOFT_KEYBOARD, NULL, NULL);
                 back_closes_kbd = true;
             } else
+#elif TARGET_ANDROID
+            if (e.key.keysym.scancode == SDL_SCANCODE_AC_BACK) {
+                bus_pushevent(USER_CLOSE_SOFT_KEYBOARD, NULL, NULL);
+                back_closes_kbd = true;
+            } else
 #endif
             {
                 SDL_Keycode sym = e.key.keysym.sym;
                 if (sym == SDLK_UP || sym == SDLK_DOWN || sym == SDLK_LEFT || sym == SDLK_RIGHT
-                    || sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
+                    || sym == SDLK_RETURN || sym == SDLK_KP_ENTER
+#if TARGET_ANDROID
+                    /* An Android TV remote's OK is the d-pad centre, not Return (read_android_key makes it
+                     * LV_KEY_ENTER). Without it here OK went to the host as Enter and no key of the on-screen
+                     * keyboard could be pressed with the remote -- "&123" did nothing (SHIELD TV, 2026-10-16). */
+                    || e.key.keysym.scancode == SDL_SCANCODE_SELECT
+#endif
+                    ) {
                     nav_to_lvgl = read_keyboard(input, &e.key, state);
                 }
             }
@@ -313,6 +331,10 @@ static bool read_keyboard(app_ui_input_t *input, const SDL_KeyboardEvent *event,
             if (!read_webos_key(input, event, state)) {
                 return false;
             }
+#elif TARGET_ANDROID
+            if (!read_android_key(input, event, state)) {
+                return false;
+            }
 #else
             return false;
 #endif
@@ -389,6 +411,54 @@ static void webos_key_input_mode(app_ui_input_t *input, const SDL_KeyboardEvent 
         }
         default:
             break;
+    }
+}
+
+#elif TARGET_ANDROID
+
+/* The Android TV remote's channel keys walk lists, as on webOS. */
+static bool read_webos_channel_keys(const SDL_KeyboardEvent *event, lv_drv_sdl_key_t *state) {
+    bool pressed = event->type == SDL_KEYDOWN;
+    switch ((unsigned int) event->keysym.scancode) {
+        case ANDROID_SCANCODE_CH_DOWN:
+            state->key = LV_KEY_DOWN;
+            state->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+            return true;
+        case ANDROID_SCANCODE_CH_UP:
+            state->key = LV_KEY_UP;
+            state->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* The remote's Back, OK and colour keys in the UI: the webOS remote's meanings (read_webos_key above). */
+static bool read_android_key(app_ui_input_t *input, const SDL_KeyboardEvent *event, lv_drv_sdl_key_t *state) {
+    (void) input;
+    switch ((unsigned int) event->keysym.scancode) {
+        case SDL_SCANCODE_AC_BACK:
+            if (streaming_soft_keyboard_shown()) {
+                bus_pushevent(USER_CLOSE_SOFT_KEYBOARD, NULL, NULL);
+                return true;
+            }
+            state->key = LV_KEY_ESC;
+            return true;
+        case SDL_SCANCODE_SELECT:   /* the d-pad centre */
+            state->key = LV_KEY_ENTER;
+            return true;
+        case ANDROID_SCANCODE_RED:
+        case ANDROID_SCANCODE_GREEN:
+        case ANDROID_SCANCODE_YELLOW:
+        case ANDROID_SCANCODE_BLUE: {
+            SDL_Event btn_event;
+            SDL_memcpy(&btn_event.key, event, sizeof(SDL_KeyboardEvent));
+            btn_event.type = USER_REMOTEBUTTONEVENT;
+            SDL_PushEvent(&btn_event);
+            return false;
+        }
+        default:
+            return false;
     }
 }
 

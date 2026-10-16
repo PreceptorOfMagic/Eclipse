@@ -2,6 +2,9 @@
 
 #include <SDL.h>
 #include "util/user_event.h"
+#if TARGET_ANDROID
+#include "platform/android/android_platform.h"
+#endif
 
 static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data);
 
@@ -21,7 +24,8 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     SDL_Event e;
     data->state = LV_INDEV_STATE_RELEASED;
     if (SDL_PeepEvents(&e, 1, SDL_GETEVENT, USER_REMOTEBUTTONEVENT, USER_REMOTEBUTTONEVENT)) {
-        switch (e.key.keysym.scancode) {
+        /* Unsigned: the Android remote's scancodes lie outside SDL_Scancode (platform/android). */
+        switch ((unsigned int) e.key.keysym.scancode) {
 #if TARGET_WEBOS
             case SDL_SCANCODE_WEBOS_RED:
                 data->btn_id = 1;
@@ -36,6 +40,23 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
                 data->continue_reading = true;
                 break;
             case SDL_SCANCODE_WEBOS_BLUE:
+                data->btn_id = 4;
+                data->continue_reading = true;
+                break;
+#elif TARGET_ANDROID
+            case ANDROID_SCANCODE_RED:
+                data->btn_id = 1;
+                data->continue_reading = true;
+                break;
+            case ANDROID_SCANCODE_GREEN:
+                data->btn_id = 2;
+                data->continue_reading = true;
+                break;
+            case ANDROID_SCANCODE_YELLOW:
+                data->btn_id = 3;
+                data->continue_reading = true;
+                break;
+            case ANDROID_SCANCODE_BLUE:
                 data->btn_id = 4;
                 data->continue_reading = true;
                 break;

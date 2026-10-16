@@ -22,9 +22,10 @@ static bool str_contains_ci(const char *haystack, const char *needle);
 
 static bool gamepad_is_remote_like(const char *name);
 
-#ifdef TARGET_WEBOS
-static bool webos_name_is_non_gamepad(const char *name);
-static bool webos_should_ignore_controller_like_device(const char *name, const char *guidstr, SDL_Joystick *joystick);
+#if defined(TARGET_WEBOS) || defined(TARGET_ANDROID)
+/* A TV's remotes, pointers and keyboards can look like game controllers to SDL; they are never a player's. */
+static bool tv_name_is_non_gamepad(const char *name);
+static bool tv_should_ignore_controller_like_device(const char *name, const char *guidstr, SDL_Joystick *joystick);
 #endif
 
 bool app_input_init_gamepad(app_input_t *input, int device_index) {
@@ -40,8 +41,8 @@ bool app_input_init_gamepad(app_input_t *input, int device_index) {
             return false;
         }
         SDL_Joystick *joystick = SDL_GameControllerGetJoystick(controller);
-#ifdef TARGET_WEBOS
-        if (webos_should_ignore_controller_like_device(name, guidstr, joystick)) {
+#if defined(TARGET_WEBOS) || defined(TARGET_ANDROID)
+        if (tv_should_ignore_controller_like_device(name, guidstr, joystick)) {
             SDL_GameControllerClose(controller);
             return false;
         }
@@ -374,9 +375,9 @@ static bool str_contains_ci(const char *haystack, const char *needle) {
     return false;
 }
 
-#ifdef TARGET_WEBOS
+#if defined(TARGET_WEBOS) || defined(TARGET_ANDROID)
 
-static bool webos_name_is_non_gamepad(const char *name) {
+static bool tv_name_is_non_gamepad(const char *name) {
     return str_contains_ci(name, "remote") ||
            str_contains_ci(name, "keyboard") ||
            str_contains_ci(name, "mouse") ||
@@ -388,15 +389,15 @@ static bool webos_name_is_non_gamepad(const char *name) {
            str_contains_ci(name, "lg electronics");
 }
 
-static bool webos_should_ignore_controller_like_device(const char *name, const char *guidstr, SDL_Joystick *joystick) {
+static bool tv_should_ignore_controller_like_device(const char *name, const char *guidstr, SDL_Joystick *joystick) {
     const char *display_name = name != NULL ? name : "Unknown";
     int axes = SDL_JoystickNumAxes(joystick);
     int buttons = SDL_JoystickNumButtons(joystick);
     int hats = SDL_JoystickNumHats(joystick);
     commons_log_info("Input", "Controller-like device candidate: %s. GUID: %s, axes: %d, buttons: %d, hats: %d",
                      display_name, guidstr, axes, buttons, hats);
-    if (webos_name_is_non_gamepad(name)) {
-        commons_log_info("Input", "Ignoring non-gamepad webOS input device by name: %s. GUID: %s", display_name,
+    if (tv_name_is_non_gamepad(name)) {
+        commons_log_info("Input", "Ignoring non-gamepad TV input device by name: %s. GUID: %s", display_name,
                          guidstr);
         return true;
     }

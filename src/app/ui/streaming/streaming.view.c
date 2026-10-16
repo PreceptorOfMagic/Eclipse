@@ -99,6 +99,19 @@ lv_obj_t *streaming_scene_create(lv_fragment_t *self, lv_obj_t *parent) {
     lv_obj_add_style(vmouse_label, &controller->overlay_button_label_style, 0);
     lv_label_set_text(vmouse_label, locstr("Virtual Mouse"));
 
+#if TARGET_ANDROID
+    /* The host's Guide button, for boxes that keep the controller's own (session_gamepad.c). */
+    lv_obj_t *guide_btn = lv_btn_create(actions);
+    lv_obj_add_flag(guide_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_style(guide_btn, &controller->overlay_button_style, 0);
+    lv_obj_add_style(guide_btn, &controller->overlay_button_style_focused, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_bg_color(guide_btn, lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_t *guide_label = lv_label_create(guide_btn);
+    lv_obj_add_style(guide_label, &controller->overlay_button_label_style, 0);
+    lv_label_set_text(guide_label, locstr("Guide button"));
+    controller->guide_btn = guide_btn;
+#endif
+
     lv_obj_t *actions_spacing = lv_obj_create(actions);
     lv_obj_remove_style_all(actions_spacing);
     lv_obj_set_flex_grow(actions_spacing, 1);

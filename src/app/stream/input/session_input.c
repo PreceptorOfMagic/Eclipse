@@ -39,6 +39,9 @@ void session_input_init(stream_input_t *input, session_t *session, app_input_t *
     input->view_only = config->view_only;
     input->stick_deadzone = config->stick_deadzone;
     input->no_sdl_mouse = config->hardware_mouse;
+#if TARGET_ANDROID
+    input->vmouse.input = input;
+#endif
 #if FEATURE_INPUT_EVMOUSE
     if (!config->view_only && config->hardware_mouse) {
         session_evmouse_init(&input->evmouse, session);

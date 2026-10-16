@@ -98,6 +98,16 @@ static int keydown_count = 0;
 
 bool stream_input_webos_intercept_remote_keys(stream_input_t *input, const SDL_KeyboardEvent *event, short *keyCode);
 
+#elif TARGET_ANDROID
+
+#include "platform/android/android_platform.h"
+#include "util/bus.h"
+#include "util/user_event.h"
+
+/* platform/android/keyboard_android.c */
+bool stream_input_android_intercept_remote_keys(stream_input_t *input, const SDL_KeyboardEvent *event,
+                                                short *keyCode);
+
 #endif
 
 static int keys_code_comparator(struct KeysDown *p, const void *fv) {
@@ -108,11 +118,16 @@ static bool isSystemKeyCaptureActive() {
     return app_configuration->syskey_capture;
 }
 
-#if TARGET_WEBOS
+#if TARGET_WEBOS || TARGET_ANDROID
 
 static bool is_webos_remote_ok_key(const SDL_KeyboardEvent *event) {
+#if TARGET_ANDROID
+    /* The remote's OK is the d-pad centre (KEYCODE_DPAD_CENTER). A keyboard's Enter stays a plain Enter. */
+    return event->keysym.scancode == SDL_SCANCODE_SELECT;
+#else
     return event->keysym.sym == SDLK_RETURN || event->keysym.sym == SDLK_KP_ENTER ||
            event->keysym.scancode == SDL_SCANCODE_RETURN || event->keysym.scancode == SDL_SCANCODE_KP_ENTER;
+#endif
 }
 
 static bool stream_input_handle_remote_ok_long_press(stream_input_t *input, const SDL_KeyboardEvent *event,
@@ -153,6 +168,50 @@ static bool stream_input_handle_remote_ok_long_press(stream_input_t *input, cons
         send_key(0x8000 | VK_RETURN, KEY_ACTION_DOWN, downModifiers, to_peer);
         send_key(0x8000 | VK_RETURN, KEY_ACTION_UP, downModifiers, to_peer);
     }
+    return true;
+}
+
+#endif
+
+#if TARGET_ANDROID
+
+/* BACK ON AN ANDROID TV REMOTE. Tapped, it is Escape on the host -- the webOS remote's Back -- which is how
+ * a game's pause menu is reached. Held, it opens the stream overlay: Android TV remotes have no EXIT key
+ * (webOS's way in) and many have no MENU either, so without this a remote-only user could never leave a
+ * stream. Timed like the OK key's right click above. */
+static bool stream_input_handle_remote_back(stream_input_t *input, const SDL_KeyboardEvent *event,
+                                            char modifiers) {
+    if (event->keysym.scancode != SDL_SCANCODE_AC_BACK) {
+        return false;
+    }
+    if (event->repeat) {
+        return true;
+    }
+    if (event->state == SDL_PRESSED) {
+        input->remoteBackPressed = true;
+        input->remoteBackPressedAt = event->timestamp != 0 ? event->timestamp : SDL_GetTicks();
+        input->remoteBackModifiers = modifiers;
+        return true;
+    }
+    if (event->state != SDL_RELEASED || !input->remoteBackPressed) {
+        return true;
+    }
+    const uint32_t releasedAt = event->timestamp != 0 ? event->timestamp : SDL_GetTicks();
+    const uint32_t heldMs = releasedAt - input->remoteBackPressedAt;
+    const char downModifiers = input->remoteBackModifiers;
+    input->remoteBackPressed = false;
+    input->remoteBackPressedAt = 0;
+    input->remoteBackModifiers = 0;
+    if (heldMs >= ANDROID_BACK_OVERLAY_HOLD_MS) {
+        bus_pushevent(USER_OPEN_OVERLAY, NULL, NULL);
+        return true;
+    }
+    if (input->view_only) {
+        return true;
+    }
+    const bool to_peer = coop_pointer_keys_to_peer();
+    send_key(0x8000 | VK_ESCAPE, KEY_ACTION_DOWN, downModifiers, to_peer);
+    send_key(0x8000 | VK_ESCAPE, KEY_ACTION_UP, downModifiers, to_peer);
     return true;
 }
 
@@ -322,6 +381,10 @@ void stream_input_handle_key(stream_input_t *input, const SDL_KeyboardEvent *eve
     if (stream_input_webos_intercept_remote_keys(input, event, &keyCode)) {
         return;
     }
+#elif TARGET_ANDROID
+    if (stream_input_android_intercept_remote_keys(input, event, &keyCode)) {
+        return;
+    }
 #endif
     char modifiers;
 
@@ -388,8 +451,13 @@ void stream_input_handle_key(stream_input_t *input, const SDL_KeyboardEvent *eve
         }
     }
 
-#if TARGET_WEBOS
+#if TARGET_WEBOS || TARGET_ANDROID
     if (stream_input_handle_remote_ok_long_press(input, event, modifiers)) {
+        return;
+    }
+#endif
+#if TARGET_ANDROID
+    if (stream_input_handle_remote_back(input, event, modifiers)) {
         return;
     }
 #endif

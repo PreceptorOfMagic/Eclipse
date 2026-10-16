@@ -1,0 +1,25 @@
+SDL 2.32.10 (Android): a TV remote is a keyboard, not a joystick.
+
+SDLControllerManager.isDeviceSDLJoystick counts every device with SOURCE_DPAD as a joystick. A TV remote
+(SOURCE_DPAD | SOURCE_KEYBOARD) was therefore enumerated as a joystick, and SDLActivity.handleKeyEvent sent its
+keys down the gamepad path first: Back arrived as SDL_SCANCODE_ESCAPE and the d-pad centre as
+SDL_SCANCODE_RETURN (SDL_sysjoystick.c button_to_scancode), or as buttons of a game controller. Eclipse needs
+them as the keyboard path translates them -- Back = SDL_SCANCODE_AC_BACK (tap: Escape on the host, hold: the
+stream menu), centre = SDL_SCANCODE_SELECT (hold: right click) -- and webOS never offers a remote as a player's
+controller (src/app/input/input_gamepad.c). Controllers keep SOURCE_GAMEPAD or joystick axes.
+
+--- a/android-project/app/src/main/java/org/libsdl/app/SDLControllerManager.java
++++ b/android-project/app/src/main/java/org/libsdl/app/SDLControllerManager.java
+@@ -115,8 +115,11 @@
+         }
+         */
+ 
++        // A TV remote is a keyboard with a d-pad (SOURCE_DPAD | SOURCE_KEYBOARD), not a joystick. Counted as one,
++        // its keys never reached the app as keys: Back arrived as Escape and OK as Return (button_to_scancode),
++        // or as buttons of a "controller" a stream would hand the game. Controllers report SOURCE_GAMEPAD or
++        // joystick axes.
+         return ((sources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0 ||
+-                ((sources & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD) ||
+                 ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)
+         );
+     }

@@ -22,6 +22,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#if defined(TARGET_ANDROID)
+#include "platform/android/android_platform.h"
+#endif
 
 static void exit_streaming(lv_event_t *event);
 
@@ -30,6 +33,9 @@ static void suspend_streaming(lv_event_t *event);
 static void open_keyboard(lv_event_t *event);
 
 static void toggle_vmouse(lv_event_t *event);
+#if TARGET_ANDROID
+static void send_guide(lv_event_t *event);
+#endif
 
 static void stream_fragment_del_timer_cb(lv_timer_t *timer);
 
@@ -114,6 +120,14 @@ static float streaming_render_fps(float decodedFps) {
     int displayRate = 60;
     if (SDL_webOSGetRefreshRate(&displayRate) && displayRate > 0 && renderFps > (float) displayRate) {
         renderFps = (float) displayRate;
+    }
+#elif defined(TARGET_ANDROID)
+    /* The mode the TV is in NOW: the activity switches it for the stream, which SDL's display list does not
+     * follow (platform/android). */
+    int refresh_x100 = 0;
+    if (android_display_mode(NULL, NULL, &refresh_x100, NULL, NULL) && refresh_x100 > 0 &&
+        renderFps > (float) refresh_x100 / 100.0f) {
+        renderFps = (float) refresh_x100 / 100.0f;
     }
 #else
     SDL_DisplayMode mode;
@@ -616,6 +630,9 @@ static void on_view_created(lv_fragment_t *self, lv_obj_t *view) {
     lv_obj_add_event_cb(controller->suspend_btn, suspend_streaming, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->kbd_btn, open_keyboard, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->vmouse_btn, toggle_vmouse, LV_EVENT_CLICKED, self);
+#if TARGET_ANDROID
+    lv_obj_add_event_cb(controller->guide_btn, send_guide, LV_EVENT_CLICKED, self);
+#endif
     lv_obj_add_event_cb(controller->base.obj, hide_overlay, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->overlay, overlay_key_cb, LV_EVENT_KEY, controller);
     lv_obj_add_event_cb(controller->base.obj, on_cancel_key, LV_EVENT_CANCEL, controller);
@@ -721,6 +738,17 @@ static void toggle_vmouse(lv_event_t *event) {
     app_t *app = controller->global;
     session_toggle_vmouse(app->session);
 }
+
+#if TARGET_ANDROID
+static void send_guide(lv_event_t *event) {
+    streaming_controller_t *controller = lv_event_get_user_data(event);
+    hide_overlay(event);
+    app_t *app = controller->global;
+    if (app->session != NULL) {
+        session_send_guide(app->session);
+    }
+}
+#endif
 
 /* MOVED OUT OF #if TARGET_WEBOS: this deletes a fragment on a timer and has nothing
  * platform-specific in it, but it was defined inside the guard while its only caller --

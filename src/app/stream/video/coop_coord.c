@@ -22,6 +22,9 @@
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
+#ifdef __ANDROID__
+#include "util/path.h"
+#endif
 #include <signal.h>
 #include <sys/time.h>
 #endif
@@ -405,7 +408,13 @@ static bool coord_executable_path(const char *link, char path[PATH_MAX]) {
  * Whether old orphans caused the September 8 launch failure remains unproven. */
 int coop_coord_reap_orphan_secondaries(const char *socket_path) {
     char self_exe[PATH_MAX];
+#if defined(__ANDROID__)
+    /* /proc/self/exe is the zygote's app_process on Android; a secondary is the packaged peer executable,
+     * which path_self_executable() names (platform/android/path_android.c). */
+    if (!path_self_executable(self_exe, sizeof(self_exe))) { return 0; }
+#else
     if (!coord_executable_path("/proc/self/exe", self_exe)) { return 0; }
+#endif
     DIR *proc = opendir("/proc");
     if (proc == NULL) {
         return 0;
@@ -876,7 +885,14 @@ void coop_coord_request_peer_shutdown(void) {
 }
 
 bool coop_coord_wait_secondary_ready(unsigned timeout_ms) {
+    return coop_coord_wait_secondary_ready_cancellable(timeout_ms, NULL);
+}
+
+bool coop_coord_wait_secondary_ready_cancellable(unsigned timeout_ms, const volatile int *cancel) {
     for (unsigned waited = 0; waited < timeout_ms; waited += 10) {
+        if (cancel != NULL && *cancel) {
+            return false;                       /* the session went first: decide nothing */
+        }
         pthread_mutex_lock(&coord_lock);
         const enum coop_coord_start_state state = coord_start_state;
         pthread_mutex_unlock(&coord_lock);
@@ -888,6 +904,19 @@ bool coop_coord_wait_secondary_ready(unsigned timeout_ms) {
         }
         uint32_t child_status = 0;
         if (coop_coord_child_exited(&child_status)) {
+            /* A secondary that refuses to start says why and exits at once (coop_secondary.c), so it is often
+             * gone before coord_worker has accepted its connection (it polls every 50 ms) or read the frame.
+             * The bytes are still in the socket: let the worker deliver them before calling it a lost
+             * connection, or every refusal reads "did not begin streaming in time" (2026-10-15). */
+            for (unsigned grace = 0; grace < 500; grace += 10) {
+                pthread_mutex_lock(&coord_lock);
+                const bool failed = coord_start_state == COOP_COORD_FAILED;
+                pthread_mutex_unlock(&coord_lock);
+                if (failed) {
+                    return false;
+                }
+                usleep(10000);
+            }
             pthread_mutex_lock(&coord_lock);
             if (coord_start_error == 0) {
                 coord_start_error = COOP_IPC_CTL_FAIL_CONNECTION;

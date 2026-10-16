@@ -46,3 +46,10 @@ void discovery_start(discovery_t *discovery);
 void discovery_stop(discovery_t *discovery);
 
 void discovery_deinit(discovery_t *discovery);
+
+#if TARGET_ANDROID
+/** Android: app_process_events() brackets its SDL_FilterEvents pass with this. While it is on, a stopped
+ *  discovery task is not joined (its thread may be waiting for the event-queue lock that pass holds); turning
+ *  it off joins those tasks. */
+void discovery_events_dispatching(bool dispatching);
+#endif

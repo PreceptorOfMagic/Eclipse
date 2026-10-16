@@ -51,10 +51,12 @@ int gs_conf_init(const char *keydir) {
         return gs_set_error(GS_IO_ERROR, "Failed to create config directory %s: %s", keydir, strerror(errno));
     }
     int ret;
-    if ((ret = init_unique_id(keydir)) != GS_OK) {
+    /* The unique ID is written last: it marks a finished set-up. A first start stopped while the key was being
+     * made (it can take seconds on a TV) then leaves no unique ID, and the next start makes everything again. */
+    if ((ret = init_cert(keydir)) != GS_OK) {
         return ret;
     }
-    if ((ret = init_cert(keydir)) != GS_OK) {
+    if ((ret = init_unique_id(keydir)) != GS_OK) {
         return ret;
     }
     commons_log_info("GameStream", "Configuration initialized");
@@ -131,14 +133,19 @@ int load_cert(struct GS_CLIENT_T *hnd, const char *keydir) {
         return gs_set_error(GS_IO_ERROR, "Failed to allocate certificate paths");
     }
     if (gs_read_file_utf8(cert_path, &cert_data, &cert_size) != 0) {
-        int error = gs_set_error(GS_IO_ERROR, "Failed to open certFile %s for reading: %s",
+        /* Missing (a set-up that never finished, before the unique ID was written last): not set up, so it is made
+         * again. A certificate that exists but cannot be read is never replaced. */
+        const int missing = errno == ENOENT;
+        int error = gs_set_error(missing ? GS_BAD_CONF : GS_IO_ERROR, "Failed to open certFile %s for reading: %s",
                                  cert_path, strerror(errno));
         free(cert_path);
         free(key_path);
         return error;
     }
     if (gs_read_private_file_utf8(key_path, &key_data, &key_size) != 0) {
-        int error = gs_set_error(GS_IO_ERROR, "Cannot safely read private key %s: %s (requires an owned regular file, no links)",
+        const int missing = errno == ENOENT;
+        int error = gs_set_error(missing ? GS_BAD_CONF : GS_IO_ERROR,
+                                 "Cannot safely read private key %s: %s (requires an owned regular file, no links)",
                                  key_path, strerror(errno));
         free(cert_data);
         free(cert_path);

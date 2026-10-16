@@ -30,7 +30,8 @@ void test_widescreen_native() {
 
     fakeTap(180, 60); // Tap on the dropdown to open it
 
-    fakeTap(180, 480); // Tap on native resolution option
+    /* Rows are 80 px apart: 720p, 1080p, 1440p, 3.6K, 4K, then native and custom (pref_res.c). */
+    fakeTap(180, 560); // Tap on native resolution option
 
     UNITY_TEST_ASSERT_EQUAL_INT32(3440, w, __LINE__, "Width should be set to 3440");
     UNITY_TEST_ASSERT_EQUAL_INT32(1440, h, __LINE__, "Height should be set to 1440");
@@ -43,7 +44,7 @@ void test_widescreen_custom() {
 
     fakeTap(180, 60); // Tap on the dropdown to open it
 
-    fakeTap(180, 560); // Tap on custom resolution option
+    fakeTap(180, 640); // Tap on custom resolution option (after native, see test_widescreen_native)
 
     fakeTap(250, 380); // Tap on the first input field to set width
 

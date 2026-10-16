@@ -6,7 +6,9 @@ if (NOT OPENSSL_FOUND)
 endif ()
 
 foreach (suite_name aes challenge hash sign)
-    add_executable(test-gamestream-crypt-${suite_name} ${suite_name}.c ${CMAKE_CURRENT_SOURCE_DIR}/../../src/set_error.c)
+    # file_compat.c: mkcert.c (compiled into the sign suite) opens its files through gs_fopen_utf8.
+    add_executable(test-gamestream-crypt-${suite_name} ${suite_name}.c ${CMAKE_CURRENT_SOURCE_DIR}/../../src/set_error.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../src/file_compat.c)
     target_include_directories(test-gamestream-crypt-${suite_name} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../libgamestream ${CMAKE_CURRENT_SOURCE_DIR}/../../src)
     target_link_libraries(test-gamestream-crypt-${suite_name} PRIVATE ${OPENSSL_LIBRARIES})
     target_link_libraries(test-gamestream-crypt-${suite_name} PRIVATE ${MBEDCRYPTO_LIBRARY} ${MBEDX509_LIBRARY})

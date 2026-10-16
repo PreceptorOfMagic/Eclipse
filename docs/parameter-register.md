@@ -698,6 +698,52 @@ Regenerate with `python3 scripts/ctx/param_seed.py`. These rows are derived from
 source every time, so they cannot go stale; the curated sections above are what carries
 the meaning.
 
+## 28. Android — the environment the activity and the primary publish (2026-10-14)
+
+The Android build's paths and process roles reach native code as environment variables, so the co-op peer --
+an exec'd process with no Java VM -- resolves exactly what the primary does. They are set by code, never by a
+user, and `param_extract.py` does not enumerate `getenv` in the Android sources, so they are curated here.
+None exists on webOS, Windows or Linux.
+
+| name | default | class | evidence |
+|---|---|---|---|
+| `ECLIPSE_ANDROID_FILES_DIR` | unset (the app refuses to start: `android_platform_init`) | SRC | set `deploy/android/.../EclipseActivity.java:196` (`Context.getFilesDir()`); read `src/app/platform/android/path_android.c` (`path_pref`, kept logs); name `android_platform.h:16`. Tested: `tests/android/test_paths_launch.c`. |
+| `ECLIPSE_ANDROID_CACHE_DIR` | unset | SRC | set `EclipseActivity.java:197` (`getCacheDir()`); read `path_android.c` `path_cache` -> `<cache>/moonlight-tv`, whose `runtime/` holds the co-op sockets and sentinels (`platform/posix/runtime_files.c`). Tested: `test_paths_launch.c`. |
+| `ECLIPSE_ANDROID_ASSETS_DIR` | unset | SRC | set `EclipseActivity.java:198` (APK assets unpacked to `files/assets-<versionCode>-<lastUpdateTime>`); read `path_android.c` `path_assets`, and `android_platform.c:51-54` builds `SS4S_MODULES_INI` from it. |
+| `ECLIPSE_ANDROID_NATIVE_DIR` | unset | SRC | set `EclipseActivity.java:199` (`ApplicationInfo.nativeLibraryDir`); read `path_android.c` `path_self_executable` -> `libeclipse_peer.so`, the co-op peer the primary execs. Tested: `test_paths_launch.c` (absent / not executable / executable). |
+| `ECLIPSE_ANDROID_SDK_INT` | unset | SRC | set `EclipseActivity.java:200` (`Build.VERSION.SDK_INT`); read `android_platform.c` `android_sdk_int` (log, support report). |
+| `ECLIPSE_ANDROID_DEVICE` | unset | SRC | set `EclipseActivity.java:201` (`MANUFACTURER + " " + MODEL`); read `android_platform.c` `android_device_name` (log, support report). |
+| `ECLIPSE_ANDROID_GUIDE_IS_HOME` | unset (= `0`) | SRC | set `EclipseActivity.java:202` `guideIsHome()`: `1` when `com.nvidia.shieldtech.hooks` is installed and enabled for this user (needs the manifest `<queries>` entry on Android 11+); read `android_platform.c:80` `android_guide_is_home`, which arms View held = Guide (section 115). **How to prove it applied:** `adb shell run-as io.github.preceptorofmagic.eclipse cat /proc/<pid>/environ` shows it, and holding View 2 s logs `View held 2000 ms, sending Guide` only when it is `1`. |
+| `ECLIPSE_ANDROID_PEER` | unset; `1` in the co-op peer | SRC | set `android_platform.c:60` when started with `--coop-secondary`; read `third_party/ss4s/modules/android/mediacodec.c:156` and `modules/sdl/sdl.c:111` (patches/client-deps/ss4s.patch): **no JNI** in that process. Tested: `test_sdl_audio_output.c` (the peer opens the default output at once). |
+| `ECLIPSE_MEDIACODEC_PROBE` | unset; the primary sets it at its first decoder probe | SRC | `mediacodec.c:253-261`: the primary's `probeVideoDecoders()` result (`display|hdr10`, then `mime|name|hw|lowLatency|main10|maxW|maxH` lines), inherited by the peer so its codec negotiation matches without Java. |
+| `ECLIPSE_ANDROID_REFRESH_RATES` | unset; the primary sets it when it reads the display | SRC | `android_platform.c:231` (read in the peer) / `:255` (set by the primary): the display's refresh rates at its current size, x100, comma-separated. Decides the stream's `clientRefreshRateX100` (`display_android.c`, §25's NTSC rule's Android form). Tested: `test_display_refresh.c`. |
+| `SS4S_MODULES_INI` | unset on desktop; `<assets>/ss4s_modules.ini` on Android | SRC | read `third_party/ss4s/modules/list-ini/modules_ini.c:27` under `__ANDROID__` only (ss4s.patch); set `android_platform.c:51-54` unless already set. The package manager extracts only `lib*.so` into the library directory, so the module list ships as an asset. |
+| `SDL_AUDIODRIVER` (Android) | unset; `dummy` in the co-op peer | DOC (SDL) | set `android_platform.c:64` in the peer (SDL's Android audio backends use JNI); the SDL module also sets the `AAudio,openslES` hint when an output is chosen (`sdl.c` `Init`). See the `SDL_AUDIODRIVER` rows below for SDL's own semantics. |
+
+**Launch extras.** `EclipseActivity.getArguments()` turns the launching Intent's extras into command-line
+arguments: `host_uuid`, `host_app_id`, `coop` are §30's webOS payload keys with the same meaning
+(`adb shell am start -n <pkg>/io.github.preceptorofmagic.eclipse.EclipseActivity --es host_uuid <uuid> --ei
+host_app_id <id> --ez coop true`; parsed by `src/app/platform/android/app_android.c`, tested by
+`tests/android/test_paths_launch.c`). Self-test builds only (`-DECLIPSE_ANDROID_SELFTEST=ON`,
+`selftest_android.c`; a release build ignores them):
+
+| name | type | class | evidence |
+|---|---|---|---|
+| `selftest_video` | string: a stream file in the app's own storage | SRC | play it through SS4S/MediaCodec; `SELFTEST video ... result=` |
+| `selftest_codec` | `h264` \| `hevc` | SRC | the codec of `selftest_video` |
+| `selftest_size` | `WxH` | SRC | the size of `selftest_video` |
+| `selftest_peer` | boolean | SRC | exec the co-op peer, then the full co-op start-up handshake; `SELFTEST peer` / `SELFTEST coop-handshake` |
+| `selftest_audio` | boolean | SRC | list the audio outputs by name and open the first on AAudio by its current id; `SELFTEST audio` |
+| `selftest_display` | boolean | SRC | the display's refresh rates and a mode request taking effect; `SELFTEST display` |
+| `selftest_keys` | boolean | SRC | every input device and SDL's joystick verdict, then log the SDL events of keys sent to it; `SELFTEST input-devices` / `SELFTEST key` |
+
+All are driven by `tests/android/device_smoke.sh`.
+
+**How to see them take effect:** `adb logcat -s Eclipse` -- the run-start line names the role
+(`role=primary` / `COOP-SECONDARY`); the decoder probe lines and `Display HDR10:` come from
+`ECLIPSE_MEDIACODEC_PROBE`'s source; `SELFTEST display ... rates=` (self-test builds) prints the
+refresh list. `tests/android/device_smoke.sh` checks all of these on a device.
+
 ## 27. `[COOP-AGE]` — the DURATION trace, and the feed fault injection (2026-09-12)
 
 Built for passover 07 §3 (Astra), whose first request was: *"Track uninterrupted hold duration in
@@ -3836,3 +3882,17 @@ These are Umbra build options used by the signed-release workflow (`.github/work
 |---|---|---|---|
 | `UMBRA_PACKAGE_PRESTRIPPED` | Umbra / SRC + TEST | CMake `option()`, default OFF, in Umbra `cmake/packaging/common.cmake`. OFF keeps the inherited `set(CPACK_STRIP_FILES YES)`. ON leaves it unset, so CPack packs the installed binaries as built. It exists for signed builds, which strip first and then sign, because stripping after signing removes the signature. | MEASURED 2026-10-10 by packing a signed stand-in `sunshine.exe` (git.exe, 46920 B, Valid) with `cpack -G ZIP`. OFF: packed file NotSigned, 32256 B. ON: Valid, 46920 B, byte-identical. Per-build proof: the workflow step "Check the packed binaries are still signed" (`Get-AuthenticodeSignature` on the 7 signed files inside the ZIP). TRAP: the CMake cache keeps the last value, so a local build reconfigured with ON and then packed unsigned ships UNSTRIPPED binaries (`sunshine.exe` about 57 MB instead of 35 MB). |
 | `UMBRA_GPU_HEVC_DIR` | Umbra / SRC | CMake cache PATH, Umbra `cmake/packaging/windows.cmake` (the GPU HEVC block near the top). The folder must hold `aurora_gpu_hevc8.dll`, `aurora_gpu_hevc10.dll` and `kernels/`, which are installed to `gpu-hevc\` with `COPYING`, `COPYING-GPL-3` and `BUILD-PROVENANCE.json`. Empty: a configure warning, then a FATAL_ERROR at packaging. | Applied only if the package contains `gpu-hevc\*.dll` AND the installed host reports `UmbraCaps` bit 3 (8) in serverinfo. 0.5.0 hosts report 31. The 0.5.0 release used `C:\Users\<user>/umbra-release-deps/gpu-hevc`. The signed workflow uses `_deps/gpu-hevc`, built in CI from Eclipse `experimental/gpu-hevc` @4d73b9e9 with pinned x265 and OpenCL-Headers. A 2026-10-10 dry-run produced the same 6 exports but DLLs about 7 KB smaller, so treat the first CI build as unproven until a co-op test. |
+
+## 115. Android — View held = Guide where the system takes Guide (2026-10-16)
+
+The SHIELD TV's `com.nvidia.shieldtech.hooks` (`NvNormalizedKeylayout`, read from the device's own dex 2026-10-16)
+swallows a controller's Guide (110) and injects Home (3), and View (109) as Back (4); its only exemptions are two
+hardcoded package names. Eclipse copies Sunshine's host-side answer on the client, Android only, armed by
+`ECLIPSE_ANDROID_GUIDE_IS_HOME`. Code: `src/app/stream/input/session_gamepad.c` (`guide_hold_view`,
+`guide_hold_timer_cb`, `guide_tap`), test `tests/android/test_gamepad_home.c`.
+
+| name | default | class | evidence |
+|---|---|---|---|
+| `GUIDE_HOLD_MS` | `2000` ms | SRC + DOC (Sunshine) | `session_gamepad.c:35`. How long View is held before Guide is sent; 2000 is the example Sunshine's configuration guide gives for `back_button_timeout` (user 10-16: "just copy sunshine"). An LVGL timer, so it runs on the UI thread. **How to prove it applied:** the per-run log `files/logs/eclipse-*.log` gets `Controller #N: View held 2000 ms, sending Guide`, and the PC shows its Guide action (Game Bar / Steam overlay) -- screenshot it. |
+| `GUIDE_TAP_MS` | `100` ms | SRC + DOC (Sunshine) | `session_gamepad.c:36`. How long the emulated Guide stays down; Sunshine `src/input.cpp` sleeps 100 ms between pressing and releasing Home. Same proof as above. |
+| `back_button_timeout` | `-1` (off) | DOC (Sunshine / Apollo / Umbra) | **NOT USED BY ECLIPSE**: the HOST setting the above copies. LizardByte Sunshine `docs/configuration.md` and `src/input.cpp` (Back held this long -> Back forced up, Home pressed, released after 100 ms; Back reads as up until released). Present with default `-1ms` in Umbra (`config.cpp`, both the Linux 0.5.2 and Vibepollo trees, checked 2026-10-16). Turning it on would change View for EVERY client of that host, which is why Eclipse does it client-side instead. |

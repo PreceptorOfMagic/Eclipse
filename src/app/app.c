@@ -20,6 +20,9 @@
 #include "logging_ext_sdl.h"
 #include "logging_ext_ss4s.h"
 #include "backend/backend_root.h"
+#if TARGET_ANDROID
+#include "backend/pcmanager/discovery/discovery.h"
+#endif
 #include "platform/local_input.h"
 #include "platform/input_names.h"
 #include "stream/session.h"
@@ -252,7 +255,7 @@ int app_init(app_t *app, app_settings_loader *settings_loader, int argc, char *a
             input_names_start();
         }
         app_ui_init(&app->ui, app);
-#if !defined(TARGET_WEBOS)
+#if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
         /* Ask the display which actually owns the restored window. Display 0 is not
          * necessarily the monitor the user selected, especially when Eclipse starts
          * fullscreen on a saved secondary monitor. settings_initialize() cannot do
@@ -413,6 +416,16 @@ static int app_event_filter(void *userdata, SDL_Event *event) {
             if (app_ui_is_opened(&app->ui) && app->session != NULL) {
                 session_interrupt(app->session, false, STREAMING_INTERRUPT_BACKGROUND);
             }
+#if TARGET_ANDROID
+            /* SAVE NOW: ANDROID ENDS A BACKGROUND APP WITHOUT A WORD. Settings and the known hosts are written
+             * on clean shutdown, which an Android TV app almost never gets -- the SHIELD TV SIGKILLs it soon
+             * after it leaves the screen. A host paired since the last start was then lost, and so was the last
+             * co-op pair, so a paused co-op session could not be resumed from its pane (2026-10-16). */
+            settings_save(&app->settings);
+            if (pcmanager != NULL) {
+                pcmanager_save_known_hosts(pcmanager);
+            }
+#endif
             break;
         }
         case SDL_APP_DIDENTERFOREGROUND: {
@@ -583,7 +596,13 @@ static int app_event_filter(void *userdata, SDL_Event *event) {
 
 void app_process_events(app_t *app) {
     SDL_PumpEvents();
+#if TARGET_ANDROID
+    discovery_events_dispatching(true);
+#endif
     SDL_FilterEvents(app_event_filter, app);
+#if TARGET_ANDROID
+    discovery_events_dispatching(false);
+#endif
 }
 
 void app_quit_confirm() {

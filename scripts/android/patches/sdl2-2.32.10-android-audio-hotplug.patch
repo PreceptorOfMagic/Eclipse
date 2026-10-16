@@ -1,0 +1,25 @@
+SDL 2.32.10 (Android): hot-plugged audio outputs were registered as CAPTURE devices.
+
+SDLAudioManager's AudioDeviceCallback passes AudioDeviceInfo.isSink() -- true for an OUTPUT -- as the
+isCapture argument of addAudioDevice/removeAudioDevice (SDL_android.c: SDL_AddAudioDevice(is_capture, ...)).
+An output connected after SDL's audio started (Bluetooth headphones, a USB DAC) therefore never appeared in
+SDL's output list, and SDL_OpenAudioDevice could not open it by name. Eclipse opens the output the user chose
+by its id (third_party/ss4s/modules/sdl/sdl.c), so it needs the list right. SDL3 rewrote this code.
+
+--- a/android-project/app/src/main/java/org/libsdl/app/SDLAudioManager.java
++++ b/android-project/app/src/main/java/org/libsdl/app/SDLAudioManager.java
+@@ -34,12 +34,12 @@
+             mAudioDeviceCallback = new AudioDeviceCallback() {
+                 @Override
+                 public void onAudioDevicesAdded(AudioDeviceInfo[] addedDevices) {
+-                    Arrays.stream(addedDevices).forEach(deviceInfo -> addAudioDevice(deviceInfo.isSink(), deviceInfo.getId()));
++                    Arrays.stream(addedDevices).forEach(deviceInfo -> addAudioDevice(!deviceInfo.isSink(), deviceInfo.getId()));
+                 }
+ 
+                 @Override
+                 public void onAudioDevicesRemoved(AudioDeviceInfo[] removedDevices) {
+-                    Arrays.stream(removedDevices).forEach(deviceInfo -> removeAudioDevice(deviceInfo.isSink(), deviceInfo.getId()));
++                    Arrays.stream(removedDevices).forEach(deviceInfo -> removeAudioDevice(!deviceInfo.isSink(), deviceInfo.getId()));
+                 }
+             };
+         }

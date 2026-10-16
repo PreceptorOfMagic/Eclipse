@@ -16,6 +16,9 @@
 #if !defined(TARGET_WEBOS)
 #include <SDL.h>
 #endif
+#if defined(TARGET_ANDROID)
+#include "platform/android/android_platform.h"
+#endif
 
 typedef struct audio_pane_t {
     lv_fragment_t base;
@@ -92,7 +95,14 @@ static void pane_ctor(lv_fragment_t *self, void *args) {
         pane->surround_entries_len++;
     }
 #if !defined(TARGET_WEBOS)
+#if defined(TARGET_ANDROID)
+    /* Android numbers its outputs and SDL names them by that number, which changes across reboots: the activity
+     * gives them names that last ("HDMI: LG TV"), and the SS4S SDL module finds the number when a stream starts. */
+    char *android_outputs[32];
+    const int num_devices = android_audio_output_names(android_outputs, 32);
+#else
     const int num_devices = SDL_GetNumAudioDevices(0);
+#endif
     pane->device_entries = calloc((size_t) (num_devices > 0 ? num_devices : 0) + 2,
                                   sizeof(*pane->device_entries));
     if (pane->device_entries != NULL) {
@@ -104,8 +114,12 @@ static void pane_ctor(lv_fragment_t *self, void *args) {
         bool saved_device_found = saved_device == NULL || saved_device[0] == '\0' ||
                                   strcmp(saved_device, "default") == 0;
         for (int i = 0; i < num_devices; ++i) {
+#if defined(TARGET_ANDROID)
+            char *owned_name = android_outputs[i];
+#else
             const char *name = SDL_GetAudioDeviceName(i, 0);
             char *owned_name = name != NULL ? strdup(name) : NULL;
+#endif
             if (owned_name == NULL) {
                 continue;
             }
@@ -134,6 +148,13 @@ static void pane_ctor(lv_fragment_t *self, void *args) {
             }
         }
     }
+#if defined(TARGET_ANDROID)
+    if (pane->device_entries == NULL) {
+        for (int i = 0; i < num_devices; ++i) {
+            free(android_outputs[i]);
+        }
+    }
+#endif
 #endif
 }
 

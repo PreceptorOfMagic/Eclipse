@@ -25,6 +25,9 @@
 #include "backend/aurora_host_caps.h"
 #include "platform/this_pc.h"
 #include "backend/pcmanager.h"
+#if TARGET_ANDROID
+#include "platform/android/android_platform.h"
+#endif
 #ifdef _WIN32
 #include "local_host_win.h"
 
@@ -172,6 +175,16 @@ int session_worker(session_t *session) {
                          session->config.stream.width, session->config.stream.height,
                          session->config.stream.fps, session->config.stream.bitrate);
     }
+#if TARGET_ANDROID
+    /* The TV's mode follows the stream, as the webOS panel follows it by itself. Asked for before the host
+     * starts sending, so the HDMI resync of a mode change is over before the first picture. Back to the
+     * system's choice when the stream closes (ui/root.c). The co-op peer has no display of its own. */
+    if (coop_secondary_mode() == NULL) {
+        android_display_request_refresh(session->config.stream.clientRefreshRateX100 > 0
+                                        ? session->config.stream.clientRefreshRateX100
+                                        : session->config.stream.fps * 100);
+    }
+#endif
     /* app_gs_client_new asserts on app->backend.gs_client_mutex, which the
      * headless secondary never initialises -- it aborted here silently, before
      * LiStartConnection, which looked exactly like "connected but no frames".

@@ -39,7 +39,9 @@
  * WHAT IS DELIBERATELY NOT ROUTED: the RELATIVE paths (a USB mouse through evmouse,
  * the analog-stick virtual mouse, SDL relative mode). A delta carries no position, so
  * there is nothing to decide a pane from; they keep going to the primary exactly as
- * before. The magic remote is absolute, which is what this is for.
+ * before. The magic remote is absolute, which is what this is for. One exception, on
+ * Android only: there the virtual mouse keeps a position of its own in co-op and
+ * comes through here like the magic remote (session_virt_mouse.c).
  */
 #pragma once
 
@@ -75,6 +77,24 @@ void coop_pointer_scroll(int vertical, int horizontal);
 
 /** Diagnostics: how many times the pointer has crossed the divider this session. */
 unsigned coop_pointer_crossings(void);
+
+/*
+ * A POINTER WITH A POSITION OF ITS OWN. The Android virtual mouse (session_virt_mouse.c) is a
+ * stick, so it has only deltas; in co-op it keeps its own position across the whole split and
+ * comes through coop_pointer_position like the magic remote, which is what lets it cross the
+ * divider. These three are for that, and only the Android build calls them.
+ */
+
+/** True when the divider is a vertical line (panes left | right); valid while the split is armed. */
+bool coop_pointer_split_vertical(void);
+
+/** Where such a pointer starts: the centre of the pane the pointer is routed to now, in a
+ *  @p ref_w x @p ref_h window. */
+void coop_pointer_pane_centre(int ref_w, int ref_h, int *x, int *y);
+
+/** A high-resolution wheel step (120 = one notch), routed like coop_pointer_scroll. The peer's
+ *  link carries whole notches, so the peer is sent one each time 120 has built up. */
+void coop_pointer_scroll_high_res(int amount);
 
 /**
  * Which pane's host is THIS machine -- the Windows client can be one of its own co-op hosts:

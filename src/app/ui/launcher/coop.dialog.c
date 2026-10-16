@@ -2101,6 +2101,11 @@ static void launch_session(coop_dialog_t *dlg) {
                 dlg->assign[i].route == dlg->primary_machine
                 ? COOP_PAD_PRIMARY : COOP_PAD_SECONDARY;
     }
+#if TARGET_ANDROID
+    /* Written at once: Android may end the app without the clean shutdown that would write it, and the pair
+     * is what resumes a paused co-op session from its pane (apps.controller.c). */
+    settings_save(app_configuration);
+#endif
     /* The mouse and keyboard, when assigned (#37): machine -> pane, like a pad's route above.
      * Kept for start_stream, which the PIN/HDR relaunch also reaches without this dialog. */
     g_kbm_pane[0] = g_kbm_pane[1] = -1;
@@ -2467,15 +2472,15 @@ static void build_mode_banner(coop_dialog_t *dlg, lv_obj_t *content) {
     } while (0)
 
     if (plan->gpu_hevc && plan->forced) {
-        BANNER_APPEND(locstr("GPU HEVC encoder on both PCs: forced in Settings > Co-op > Encoder."));
+        BANNER_APPEND("%s", locstr("GPU HEVC encoder on both PCs: forced in Settings > Co-op > Encoder."));
     } else if (plan->gpu_hevc) {
-        BANNER_APPEND(locstr("Beta HEVC: selected automatically for this GPU pairing. "
-                             "Both PCs use the beta encoder. Updated Umbra is required on both PCs."));
+        BANNER_APPEND("%s", locstr("Beta HEVC: selected automatically for this GPU pairing. "
+                                   "Both PCs use the beta encoder. Updated Umbra is required on both PCs."));
     } else if (plan->forced && !plan->mixed_vendor) {
-        BANNER_APPEND(locstr("Each PC's own encoder: forced in Settings > Co-op > Encoder."));
+        BANNER_APPEND("%s", locstr("Each PC's own encoder: forced in Settings > Co-op > Encoder."));
     } else if (plan->vendors_known && dlg->machine_vendor[0] == COOP_GPU_NVIDIA &&
                dlg->machine_vendor[1] == COOP_GPU_NVIDIA) {
-        BANNER_APPEND(locstr("HEVC core: both PCs use their NVIDIA hardware encoder."));
+        BANNER_APPEND("%s", locstr("HEVC core: both PCs use their NVIDIA hardware encoder."));
     } else if (plan->forced && plan->mixed_vendor) {
         /* The user overrode a mixed pair back onto the core path. That is theirs to do,
          * and it is also the single most likely way to arrive at a broken picture while
@@ -2495,9 +2500,9 @@ static void build_mode_banner(coop_dialog_t *dlg, lv_obj_t *content) {
      * finds out from a pane that never appears. */
     if (plan->host_support_missing) {
         if (w > 0) { BANNER_APPEND("\n"); }
-        BANNER_APPEND(locstr("One of these PCs reports that Umbra's GPU HEVC encoder is not installed, "
-                             "and this pairing needs it on both. Install the current Umbra release on "
-                             "that PC; its installer includes the encoder."));
+        BANNER_APPEND("%s", locstr("One of these PCs reports that Umbra's GPU HEVC encoder is not installed, "
+                                   "and this pairing needs it on both. Install the current Umbra release on "
+                                   "that PC; its installer includes the encoder."));
     }
 
     /* HDR IS REPORTED ON ITS OWN TERMS, and only when the user actually asked for it.
@@ -2506,8 +2511,8 @@ static void build_mode_banner(coop_dialog_t *dlg, lv_obj_t *content) {
      * Only the first is the pairing overruling a setting the user chose. */
     if (plan->hdr_requested && plan->hdr_blocked_by_host) {
         if (w > 0) { BANNER_APPEND("\n"); }
-        BANNER_APPEND(locstr("HDR is off for this session: one of these PCs does not offer a "
-                             "10-bit codec. Both halves are one picture, so HDR needs both."));
+        BANNER_APPEND("%s", locstr("HDR is off for this session: one of these PCs does not offer a "
+                                   "10-bit codec. Both halves are one picture, so HDR needs both."));
     }
 
     for (int i = 0; i < 2; ++i) {
@@ -2527,13 +2532,13 @@ static void build_mode_banner(coop_dialog_t *dlg, lv_obj_t *content) {
         if (w > 0) { BANNER_APPEND("\n"); }
         /* Say what is missing and what it costs, not just that something is. */
 #ifdef AURORA_GPU_HEVC_EXPERIMENTAL
-        BANNER_APPEND(locstr("Map both PCs' GPU types in Settings > Co-op, or install the "
-                             "updated Umbra host build for automatic detection. Beta HEVC "
-                             "selection needs both GPU types; this session currently uses HEVC core."));
+        BANNER_APPEND("%s", locstr("Map both PCs' GPU types in Settings > Co-op, or install the "
+                                   "updated Umbra host build for automatic detection. Beta HEVC "
+                                   "selection needs both GPU types; this session currently uses HEVC core."));
 #else
-        BANNER_APPEND(locstr("GPU detection needs Umbra on both PCs; without it this session uses "
-                             "each PC's own encoder. If either PC has an AMD card, set Settings > "
-                             "Co-op > Encoder to the GPU HEVC encoder on both PCs."));
+        BANNER_APPEND("%s", locstr("GPU detection needs Umbra on both PCs; without it this session uses "
+                                   "each PC's own encoder. If either PC has an AMD card, set Settings > "
+                                   "Co-op > Encoder to the GPU HEVC encoder on both PCs."));
 #endif
     }
 

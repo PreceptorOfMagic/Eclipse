@@ -1,0 +1,111 @@
+SDL 2.32.10 (Android): closing an AAudio device while the event thread checks it.
+
+Android_PumpEvents calls aaudio_DetectBrokenPlayState on every SDL_PumpEvents. It reads the global audioDevice
+and calls AAudioStream_getTimestamp on its stream, with no lock. aaudio_CloseDevice, on the thread that closes
+the device, stops and closes (frees) that stream before it clears audioDevice. In between, the event thread
+used a freed stream: on the API 30 emulator the device smoke test's platform case crashed with SIGSEGV in
+android::AudioTrack::getTimestamp_l <- aaudio_DetectBrokenPlayState (SDL_aaudio.c:513) <-
+Android_PumpEvents_Blocking <- SDL_PumpEvents, after opening and closing a chosen output (2026-10-15). The SDL2
+branch upstream is unchanged here.
+
+A spinlock (no set-up, no lifetime of its own) now guards audioDevice/captureDevice. CloseDevice unpublishes the
+device under it before stopping and closing the stream -- also when stopping fails and it returns early, which
+before left audioDevice pointing at a device SDL then freed -- and DetectBrokenPlayState holds it while it uses
+the stream. Pause/ResumeDevices are unchanged: they take the mixer lock, and run only on the activity's own
+pause and resume.
+
+--- a/src/audio/aaudio/SDL_aaudio.c
++++ b/src/audio/aaudio/SDL_aaudio.c
+@@ -47,6 +47,10 @@
+ 
+ static SDL_AudioDevice *audioDevice = NULL;
+ static SDL_AudioDevice *captureDevice = NULL;
++/* The event thread reads audioDevice's stream on every SDL_PumpEvents (aaudio_DetectBrokenPlayState) while the
++ * thread closing the device closes that stream: guards both pointers, and the stream while it is in use. A
++ * spinlock, so it needs no set-up and outlives every device. */
++static SDL_SpinLock devices_lock = 0;
+ 
+ static int aaudio_LoadFunctions(AAUDIO_Data *data)
+ {
+@@ -87,11 +91,13 @@
+         }
+     }
+ 
++    SDL_AtomicLock(&devices_lock);
+     if (iscapture) {
+         captureDevice = this;
+     } else {
+         audioDevice = this;
+     }
++    SDL_AtomicUnlock(&devices_lock);
+ 
+     this->hidden = (struct SDL_PrivateAudioData *)SDL_calloc(1, sizeof(*this->hidden));
+     if (!this->hidden) {
+@@ -172,6 +178,18 @@
+     aaudio_result_t res;
+     LOGI(__func__);
+ 
++    /* Unpublished before the stream is stopped and closed, so the event thread cannot reach a closed stream; and
++     * unpublished even if stopping fails below, when SDL frees the device all the same. */
++    SDL_AtomicLock(&devices_lock);
++    if (this->iscapture) {
++        SDL_assert(captureDevice == this);
++        captureDevice = NULL;
++    } else {
++        SDL_assert(audioDevice == this);
++        audioDevice = NULL;
++    }
++    SDL_AtomicUnlock(&devices_lock);
++
+     if (private->stream) {
+         res = ctx.AAudioStream_requestStop(private->stream);
+         if (res != AAUDIO_OK) {
+@@ -188,14 +206,6 @@
+         }
+     }
+ 
+-    if (this->iscapture) {
+-        SDL_assert(captureDevice == this);
+-        captureDevice = NULL;
+-    } else {
+-        SDL_assert(audioDevice == this);
+-        audioDevice = NULL;
+-    }
+-
+     SDL_free(this->hidden->mixbuf);
+     SDL_free(this->hidden);
+ }
+@@ -499,14 +509,18 @@
+     struct SDL_PrivateAudioData *private;
+     int64_t framePosition, timeNanoseconds;
+     aaudio_result_t res;
++    SDL_bool broken = SDL_FALSE;
+ 
++    SDL_AtomicLock(&devices_lock);
+     if (!audioDevice || !audioDevice->hidden) {
++        SDL_AtomicUnlock(&devices_lock);
+         return SDL_FALSE;
+     }
+ 
+     private = audioDevice->hidden;
+     stream = private->stream;
+     if (!stream) {
++        SDL_AtomicUnlock(&devices_lock);
+         return SDL_FALSE;
+     }
+ 
+@@ -516,11 +530,12 @@
+         /* AAudioStream_getTimestamp() will also return AAUDIO_ERROR_INVALID_STATE while the stream is still initially starting. But we only care if it silently went invalid while playing. */
+         if (currentState == AAUDIO_STREAM_STATE_STARTED) {
+             LOGI("SDL aaudio_DetectBrokenPlayState: detected invalid audio device state: AAudioStream_getTimestamp result=%d, framePosition=%lld, timeNanoseconds=%lld, getState=%d", (int)res, (long long)framePosition, (long long)timeNanoseconds, (int)currentState);
+-            return SDL_TRUE;
++            broken = SDL_TRUE;
+         }
+     }
++    SDL_AtomicUnlock(&devices_lock);
+ 
+-    return SDL_FALSE;
++    return broken;
+ }
+ 
+ #endif /* SDL_AUDIO_DRIVER_AAUDIO */

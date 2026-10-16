@@ -16,15 +16,44 @@
 #define GAMEPAD_COMBO_VMOUSE (LB_FLAG | RS_CLK_FLAG)
 #define GAMEPAD_COMBO_KEYBOARD (RB_FLAG | RS_CLK_FLAG)
 #define GAMEPAD_COMBO_STATS (LB_FLAG | LS_CLK_FLAG)
+#if TARGET_ANDROID
+/* VIEW + START IS THE WAY HOME ON ANDROID. The SHIELD TV turns a controller's Guide button into Home (its
+ * window manager rewrites KEYCODE_BUTTON_MODE to HOME, 2026-10-16); with that taken off so that Guide can
+ * reach the host, a controller has no other way back to the TV's home screen during a stream. */
+#define GAMEPAD_COMBO_HOME (BACK_FLAG | PLAY_FLAG)
+#include "platform/android/android_platform.h"
+#include "stream/session_priv.h"
+
+/*
+ * HOLDING VIEW IS THE GUIDE BUTTON WHERE THE SYSTEM TAKES GUIDE, COPIED FROM SUNSHINE. The SHIELD TV swallows a
+ * controller's Guide (Xbox) button and presses Home instead, and offers apps no way out (EclipseActivity.guideIsHome);
+ * Steam Link and Moonlight leave it to the system as well. Sunshine's answer is a host setting, back_button_timeout
+ * (Sunshine src/input.cpp): hold Back/View that long and the host lets go of View, presses Guide and lets go of it
+ * 100 ms later, and View then reads as let go until it really is. This is that, in Eclipse, so it needs no host
+ * setting: 2000 ms is the value Sunshine's configuration guide gives for it. Only where the system takes Guide.
+ */
+#define GUIDE_HOLD_MS 2000
+#define GUIDE_TAP_MS 100
+static void guide_hold_view(app_gamepad_state_t *gamepad, bool down);
+static void guide_tap(app_gamepad_state_t *gamepad);
+#endif
 
 static bool quit_combo_pressed = false;
 static bool vmouse_combo_pressed = false;
 static bool keyboard_combo_pressed = false;
 static bool stats_combo_pressed = false;
+#if TARGET_ANDROID
+static bool home_combo_pressed = false;
+#endif
 
 static void release_buttons(stream_input_t *input, app_gamepad_state_t *gamepad);
 
 static bool gamepad_combo_check(int buttons, short combo);
+
+static short host_buttons(const app_gamepad_state_t *gamepad);
+
+static void gamepad_arrival_info(const app_gamepad_state_t *gamepad, uint8_t *type_out, uint16_t *caps_out,
+                                 bool log);
 
 static bool sensor_state_needs_update(const app_gamepad_sensor_state_t *state, uint32_t timestamp,
                                       const float data[3]);
@@ -128,9 +157,17 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
     } else {
         gamepad->buttons &= ~button;
     }
+#if TARGET_ANDROID
+    if (button == BACK_FLAG) {
+        guide_hold_view(gamepad, event->type == SDL_CONTROLLERBUTTONDOWN);
+    }
+#endif
 
     if (gamepad_combo_check(gamepad->buttons, QUIT_BUTTONS)) {
         quit_combo_pressed = true;
+#if TARGET_ANDROID
+        home_combo_pressed = false;         /* View + Start on the way to the stream menu combo */
+#endif
         return;
     } else if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_VMOUSE)) {
         vmouse_combo_pressed = true;
@@ -142,6 +179,27 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
         stats_combo_pressed = true;
         return;
     }
+#if TARGET_ANDROID
+    else if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_HOME)) {
+        if (!home_combo_pressed) {
+            home_combo_pressed = true;
+            /* Whichever of the two went first reached the host: take it back now. */
+            if (!input->view_only && stream_input_moonlight_gamepad_enabled(input)) {
+                send_primary_controller(input, gamepad, host_buttons(gamepad),
+                                        (unsigned char) gamepad->leftTrigger,
+                                        (unsigned char) gamepad->rightTrigger,
+                                        gamepad->leftStickX, gamepad->leftStickY,
+                                        gamepad->rightStickX, gamepad->rightStickY);
+                coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
+                                           host_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
+                                           (unsigned char) gamepad->rightTrigger,
+                                           gamepad->leftStickX, gamepad->leftStickY,
+                                           gamepad->rightStickX, gamepad->rightStickY);
+            }
+        }
+        return;
+    }
+#endif
     if (gamepad->buttons == 0) {
         if (quit_combo_pressed) {
             quit_combo_pressed = false;
@@ -164,18 +222,26 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
             bus_pushevent(USER_TOGGLE_STATS_PIN, NULL, NULL);
             return;
         }
+#if TARGET_ANDROID
+        else if (home_combo_pressed) {
+            home_combo_pressed = false;
+            release_buttons(input, gamepad);
+            android_go_home();
+            return;
+        }
+#endif
     }
 
     if (input->view_only || !stream_input_moonlight_gamepad_enabled(input)) {
         return;
     }
-    send_primary_controller(input, gamepad, (short) gamepad->buttons,
+    send_primary_controller(input, gamepad, host_buttons(gamepad),
                             (unsigned char) gamepad->leftTrigger,
                             (unsigned char) gamepad->rightTrigger,
                             gamepad->leftStickX, gamepad->leftStickY,
                             gamepad->rightStickX, gamepad->rightStickY);
     coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
-                               (short) gamepad->buttons, (unsigned char) gamepad->leftTrigger,
+                               host_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
                                (unsigned char) gamepad->rightTrigger,
                                gamepad->leftStickX, gamepad->leftStickY,
                                gamepad->rightStickX, gamepad->rightStickY);
@@ -232,19 +298,19 @@ void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEv
     }
 
     if (vmouse_intercepted(input, gamepad)) {
-        send_primary_controller(input, gamepad, (short) gamepad->buttons, 0, 0,
+        send_primary_controller(input, gamepad, host_buttons(gamepad), 0, 0,
                                 gamepad->leftStickX, gamepad->leftStickY, 0, 0);
         coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
-                                   (short) gamepad->buttons, 0, 0,
+                                   host_buttons(gamepad), 0, 0,
                                    gamepad->leftStickX, gamepad->leftStickY, 0, 0);
     } else {
-        send_primary_controller(input, gamepad, (short) gamepad->buttons,
+        send_primary_controller(input, gamepad, host_buttons(gamepad),
                                 (unsigned char) gamepad->leftTrigger,
                                 (unsigned char) gamepad->rightTrigger,
                                 gamepad->leftStickX, gamepad->leftStickY,
                                 gamepad->rightStickX, gamepad->rightStickY);
         coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
-                                   (short) gamepad->buttons, (unsigned char) gamepad->leftTrigger,
+                                   host_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
                                    (unsigned char) gamepad->rightTrigger,
                                    gamepad->leftStickX, gamepad->leftStickY,
                                    gamepad->rightStickX, gamepad->rightStickY);
@@ -390,10 +456,50 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
         return;
     }
     input->announcedGamepadMask |= 1 << gamepad->gs_id;
-    uint8_t type = LI_CTYPE_XBOX;
-    uint16_t capabilities = LI_CCAP_ANALOG_TRIGGERS;
     commons_log_info("Input", "Controller %d arrived. Name: %s", gamepad->gs_id,
                      SDL_GameControllerName(gamepad->controller));
+    uint8_t type;
+    uint16_t capabilities;
+    gamepad_arrival_info(gamepad, &type, &capabilities, true);
+    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask;
+    const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
+    if (primary_slot >= 0) {
+        LiSendControllerArrivalEvent((uint16_t) primary_slot,
+                                     coop_input_primary_mask(active_mask), type, 0xFFFFFFFF,
+                                     capabilities);
+    }
+    coop_input_send_arrive(gamepad->gs_id, active_mask, type, capabilities, 0xFFFFFFFF);
+}
+
+#if TARGET_ANDROID
+void stream_input_reannounce_peer_gamepads(stream_input_t *input) {
+    /* The second co-op PC's controllers, announced again once its session is up. On Android the primary's
+     * stream starts before the secondary is ready (session_video.c), so their first arrival can come while
+     * the coordinator has no secondary to give it to, and is dropped: PC1 then made a default pad on the
+     * first input, without the controller's type or features (2026-10-16). coop_input_send_arrive() sends
+     * only the pads routed to the secondary. */
+    if (input == NULL || input->view_only || !stream_input_moonlight_gamepad_enabled(input)) {
+        return;
+    }
+    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask;
+    for (size_t i = 0; i < input->input->gamepads_count; ++i) {
+        app_gamepad_state_t *gamepad = &input->input->gamepads[i];
+        if (gamepad->controller == NULL || gamepad->gs_id < 0 ||
+            (input->announcedGamepadMask & (1 << gamepad->gs_id)) == 0) {
+            continue;
+        }
+        uint8_t type;
+        uint16_t capabilities;
+        gamepad_arrival_info(gamepad, &type, &capabilities, false);
+        coop_input_send_arrive(gamepad->gs_id, active_mask, type, capabilities, 0xFFFFFFFF);
+    }
+}
+#endif
+
+static void gamepad_arrival_info(const app_gamepad_state_t *gamepad, uint8_t *type_out, uint16_t *caps_out,
+                                 bool log) {
+    uint8_t type = LI_CTYPE_XBOX;
+    uint16_t capabilities = LI_CCAP_ANALOG_TRIGGERS;
     switch (SDL_GameControllerGetType(gamepad->controller)) {
 #if SDL_VERSION_ATLEAST(2, 24, 0)
         case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
@@ -413,7 +519,7 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
         case SDL_CONTROLLER_TYPE_PS5: {
             type = LI_CTYPE_PS;
             capabilities |= LI_CCAP_TOUCHPAD;
-            commons_log_info("Input", "  controller capability: touchpad");
+            if (log) commons_log_info("Input", "  controller capability: touchpad");
             break;
         }
         default: {
@@ -423,11 +529,11 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
 #if SDL_VERSION_ATLEAST(2, 0, 18)
     if (SDL_GameControllerHasRumble(gamepad->controller)) {
         capabilities |= LI_CCAP_RUMBLE;
-        commons_log_info("Input", "  controller capability: rumble");
+        if (log) commons_log_info("Input", "  controller capability: rumble");
     }
     if (SDL_GameControllerHasRumbleTriggers(gamepad->controller)) {
         capabilities |= LI_CCAP_TRIGGER_RUMBLE;
-        commons_log_info("Input", "  controller capability: trigger rumble");
+        if (log) commons_log_info("Input", "  controller capability: trigger rumble");
     }
 #else
     capabilities |= LI_CCAP_RUMBLE;
@@ -438,25 +544,19 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
 #if SDL_VERSION_ATLEAST(2, 0, 14)
     if (SDL_GameControllerHasSensor(gamepad->controller, SDL_SENSOR_ACCEL)) {
         capabilities |= LI_CCAP_ACCEL;
-        commons_log_info("Input", "  controller capability: accelerometer");
+        if (log) commons_log_info("Input", "  controller capability: accelerometer");
     }
     if (SDL_GameControllerHasSensor(gamepad->controller, SDL_SENSOR_GYRO)) {
         capabilities |= LI_CCAP_GYRO;
-        commons_log_info("Input", "  controller capability: gyroscope");
+        if (log) commons_log_info("Input", "  controller capability: gyroscope");
     }
     if (SDL_GameControllerHasLED(gamepad->controller)) {
         capabilities |= LI_CCAP_RGB_LED;
-        commons_log_info("Input", "  controller capability: RGB LED");
+        if (log) commons_log_info("Input", "  controller capability: RGB LED");
     }
 #endif
-    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask;
-    const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
-    if (primary_slot >= 0) {
-        LiSendControllerArrivalEvent((uint16_t) primary_slot,
-                                     coop_input_primary_mask(active_mask), type, 0xFFFFFFFF,
-                                     capabilities);
-    }
-    coop_input_send_arrive(gamepad->gs_id, active_mask, type, capabilities, 0xFFFFFFFF);
+    *type_out = type;
+    *caps_out = capabilities;
 }
 
 static void stream_input_send_gamepad_remove(stream_input_t *input, app_gamepad_state_t *gamepad) {
@@ -527,6 +627,25 @@ static bool gamepad_combo_check(int buttons, short combo) {
     return (buttons & combo) == combo;
 }
 
+static short host_buttons(const app_gamepad_state_t *gamepad) {
+    short buttons = (short) gamepad->buttons;
+#if TARGET_ANDROID
+    /* The way home is not the host's View + Start: from the moment the combo forms until it is let go,
+     * the host sees neither, whatever else changes meanwhile. */
+    if (home_combo_pressed) {
+        buttons = (short) (buttons & ~GAMEPAD_COMBO_HOME);
+    }
+    /* View held = Guide: View reads as let go once Guide has been sent, and Guide is down for its tap. */
+    if (gamepad->view_masked) {
+        buttons = (short) (buttons & ~BACK_FLAG);
+    }
+    if (gamepad->guide_down) {
+        buttons = (short) (buttons | SPECIAL_FLAG);
+    }
+#endif
+    return buttons;
+}
+
 static bool sensor_state_needs_update(const app_gamepad_sensor_state_t *state, uint32_t timestamp,
                                       const float data[3]) {
     if (state->periodMs == 0 || !SDL_TICKS_PASSED(timestamp, state->lastTimestamp + state->periodMs)) {
@@ -558,3 +677,93 @@ static bool filter_deadzone_2axis(stream_input_t *input, short *x, short *y) {
     }
     return false;
 }
+
+#if TARGET_ANDROID
+/** The stream's input, or NULL once the session the timer was started in has gone. */
+static stream_input_t *guide_stream_input(void) {
+    return global != NULL && global->session != NULL ? &global->session->input : NULL;
+}
+
+/** Send @p gamepad's state as the host should see it now (host_buttons), as a button event does. */
+static void guide_send_state(stream_input_t *input, app_gamepad_state_t *gamepad) {
+    if (input->view_only || !stream_input_moonlight_gamepad_enabled(input)) {
+        return;
+    }
+    const bool vmouse = vmouse_intercepted(input, gamepad);
+    const unsigned char lt = vmouse ? 0 : (unsigned char) gamepad->leftTrigger;
+    const unsigned char rt = vmouse ? 0 : (unsigned char) gamepad->rightTrigger;
+    const short rx = vmouse ? 0 : gamepad->rightStickX, ry = vmouse ? 0 : gamepad->rightStickY;
+    send_primary_controller(input, gamepad, host_buttons(gamepad), lt, rt, gamepad->leftStickX, gamepad->leftStickY,
+                            rx, ry);
+    coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask, host_buttons(gamepad),
+                               lt, rt, gamepad->leftStickX, gamepad->leftStickY, rx, ry);
+}
+
+static void guide_tap_timer_cb(lv_timer_t *timer) {
+    app_gamepad_state_t *gamepad = timer->user_data;
+    gamepad->guide_tap_timer = NULL;        /* run once: LVGL deletes the timer when this returns */
+    gamepad->guide_down = false;
+    stream_input_t *input = guide_stream_input();
+    if (input != NULL && gamepad->instance_id == gamepad->guide_owner) {
+        guide_send_state(input, gamepad);
+    }
+}
+
+/** Press Guide now and let go of it GUIDE_TAP_MS later, as Sunshine does. */
+static void guide_tap(app_gamepad_state_t *gamepad) {
+    stream_input_t *input = guide_stream_input();
+    if (input == NULL || gamepad->guide_tap_timer != NULL) {
+        return;
+    }
+    gamepad->guide_owner = gamepad->instance_id;
+    gamepad->guide_down = true;
+    guide_send_state(input, gamepad);
+    lv_timer_t *timer = lv_timer_create(guide_tap_timer_cb, GUIDE_TAP_MS, gamepad);
+    lv_timer_set_repeat_count(timer, 1);
+    gamepad->guide_tap_timer = timer;
+}
+
+static void guide_hold_timer_cb(lv_timer_t *timer) {
+    app_gamepad_state_t *gamepad = timer->user_data;
+    gamepad->guide_hold_timer = NULL;       /* run once: LVGL deletes the timer when this returns */
+    stream_input_t *input = guide_stream_input();
+    /* Not while View is part of one of Eclipse's own combos: the host never sees View as such then. */
+    if (input == NULL || gamepad->instance_id != gamepad->guide_owner || !(gamepad->buttons & BACK_FLAG) ||
+        quit_combo_pressed || vmouse_combo_pressed || keyboard_combo_pressed || stats_combo_pressed ||
+        home_combo_pressed) {
+        return;
+    }
+    commons_log_info("Input", "Controller #%d: View held %d ms, sending Guide", gamepad->gs_id, GUIDE_HOLD_MS);
+    /* Sunshine: View up first, then Guide down; View stays up until it is let go. */
+    gamepad->view_masked = true;
+    guide_send_state(input, gamepad);
+    guide_tap(gamepad);
+}
+
+static void guide_hold_view(app_gamepad_state_t *gamepad, bool down) {
+    if (gamepad->guide_hold_timer != NULL) {
+        lv_timer_del(gamepad->guide_hold_timer);
+        gamepad->guide_hold_timer = NULL;
+    }
+    /* Pressed afresh or let go, View is View again (Sunshine: back_button_state back to NONE). */
+    gamepad->view_masked = false;
+    if (down && android_guide_is_home()) {
+        gamepad->guide_owner = gamepad->instance_id;
+        lv_timer_t *timer = lv_timer_create(guide_hold_timer_cb, GUIDE_HOLD_MS, gamepad);
+        lv_timer_set_repeat_count(timer, 1);
+        gamepad->guide_hold_timer = timer;
+    }
+}
+
+void stream_input_send_guide(stream_input_t *input) {
+    /* The first controller's Guide: the stream menu cannot tell which controller opened it. */
+    for (int i = 0; i < app_input_get_max_gamepads(input->input); i++) {
+        app_gamepad_state_t *gamepad = app_input_gamepad_state_by_index(input->input, i);
+        if (gamepad != NULL && gamepad->gs_id >= 0) {
+            guide_tap(gamepad);
+            return;
+        }
+    }
+    commons_log_info("Input", "Guide from the stream menu: no controller connected");
+}
+#endif

@@ -30,6 +30,9 @@
 #ifdef _WIN32
 #include "local_host_win.h"
 #endif
+#if TARGET_ANDROID
+#include "platform/android/android_platform.h"
+#endif
 #include "fatal_error.h"
 #include "app_error.h"
 #include "util/i18n.h"
@@ -281,6 +284,9 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
 //                    ui_stream_render->renderCleanup();
 //                }
                 app_set_keep_awake(app, false);
+#if TARGET_ANDROID
+                android_display_request_refresh(0);   /* back to the system's choice (set: session_worker.c) */
+#endif
                 app_input_reset_stream_overrides(&app->input);
                 if (session_has_input(app->session)) {
                     app_set_mouse_grab(&app->input, false);
@@ -549,6 +555,11 @@ SDL_Window *app_ui_create_window(app_ui_t *ui) {
             win_flags |= SDL_WINDOW_MAXIMIZED;
         }
     }
+#if TARGET_ANDROID
+    /* The UI is composited over the video surface (platform/android): its EGL surface needs an alpha channel
+     * so the transparent areas of a stream's UI show the picture underneath, as the webOS plane does. */
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+#endif
     SDL_Window *win = SDL_CreateWindow("Eclipse", win_x, win_y, win_width, win_height, win_flags);
     if (win == NULL) {
 #ifdef TARGET_WEBOS

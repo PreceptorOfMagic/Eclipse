@@ -178,11 +178,23 @@ index 0000000000000000000000000000000000000000..1480852e9617121f8acce87f81cdb292
 +    void *context;
 +} SS4S_HostRender;
 diff --git a/modules/CMakeLists.txt b/modules/CMakeLists.txt
-index 835f47d2384f1b31dd53c20c2e74bb300eede2cb..2b86a85ba378d768fb8d36a7a221ca816688a950 100644
+index 835f47d2384f1b31dd53c20c2e74bb300eede2cb..c8229b1350dddbba78fa9ecf217444c9ae75edb5 100644
 --- a/modules/CMakeLists.txt
 +++ b/modules/CMakeLists.txt
-@@ -31,6 +31,14 @@ function(ss4s_add_module NAME)
-             PREFIX ""
+@@ -26,11 +26,25 @@ function(ss4s_add_module NAME)
+     set(SS4S_MODULE_TARGET "ss4s-module-${NAME}")
+     add_library(${SS4S_MODULE_TARGET} SHARED ${MODULE_SOURCES})
+     target_link_libraries(${SS4S_MODULE_TARGET} PRIVATE ss4s-module-api)
++    # Android installs only lib*.so from an APK: libss4s-<name>.so there (src/module_impl.h, ModuleFileName).
++    if (ANDROID)
++        set(SS4S_MODULE_PREFIX "lib")
++    else ()
++        set(SS4S_MODULE_PREFIX "")
++    endif ()
+     set_target_properties(${SS4S_MODULE_TARGET} PROPERTIES
+             C_VISIBILITY_PRESET hidden
+-            PREFIX ""
++            PREFIX "${SS4S_MODULE_PREFIX}"
              LIBRARY_OUTPUT_NAME "ss4s-${NAME}"
              LIBRARY_OUTPUT_DIRECTORY "${SS4S_MODULE_LIBRARY_OUTPUT_DIRECTORY}"
 +            # ON WINDOWS A DLL IS A *RUNTIME* ARTIFACT. LIBRARY_OUTPUT_NAME renames only the
@@ -196,7 +208,7 @@ index 835f47d2384f1b31dd53c20c2e74bb300eede2cb..2b86a85ba378d768fb8d36a7a221ca81
              SS4S_MODULE_NAME "${NAME}"
              SS4S_MODULE_GROUP "${MODULE_IN_GROUP}"
              SS4S_MODULE_DISPLAY_NAME "${MODULE_DISPLAY_NAME}"
-@@ -53,7 +61,12 @@ function(ss4s_add_module NAME)
+@@ -53,7 +67,12 @@ function(ss4s_add_module NAME)
      else ()
          target_compile_options(${SS4S_MODULE_TARGET} PRIVATE -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter)
      endif ()
@@ -210,7 +222,7 @@ index 835f47d2384f1b31dd53c20c2e74bb300eede2cb..2b86a85ba378d768fb8d36a7a221ca81
      message(STATUS "Enable SS4S module `${NAME}`")
  endfunction()
  
-@@ -62,6 +75,7 @@ add_subdirectory(utils)
+@@ -62,9 +81,11 @@ add_subdirectory(utils)
  add_subdirectory(alsa)
  add_subdirectory(pulse)
  add_subdirectory(sdl)
@@ -218,13 +230,932 @@ index 835f47d2384f1b31dd53c20c2e74bb300eede2cb..2b86a85ba378d768fb8d36a7a221ca81
  add_subdirectory(mmal)
  add_subdirectory(webos)
  add_subdirectory(steamlink)
-@@ -72,4 +86,4 @@ endif ()
++add_subdirectory(android)
+ 
+ if (SS4S_MODULE_BUILD_DUMMY)
+     add_subdirectory(dummy)
+@@ -72,4 +93,4 @@ endif ()
  
  if (SS4S_GENERATE_MODULES_LIST)
      add_subdirectory(list-ini)
 -endif ()
 \ No newline at end of file
 +endif ()
+diff --git a/modules/android/CMakeLists.txt b/modules/android/CMakeLists.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..38d1acae782526a7701fe2d28ae0bc4953fa05f1
+--- /dev/null
++++ b/modules/android/CMakeLists.txt
+@@ -0,0 +1,12 @@
++# Android video backend: MediaCodec rendering into a video surface under the app's UI (see mediacodec.c).
++if (NOT ANDROID)
++    return()
++endif ()
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(SDL2 REQUIRED sdl2)
++ss4s_add_module(mediacodec FOR_VIDEO DISPLAY_NAME "MediaCodec" SOURCES mediacodec.c WEIGHT 50)
++if (NOT SS4S_MODULE_TARGET)
++    return()
++endif ()
++target_include_directories(${SS4S_MODULE_TARGET} SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
++target_link_libraries(${SS4S_MODULE_TARGET} PRIVATE ${SDL2_LIBRARIES} mediandk android log)
+diff --git a/modules/android/mediacodec.c b/modules/android/mediacodec.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ebcf36001cdfaa850f2397a1b0975b4190b8625
+--- /dev/null
++++ b/modules/android/mediacodec.c
+@@ -0,0 +1,891 @@
++/*
++ * SS4S video module: Android MediaCodec, for Android TV devices (the NVIDIA Shield first).
++ *
++ * THE PRESENTATION MODEL IS webOS'S, NOT THE DESKTOP'S. The decoder renders straight into a SurfaceView of its
++ * own that sits UNDER the app's translucent SDL surface (deploy/android, EclipseActivity): a hardware overlay
++ * plane, exactly as starfish/NDL put the TV's video on a plane under the UI. So this reports
++ * SS4S_VIDEO_CAP_TRANSFORM_UI_COMPOSITING like the NDL modules, the app clears its UI to transparent while a
++ * stream runs, and nothing here touches SDL's renderer. Decoded pictures never come back to the CPU.
++ *
++ * WHAT IS COPIED RATHER THAN INVENTED. The decoder choice and its low-latency configuration follow Moonlight
++ * for Android (moonlight-stream/moonlight-android, MediaCodecHelper.java and MediaCodecDecoderRenderer.java),
++ * the client that has run on the Shield since GameStream was a Shield feature: prefer a hardware decoder,
++ * request real-time priority and the platform's low-latency mode, set the vendors' own low-latency keys, send
++ * parameter sets as codec-config buffers, and render every decoded picture the moment it is ready.
++ *
++ * Java does the parts the NDK cannot: listing decoders (MediaCodecList) and owning the video surface. It is
++ * reached through SDL's JNI environment. The co-op peer process has no Java VM at all, so the decoder list the
++ * primary probes is passed down in the environment (MEDIACODEC_PROBE_ENV) and the peer never calls Java.
++ */
++#include "ss4s/modapi.h"
++
++#include <SDL.h>
++#include <SDL_system.h>
++#include <jni.h>
++#include <android/log.h>
++#include <android/native_window.h>
++#include <android/native_window_jni.h>
++#include <media/NdkMediaCodec.h>
++#include <media/NdkMediaFormat.h>
++
++#include <errno.h>
++#include <pthread.h>
++#include <stdarg.h>
++#include <stdatomic.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <time.h>
++
++#define LOG_TAG "MediaCodec"
++#define MEDIACODEC_PROBE_ENV "ECLIPSE_MEDIACODEC_PROBE"
++/* Set by the app in the co-op peer process (platform/android/android_platform.c). */
++#define PEER_PROCESS_ENV "ECLIPSE_ANDROID_PEER"
++
++/* Input: how long one Feed() waits for a free input buffer before the picture is given up and a keyframe
++ * requested -- long enough for a decoder that is merely busy, short enough not to stall the network thread. */
++#define INPUT_WAIT_US 10000
++#define INPUT_WAIT_TRIES 50
++/* Output: the render thread wakes this often even without pictures, so Close() never waits long. */
++#define OUTPUT_WAIT_US 20000
++/* Surface: the activity creates it with the window; a stream can start before Android has made it. */
++#define SURFACE_WAIT_MS 3000
++/* A restart of the decoder that fails is retried at the next keyframes for this long before the stream is ended as
++ * a decoder error: Android abandons the video surface when the screen turns off (the TV switched input, the device
++ * slept), before the activity reports going to the background, and every start on the dead surface fails. */
++#ifndef RESTART_GRACE_US
++#define RESTART_GRACE_US 3000000u
++#endif
++
++static const SS4S_LibraryContext *LibContext = NULL;
++
++/* --- the decoder list ------------------------------------------------------------------------------------ */
++
++typedef struct DecoderEntry {
++    SS4S_VideoCodec codec;
++    char name[128];
++    bool hardware;
++    bool low_latency;
++    bool main10;
++    int max_width, max_height;
++} DecoderEntry;
++
++static DecoderEntry Decoders[8];
++static int DecoderCount = 0;
++static bool DisplayHdr10 = false;
++static bool Probed = false;
++static pthread_mutex_t ProbeLock = PTHREAD_MUTEX_INITIALIZER;
++
++struct SS4S_PlayerContext {
++    SS4S_Player *player;
++};
++
++typedef struct ParamSets {
++    unsigned char data[4096];
++    size_t len;
++} ParamSets;
++
++struct SS4S_VideoInstance {
++    SS4S_PlayerContext *context;
++    SS4S_VideoCodec codec;
++    const char *mime;
++    int width, height, fps;
++    const DecoderEntry *decoder;
++
++    pthread_mutex_t lock;          /* codec lifetime vs Feed()/render thread */
++    AMediaCodec *mc;
++    ANativeWindow *window;
++    pthread_t render_thread;
++    bool render_running;
++    atomic_bool stop;
++
++    bool have_hdr;
++    SS4S_VideoHDRInfo hdr;
++    bool reconfigure_at_keyframe;  /* HDR changed: take effect at the next IDR, as the TV reloads its pipeline */
++    bool need_keyframe;            /* a picture was lost: everything until the next IDR would be garbage */
++    uint64_t restart_failing_since; /* a restart failed (MonotonicUs), 0 when the decoder is running */
++
++    ParamSets params;              /* the last parameter sets sent as codec config */
++    unsigned long fed, rendered, dropped_output, lost_input, errors;
++};
++
++static void LogMsg(SS4S_LogLevel level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
++
++static void LogMsg(SS4S_LogLevel level, const char *fmt, ...) {
++    char buf[512];
++    va_list ap;
++    va_start(ap, fmt);
++    vsnprintf(buf, sizeof(buf), fmt, ap);
++    va_end(ap);
++    if (LibContext != NULL && LibContext->Log != NULL) {
++        LibContext->Log(level, LOG_TAG, "%s", buf);
++    } else {
++        __android_log_print(level >= SS4S_LogLevelError ? ANDROID_LOG_ERROR : ANDROID_LOG_INFO, LOG_TAG, "%s", buf);
++    }
++}
++
++static uint64_t MonotonicUs(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint64_t) ts.tv_sec * 1000000u + (uint64_t) ts.tv_nsec / 1000u;
++}
++
++static const char *MimeOf(SS4S_VideoCodec codec) {
++    switch (codec) {
++        case SS4S_VIDEO_H264:
++            return "video/avc";
++        case SS4S_VIDEO_H265:
++            return "video/hevc";
++        case SS4S_VIDEO_AV1:
++            return "video/av01";
++        case SS4S_VIDEO_VP9:
++            return "video/x-vnd.on2.vp9";
++        default:
++            return NULL;
++    }
++}
++
++static SS4S_VideoCodec CodecOfMime(const char *mime) {
++    if (strcmp(mime, "video/avc") == 0) return SS4S_VIDEO_H264;
++    if (strcmp(mime, "video/hevc") == 0) return SS4S_VIDEO_H265;
++    if (strcmp(mime, "video/av01") == 0) return SS4S_VIDEO_AV1;
++    if (strcmp(mime, "video/x-vnd.on2.vp9") == 0) return SS4S_VIDEO_VP9;
++    return SS4S_VIDEO_NONE;
++}
++
++/* --- Java --------------------------------------------------------------------------------------------------
++ * EclipseActivity's static helpers, found through the live activity object: on a thread SDL attached to the
++ * VM, FindClass would use the system class loader, which cannot see the app's classes. */
++
++static JNIEnv *ActivityEnv(jclass *cls_out) {
++    if (getenv(PEER_PROCESS_ENV) != NULL) {
++        return NULL;   /* the co-op peer: no Java VM in this process */
++    }
++    JNIEnv *env = (JNIEnv *) SDL_AndroidGetJNIEnv();
++    if (env == NULL) {
++        return NULL;
++    }
++    jobject activity = (jobject) SDL_AndroidGetActivity();
++    if (activity == NULL) {
++        return NULL;
++    }
++    *cls_out = (*env)->GetObjectClass(env, activity);
++    (*env)->DeleteLocalRef(env, activity);
++    return *cls_out != NULL ? env : NULL;
++}
++
++static bool ClearException(JNIEnv *env, const char *what) {
++    if ((*env)->ExceptionCheck(env)) {
++        (*env)->ExceptionDescribe(env);
++        (*env)->ExceptionClear(env);
++        LogMsg(SS4S_LogLevelWarn, "%s threw a Java exception", what);
++        return true;
++    }
++    return false;
++}
++
++/* EclipseActivity.probeVideoDecoders(): one line per usable decoder, best first for each MIME type,
++ *     mime|name|hardware|lowLatency|main10|maxWidth|maxHeight
++ * and a first line "display|hdr10" (0/1). */
++static char *JavaProbe(void) {
++    jclass cls = NULL;
++    JNIEnv *env = ActivityEnv(&cls);
++    if (env == NULL) {
++        return NULL;
++    }
++    char *copy = NULL;
++    jmethodID method = (*env)->GetStaticMethodID(env, cls, "probeVideoDecoders", "()Ljava/lang/String;");
++    if (method != NULL) {
++        jstring result = (jstring) (*env)->CallStaticObjectMethod(env, cls, method);
++        if (!ClearException(env, "probeVideoDecoders") && result != NULL) {
++            const char *chars = (*env)->GetStringUTFChars(env, result, NULL);
++            if (chars != NULL) {
++                copy = strdup(chars);
++                (*env)->ReleaseStringUTFChars(env, result, chars);
++            }
++        }
++        if (result != NULL) {
++            (*env)->DeleteLocalRef(env, result);
++        }
++    } else {
++        ClearException(env, "probeVideoDecoders lookup");
++    }
++    (*env)->DeleteLocalRef(env, cls);
++    return copy;
++}
++
++static void ParseProbe(const char *text) {
++    DecoderCount = 0;
++    DisplayHdr10 = false;
++    char *copy = strdup(text), *save = NULL;
++    if (copy == NULL) {
++        return;
++    }
++    for (char *line = strtok_r(copy, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
++        char *fields[8] = {0};
++        int n = 0;
++        char *fsave = NULL;
++        for (char *f = strtok_r(line, "|", &fsave); f != NULL && n < 8; f = strtok_r(NULL, "|", &fsave)) {
++            fields[n++] = f;
++        }
++        if (n == 2 && strcmp(fields[0], "display") == 0) {
++            DisplayHdr10 = atoi(fields[1]) != 0;
++            continue;
++        }
++        if (n != 7 || DecoderCount >= (int) (sizeof(Decoders) / sizeof(Decoders[0]))) {
++            continue;
++        }
++        const SS4S_VideoCodec codec = CodecOfMime(fields[0]);
++        if (codec == SS4S_VIDEO_NONE) {
++            continue;
++        }
++        DecoderEntry *e = &Decoders[DecoderCount++];
++        memset(e, 0, sizeof(*e));
++        e->codec = codec;
++        snprintf(e->name, sizeof(e->name), "%s", fields[1]);
++        e->hardware = atoi(fields[2]) != 0;
++        e->low_latency = atoi(fields[3]) != 0;
++        e->main10 = atoi(fields[4]) != 0;
++        e->max_width = atoi(fields[5]);
++        e->max_height = atoi(fields[6]);
++    }
++    free(copy);
++}
++
++static void EnsureProbed(void) {
++    pthread_mutex_lock(&ProbeLock);
++    if (!Probed) {
++        const char *inherited = getenv(MEDIACODEC_PROBE_ENV);
++        char *probe = inherited != NULL ? strdup(inherited) : JavaProbe();
++        if (probe != NULL) {
++            ParseProbe(probe);
++            Probed = true;
++            /* The co-op peer is exec'd later and inherits the environment: its own capability questions
++             * (codec negotiation with its host) get the same answer without a Java VM. */
++            if (inherited == NULL) {
++                setenv(MEDIACODEC_PROBE_ENV, probe, 1);
++            }
++            for (int i = 0; i < DecoderCount; ++i) {
++                LogMsg(SS4S_LogLevelInfo, "Decoder %s: %s%s%s%s, up to %dx%d", SS4S_VideoCodecName(Decoders[i].codec),
++                       Decoders[i].name, Decoders[i].hardware ? " (hardware)" : " (SOFTWARE)",
++                       Decoders[i].low_latency ? ", low-latency mode" : "",
++                       Decoders[i].main10 ? ", 10-bit" : "", Decoders[i].max_width, Decoders[i].max_height);
++            }
++            LogMsg(SS4S_LogLevelInfo, "Display HDR10: %s", DisplayHdr10 ? "yes" : "no");
++            free(probe);
++        }
++    }
++    pthread_mutex_unlock(&ProbeLock);
++}
++
++static const DecoderEntry *DecoderFor(SS4S_VideoCodec codec) {
++    for (int i = 0; i < DecoderCount; ++i) {
++        if (Decoders[i].codec == codec) {
++            return &Decoders[i];
++        }
++    }
++    return NULL;
++}
++
++/* The activity's video surface as it is now, or NULL; *no_vm (optional) is set when there is no Java VM to ask. */
++static ANativeWindow *CurrentWindow(int width, int height, bool *no_vm) {
++    ANativeWindow *window = NULL;
++    jclass cls = NULL;
++    JNIEnv *env = ActivityEnv(&cls);
++    if (no_vm != NULL) {
++        *no_vm = env == NULL;
++    }
++    if (env == NULL) {
++        return NULL;
++    }
++    jmethodID size = (*env)->GetStaticMethodID(env, cls, "setVideoSize", "(II)V");
++    if (size != NULL) {
++        /* Letterbox a stream whose shape is not the screen's, as the TV's video plane does. */
++        (*env)->CallStaticVoidMethod(env, cls, size, (jint) width, (jint) height);
++    }
++    ClearException(env, "setVideoSize");
++    jmethodID get = (*env)->GetStaticMethodID(env, cls, "getVideoSurface", "()Landroid/view/Surface;");
++    if (get != NULL) {
++        jobject surface = (*env)->CallStaticObjectMethod(env, cls, get);
++        if (!ClearException(env, "getVideoSurface") && surface != NULL) {
++            window = ANativeWindow_fromSurface(env, surface);
++            (*env)->DeleteLocalRef(env, surface);
++        }
++    } else {
++        ClearException(env, "getVideoSurface lookup");
++    }
++    (*env)->DeleteLocalRef(env, cls);
++    return window;
++}
++
++/* The video surface, waiting for Android to create it if a stream starts first. */
++static ANativeWindow *AcquireWindow(int width, int height) {
++    const uint64_t deadline = MonotonicUs() + (uint64_t) SURFACE_WAIT_MS * 1000u;
++    do {
++        bool no_vm = false;
++        ANativeWindow *window = CurrentWindow(width, height, &no_vm);
++        if (window != NULL || no_vm) {
++            return window;
++        }
++        SDL_Delay(20);
++    } while (MonotonicUs() < deadline);
++    return NULL;
++}
++
++/* --- driver ---------------------------------------------------------------------------------------------- */
++
++static int Init(int argc, char *argv[]) {
++    (void) argc;
++    (void) argv;
++    return 0;
++}
++
++static void Quit(void) {
++}
++
++static bool GetCapabilities(SS4S_VideoCapabilities *capabilities) {
++    EnsureProbed();
++    memset(capabilities, 0, sizeof(*capabilities));
++    /* Video on its own plane under a translucent UI, as on webOS (see the header). */
++    capabilities->transform = SS4S_VIDEO_CAP_TRANSFORM_UI_COMPOSITING;
++    capabilities->colorSpace = SS4S_VIDEO_CAP_COLORSPACE_BT2020 | SS4S_VIDEO_CAP_COLORSPACE_BT709;
++    capabilities->fullColorRange = false;
++    bool hdr_decoder = false;
++    for (int i = 0; i < DecoderCount; ++i) {
++        const DecoderEntry *e = &Decoders[i];
++        capabilities->codecs |= e->codec;
++        if (e->main10 && (e->codec == SS4S_VIDEO_H265 || e->codec == SS4S_VIDEO_AV1)) {
++            hdr_decoder = true;
++        }
++        /* The resolution list is decoder-aware: the largest the best H.265 (or else H.264) decoder takes. */
++        if (e->codec == SS4S_VIDEO_H265 || (e->codec == SS4S_VIDEO_H264 && capabilities->maxWidth == 0)) {
++            capabilities->maxWidth = (unsigned int) e->max_width;
++            capabilities->maxHeight = (unsigned int) e->max_height;
++        }
++    }
++    capabilities->hdr = hdr_decoder && DisplayHdr10;
++    return capabilities->codecs != SS4S_VIDEO_NONE;
++}
++
++static SS4S_VideoCodec GetPreferredCodecs(const SS4S_VideoInfo *info) {
++    (void) info;
++    EnsureProbed();
++    SS4S_VideoCodec codecs = SS4S_VIDEO_NONE;
++    for (int i = 0; i < DecoderCount; ++i) {
++        if (Decoders[i].hardware) {
++            codecs |= Decoders[i].codec;
++        }
++    }
++    return codecs;
++}
++
++/* HDR10 static metadata as MediaFormat's "hdr-static-info": ST 2086 + CTA-861.3, little endian, in the order
++ * Android's MediaFormat.KEY_HDR_STATIC_INFO documents (type 0, then R,G,B primaries, white point, max/min
++ * luminance, MaxCLL, MaxFALL). */
++static size_t HdrStaticInfo(const SS4S_VideoHDRInfo *hdr, uint8_t out[25]) {
++    uint16_t values[12] = {
++            (uint16_t) hdr->displayPrimariesX.r, (uint16_t) hdr->displayPrimariesY.r,
++            (uint16_t) hdr->displayPrimariesX.g, (uint16_t) hdr->displayPrimariesY.g,
++            (uint16_t) hdr->displayPrimariesX.b, (uint16_t) hdr->displayPrimariesY.b,
++            (uint16_t) hdr->whitePointX, (uint16_t) hdr->whitePointY,
++            (uint16_t) hdr->maxDisplayMasteringLuminance, (uint16_t) hdr->minDisplayMasteringLuminance,
++            (uint16_t) hdr->maxContentLightLevel, (uint16_t) hdr->maxPicAverageLightLevel,
++    };
++    out[0] = 0;
++    for (int i = 0; i < 12; ++i) {
++        out[1 + i * 2] = (uint8_t) (values[i] & 0xffu);
++        out[2 + i * 2] = (uint8_t) (values[i] >> 8);
++    }
++    return 25;
++}
++
++static void SetLowLatencyOptions(AMediaFormat *format, const DecoderEntry *decoder) {
++    /* Moonlight for Android, MediaCodecHelper.setDecoderLowLatencyOptions(). Unknown keys are ignored, so the
++     * vendor keys are set only for their own decoders to keep the log readable. */
++    AMediaFormat_setInt32(format, "priority", 0);                  /* KEY_PRIORITY: real time */
++    AMediaFormat_setInt32(format, "operating-rate", 0x7fff);        /* KEY_OPERATING_RATE: as fast as possible */
++    if (decoder->low_latency) {
++        AMediaFormat_setInt32(format, "low-latency", 1);           /* KEY_LOW_LATENCY (Android 11) */
++    }
++    const char *n = decoder->name;
++    if (strncasecmp(n, "omx.qcom", 8) == 0 || strncasecmp(n, "c2.qti", 6) == 0) {
++        AMediaFormat_setInt32(format, "vendor.qti-ext-dec-low-latency.enable", 1);
++        AMediaFormat_setInt32(format, "vendor.qti-ext-dec-picture-order.enable", 1);
++    } else if (strncasecmp(n, "omx.hisi", 8) == 0 || strncasecmp(n, "c2.hisi", 7) == 0) {
++        AMediaFormat_setInt32(format, "vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1);
++        AMediaFormat_setInt32(format, "vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1);
++    } else if (strncasecmp(n, "omx.exynos", 10) == 0 || strncasecmp(n, "c2.exynos", 9) == 0) {
++        AMediaFormat_setInt32(format, "vendor.rtc-ext-dec-low-latency.enable", 1);
++    } else if (strncasecmp(n, "omx.amlogic", 11) == 0 || strncasecmp(n, "c2.amlogic", 10) == 0) {
++        AMediaFormat_setInt32(format, "vendor.low-latency.enable", 1);
++    }
++}
++
++static void *RenderThread(void *arg);
++
++static void StopCodecLocked(SS4S_VideoInstance *instance) {
++    if (instance->render_running) {
++        atomic_store(&instance->stop, true);
++        pthread_mutex_unlock(&instance->lock);
++        pthread_join(instance->render_thread, NULL);
++        pthread_mutex_lock(&instance->lock);
++        instance->render_running = false;
++    }
++    if (instance->mc != NULL) {
++        AMediaCodec_stop(instance->mc);
++        AMediaCodec_delete(instance->mc);
++        instance->mc = NULL;
++    }
++    instance->params.len = 0;
++}
++
++static bool StartCodecLocked(SS4S_VideoInstance *instance) {
++    const DecoderEntry *decoder = instance->decoder;
++    AMediaCodec *mc = decoder != NULL ? AMediaCodec_createCodecByName(decoder->name) : NULL;
++    if (mc == NULL) {
++        mc = AMediaCodec_createDecoderByType(instance->mime);
++    }
++    if (mc == NULL) {
++        LogMsg(SS4S_LogLevelError, "No decoder could be created for %s", instance->mime);
++        return false;
++    }
++    AMediaFormat *format = AMediaFormat_new();
++    AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, instance->mime);
++    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, instance->width);
++    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, instance->height);
++    if (instance->fps > 0) {
++        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, instance->fps);
++    }
++    /* A whole access unit per input buffer: a 4K IDR at a high bitrate is several megabytes. */
++    int64_t max_input = (int64_t) instance->width * instance->height * 3 / 2;
++    if (max_input < 2 * 1024 * 1024) max_input = 2 * 1024 * 1024;
++    if (max_input > 12 * 1024 * 1024) max_input = 12 * 1024 * 1024;
++    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_MAX_INPUT_SIZE, (int32_t) max_input);
++    if (decoder != NULL) {
++        SetLowLatencyOptions(format, decoder);
++    }
++    /* Colour: MediaFormat's constants (COLOR_STANDARD_BT709 = 1, BT2020 = 6; COLOR_TRANSFER_SDR_VIDEO = 3,
++     * ST2084 = 6; COLOR_RANGE_LIMITED = 2). The bitstream carries the same; these let the display path know
++     * before the first picture, which is what switches a TV into HDR without a flash. */
++    if (instance->have_hdr) {
++        uint8_t info[25];
++        const size_t len = HdrStaticInfo(&instance->hdr, info);
++        AMediaFormat_setInt32(format, "color-standard", 6);
++        AMediaFormat_setInt32(format, "color-transfer", 6);
++        AMediaFormat_setInt32(format, "color-range", 2);
++        AMediaFormat_setBuffer(format, "hdr-static-info", info, len);
++    } else {
++        AMediaFormat_setInt32(format, "color-standard", 1);
++        AMediaFormat_setInt32(format, "color-transfer", 3);
++        AMediaFormat_setInt32(format, "color-range", 2);
++    }
++    media_status_t status = AMediaCodec_configure(mc, format, instance->window, NULL, 0);
++    AMediaFormat_delete(format);
++    if (status != AMEDIA_OK) {
++        LogMsg(SS4S_LogLevelError, "configure(%s %dx%d) failed: %d", decoder ? decoder->name : instance->mime,
++               instance->width, instance->height, (int) status);
++        AMediaCodec_delete(mc);
++        return false;
++    }
++    status = AMediaCodec_start(mc);
++    if (status != AMEDIA_OK) {
++        LogMsg(SS4S_LogLevelError, "start() failed: %d", (int) status);
++        AMediaCodec_delete(mc);
++        return false;
++    }
++    instance->mc = mc;
++    instance->params.len = 0;
++    instance->need_keyframe = true;
++    atomic_store(&instance->stop, false);
++    if (pthread_create(&instance->render_thread, NULL, RenderThread, instance) != 0) {
++        LogMsg(SS4S_LogLevelError, "render thread: %s", strerror(errno));
++        AMediaCodec_stop(mc);
++        AMediaCodec_delete(mc);
++        instance->mc = NULL;
++        return false;
++    }
++    instance->render_running = true;
++    LogMsg(SS4S_LogLevelInfo, "Started %s for %s %dx%d@%d%s", decoder ? decoder->name : "(default)", instance->mime,
++           instance->width, instance->height, instance->fps, instance->have_hdr ? " HDR10" : "");
++    return true;
++}
++
++/* Render each decoded picture as soon as it exists. When several are waiting at once -- the decoder caught up
++ * after a stall -- only the newest is shown: showing the others would only add their age to every later
++ * picture. Moonlight for Android's "lowest latency" frame pacing does the same. */
++static void *RenderThread(void *arg) {
++    SS4S_VideoInstance *instance = arg;
++    while (!atomic_load(&instance->stop)) {
++        AMediaCodecBufferInfo info;
++        ssize_t index = AMediaCodec_dequeueOutputBuffer(instance->mc, &info, OUTPUT_WAIT_US);
++        if (index == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
++            AMediaFormat *format = AMediaCodec_getOutputFormat(instance->mc);
++            if (format != NULL) {
++                LogMsg(SS4S_LogLevelInfo, "Output format: %s", AMediaFormat_toString(format));
++                AMediaFormat_delete(format);
++            }
++            continue;
++        }
++        if (index < 0) {
++            continue;   /* INFO_TRY_AGAIN_LATER, OUTPUT_BUFFERS_CHANGED */
++        }
++        for (;;) {
++            AMediaCodecBufferInfo next;
++            ssize_t newer = AMediaCodec_dequeueOutputBuffer(instance->mc, &next, 0);
++            if (newer < 0) {
++                break;
++            }
++            AMediaCodec_releaseOutputBuffer(instance->mc, (size_t) index, false);
++            instance->dropped_output++;
++            index = newer;
++            info = next;
++        }
++        AMediaCodec_releaseOutputBuffer(instance->mc, (size_t) index, true);
++        instance->rendered++;
++        if (instance->context != NULL && instance->context->player != NULL && LibContext != NULL &&
++            LibContext->VideoStats.ReportFrame != NULL && info.presentationTimeUs > 0) {
++            /* Presentation time is the feed time (Feed() below): this is the decoder's own latency. */
++            const uint64_t now = MonotonicUs();
++            if (now > (uint64_t) info.presentationTimeUs) {
++                LibContext->VideoStats.ReportFrame(instance->context->player,
++                                                   (uint32_t) (now - (uint64_t) info.presentationTimeUs));
++            }
++        }
++    }
++    return NULL;
++}
++
++static SS4S_VideoOpenResult Open(const SS4S_VideoInfo *info, const SS4S_VideoExtraInfo *extraInfo,
++                                 SS4S_VideoInstance **out, SS4S_PlayerContext *context) {
++    (void) extraInfo;
++    EnsureProbed();
++    const char *mime = MimeOf(info->codec);
++    if (mime == NULL) {
++        return SS4S_VIDEO_OPEN_UNSUPPORTED_CODEC;
++    }
++    const DecoderEntry *decoder = DecoderFor(info->codec);
++    if (decoder == NULL) {
++        LogMsg(SS4S_LogLevelError, "No %s decoder on this device", SS4S_VideoCodecName(info->codec));
++        return SS4S_VIDEO_OPEN_UNSUPPORTED_CODEC;
++    }
++    SS4S_VideoInstance *instance = calloc(1, sizeof(*instance));
++    if (instance == NULL) {
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++    pthread_mutex_init(&instance->lock, NULL);
++    instance->context = context;
++    instance->codec = info->codec;
++    instance->mime = mime;
++    instance->width = info->width;
++    instance->height = info->height;
++    instance->fps = info->frameRateDenominator > 0 ? info->frameRateNumerator / info->frameRateDenominator : 0;
++    instance->decoder = decoder;
++    instance->window = AcquireWindow(info->width, info->height);
++    if (instance->window == NULL) {
++        LogMsg(SS4S_LogLevelError, "The video surface is not available");
++        pthread_mutex_destroy(&instance->lock);
++        free(instance);
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++    pthread_mutex_lock(&instance->lock);
++    const bool started = StartCodecLocked(instance);
++    pthread_mutex_unlock(&instance->lock);
++    if (!started) {
++        ANativeWindow_release(instance->window);
++        pthread_mutex_destroy(&instance->lock);
++        free(instance);
++        return SS4S_VIDEO_OPEN_ERROR;
++    }
++    *out = instance;
++    return SS4S_VIDEO_OPEN_OK;
++}
++
++/* --- feeding ---------------------------------------------------------------------------------------------- */
++
++/* Annex B: the next start code at or after @p from; *sc_len is 3 or 4. Returns len if none. */
++static size_t NextStartCode(const unsigned char *data, size_t len, size_t from, size_t *sc_len) {
++    for (size_t i = from; i + 3 <= len; ++i) {
++        if (data[i] == 0 && data[i + 1] == 0) {
++            if (data[i + 2] == 1) {
++                *sc_len = 3;
++                return i;
++            }
++            if (i + 4 <= len && data[i + 2] == 0 && data[i + 3] == 1) {
++                *sc_len = 4;
++                return i;
++            }
++        }
++    }
++    *sc_len = 0;
++    return len;
++}
++
++static bool IsParameterSet(SS4S_VideoCodec codec, unsigned char header) {
++    if (codec == SS4S_VIDEO_H264) {
++        const unsigned type = header & 0x1fu;
++        return type == 7 || type == 8;            /* SPS, PPS */
++    }
++    if (codec == SS4S_VIDEO_H265) {
++        const unsigned type = (header >> 1) & 0x3fu;
++        return type == 32 || type == 33 || type == 34;   /* VPS, SPS, PPS */
++    }
++    return false;
++}
++
++/* How many leading bytes of an H.264/H.265 access unit are parameter sets: Moonlight sends them in front of
++ * every IDR, and a co-op composite in front of every picture (its own, rewritten ones). They go to the decoder
++ * as a codec-config buffer of their own, as Moonlight for Android does -- some decoders (Tegra among them) do
++ * not take parameter sets in-band inside a picture's buffer -- and only when they change. */
++static size_t LeadingParameterSets(SS4S_VideoCodec codec, const unsigned char *data, size_t len) {
++    if (codec != SS4S_VIDEO_H264 && codec != SS4S_VIDEO_H265) {
++        return 0;
++    }
++    size_t sc_len = 0, pos = NextStartCode(data, len, 0, &sc_len), end = 0;
++    while (pos < len) {
++        const size_t nal = pos + sc_len;
++        if (nal >= len || !IsParameterSet(codec, data[nal])) {
++            break;
++        }
++        size_t next_len = 0;
++        const size_t next = NextStartCode(data, len, nal, &next_len);
++        end = next;
++        pos = next;
++        sc_len = next_len;
++    }
++    return end;
++}
++
++static bool QueueBuffer(SS4S_VideoInstance *instance, const unsigned char *data, size_t size, uint64_t pts,
++                        uint32_t flags) {
++    for (int tries = 0; tries < INPUT_WAIT_TRIES; ++tries) {
++        const ssize_t index = AMediaCodec_dequeueInputBuffer(instance->mc, INPUT_WAIT_US);
++        if (index == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
++            continue;
++        }
++        if (index < 0) {
++            /* The codec is in an error state: restart it at the next keyframe. */
++            instance->errors++;
++            instance->reconfigure_at_keyframe = true;
++            LogMsg(SS4S_LogLevelError, "dequeueInputBuffer: %d", (int) index);
++            return false;
++        }
++        size_t capacity = 0;
++        uint8_t *buffer = AMediaCodec_getInputBuffer(instance->mc, (size_t) index, &capacity);
++        if (buffer == NULL || capacity < size) {
++            /* Give the buffer back empty; this picture cannot be decoded. */
++            AMediaCodec_queueInputBuffer(instance->mc, (size_t) index, 0, 0, pts, 0);
++            LogMsg(SS4S_LogLevelWarn, "Access unit of %zu bytes exceeds the decoder's %zu-byte buffer", size, capacity);
++            return false;
++        }
++        memcpy(buffer, data, size);
++        if (AMediaCodec_queueInputBuffer(instance->mc, (size_t) index, 0, size, pts, flags) != AMEDIA_OK) {
++            instance->errors++;
++            instance->reconfigure_at_keyframe = true;
++            return false;
++        }
++        return true;
++    }
++    instance->lost_input++;
++    return false;
++}
++
++static SS4S_VideoFeedResult Feed(SS4S_VideoInstance *instance, const unsigned char *data, size_t size,
++                                 SS4S_VideoFeedFlags flags) {
++    const bool keyframe = (flags & SS4S_VIDEO_FEED_DATA_KEYFRAME) != 0;
++    pthread_mutex_lock(&instance->lock);
++    if (keyframe && instance->reconfigure_at_keyframe) {
++        /* The HDR state changed, or the codec failed: restart at a picture that needs nothing before it. */
++        instance->reconfigure_at_keyframe = false;
++        StopCodecLocked(instance);
++        if (instance->restart_failing_since != 0) {
++            /* The last start failed: the activity may have a new surface by now (it came back to the screen). */
++            const int width = instance->width, height = instance->height;
++            pthread_mutex_unlock(&instance->lock);
++            ANativeWindow *window = CurrentWindow(width, height, NULL);
++            pthread_mutex_lock(&instance->lock);
++            if (window != NULL) {
++                if (instance->window != NULL) {
++                    ANativeWindow_release(instance->window);
++                }
++                instance->window = window;
++            }
++        }
++        if (!StartCodecLocked(instance)) {
++            const uint64_t now = MonotonicUs();
++            if (instance->restart_failing_since == 0) {
++                instance->restart_failing_since = now;
++            }
++            if (now - instance->restart_failing_since < RESTART_GRACE_US) {
++                /* Drop pictures and try again at the next keyframe: if the surface went with the screen, the
++                 * session ends cleanly as the app goes to the background; if it comes back, the stream goes on. */
++                instance->reconfigure_at_keyframe = true;
++                pthread_mutex_unlock(&instance->lock);
++                return SS4S_VIDEO_FEED_NOT_READY;
++            }
++            pthread_mutex_unlock(&instance->lock);
++            return SS4S_VIDEO_FEED_ERROR;
++        }
++        if (instance->restart_failing_since != 0) {
++            LogMsg(SS4S_LogLevelInfo, "Decoder restarted after %.1f s", (MonotonicUs() - instance->restart_failing_since) / 1e6);
++        }
++        instance->restart_failing_since = 0;
++    }
++    if (instance->mc == NULL) {
++        const bool retrying = instance->reconfigure_at_keyframe && instance->restart_failing_since != 0 &&
++                              MonotonicUs() - instance->restart_failing_since < RESTART_GRACE_US;
++        pthread_mutex_unlock(&instance->lock);
++        /* Waiting to retry the start: ask for the keyframe it needs (the session spaces the requests out). */
++        return retrying ? SS4S_VIDEO_FEED_REQUEST_KEYFRAME : SS4S_VIDEO_FEED_ERROR;
++    }
++    if (instance->need_keyframe && !keyframe) {
++        /* Everything until the next IDR refers to a picture the decoder never had. */
++        pthread_mutex_unlock(&instance->lock);
++        return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
++    }
++    const uint64_t pts = MonotonicUs();
++    size_t offset = 0;
++    const size_t params = LeadingParameterSets(instance->codec, data, size);
++    if (params > 0 && params < size) {
++        if (params <= sizeof(instance->params.data) &&
++            (params != instance->params.len || memcmp(instance->params.data, data, params) != 0)) {
++            if (!QueueBuffer(instance, data, params, pts, AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG)) {
++                instance->need_keyframe = true;
++                pthread_mutex_unlock(&instance->lock);
++                return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
++            }
++            memcpy(instance->params.data, data, params);
++            instance->params.len = params;
++            offset = params;
++        } else if (params <= sizeof(instance->params.data)) {
++            offset = params;   /* the decoder already has exactly these */
++        }
++        /* Larger than the cache: left in-band, as the stream carried them. */
++    }
++    const bool queued = QueueBuffer(instance, data + offset, size - offset, pts, 0);
++    instance->fed++;
++    if (!queued) {
++        instance->need_keyframe = true;
++        pthread_mutex_unlock(&instance->lock);
++        return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
++    }
++    if (keyframe) {
++        instance->need_keyframe = false;
++    }
++    pthread_mutex_unlock(&instance->lock);
++    return SS4S_VIDEO_FEED_OK;
++}
++
++static bool SizeChanged(SS4S_VideoInstance *instance, int width, int height) {
++    if (width <= 0 || height <= 0) {
++        return false;
++    }
++    pthread_mutex_lock(&instance->lock);
++    bool ok = true;
++    if (width != instance->width || height != instance->height) {
++        instance->width = width;
++        instance->height = height;
++        StopCodecLocked(instance);
++        pthread_mutex_unlock(&instance->lock);
++        jclass cls = NULL;
++        JNIEnv *env = ActivityEnv(&cls);
++        if (env != NULL) {
++            jmethodID size = (*env)->GetStaticMethodID(env, cls, "setVideoSize", "(II)V");
++            if (size != NULL) {
++                (*env)->CallStaticVoidMethod(env, cls, size, (jint) width, (jint) height);
++            }
++            ClearException(env, "setVideoSize");
++            (*env)->DeleteLocalRef(env, cls);
++        }
++        pthread_mutex_lock(&instance->lock);
++        ok = StartCodecLocked(instance);
++    }
++    pthread_mutex_unlock(&instance->lock);
++    return ok;
++}
++
++static bool SetHDRInfo(SS4S_VideoInstance *instance, const SS4S_VideoHDRInfo *info) {
++    pthread_mutex_lock(&instance->lock);
++    const bool had = instance->have_hdr;
++    instance->have_hdr = info != NULL;
++    if (info != NULL) {
++        const bool changed = !had || memcmp(&instance->hdr, info, sizeof(*info)) != 0;
++        instance->hdr = *info;
++        if (changed) {
++            instance->reconfigure_at_keyframe = true;
++        }
++    } else if (had) {
++        instance->reconfigure_at_keyframe = true;
++    }
++    pthread_mutex_unlock(&instance->lock);
++    return true;
++}
++
++static bool SetDisplayArea(SS4S_VideoInstance *instance, const SS4S_VideoRect *src, const SS4S_VideoRect *dst) {
++    (void) instance;
++    (void) src;
++    (void) dst;
++    return false;   /* the plane always fills the screen (letterboxed by setVideoSize) */
++}
++
++static void Close(SS4S_VideoInstance *instance) {
++    pthread_mutex_lock(&instance->lock);
++    StopCodecLocked(instance);
++    pthread_mutex_unlock(&instance->lock);
++    LogMsg(SS4S_LogLevelInfo, "Closed: fed %lu, rendered %lu, older pictures skipped %lu, input lost %lu, errors %lu",
++           instance->fed, instance->rendered, instance->dropped_output, instance->lost_input, instance->errors);
++    if (instance->window != NULL) {
++        ANativeWindow_release(instance->window);
++    }
++    pthread_mutex_destroy(&instance->lock);
++    free(instance);
++}
++
++/* --- player context: only so Open() learns its SS4S_Player for the decoder-latency statistics ----------- */
++
++static SS4S_PlayerContext *CreatePlayerContext(SS4S_Player *player) {
++    SS4S_PlayerContext *context = calloc(1, sizeof(*context));
++    if (context != NULL) {
++        context->player = player;
++    }
++    return context;
++}
++
++static void DestroyPlayerContext(SS4S_PlayerContext *context) {
++    free(context);
++}
++
++static const SS4S_PlayerDriver MediaCodecPlayerDriver = {
++        .Create = CreatePlayerContext,
++        .Destroy = DestroyPlayerContext,
++};
++
++static const SS4S_VideoDriver MediaCodecVideoDriver = {
++        .Base = {
++                .Init = Init,
++                .Quit = Quit,
++        },
++        .GetCapabilities = GetCapabilities,
++        .GetPreferredCodecs = GetPreferredCodecs,
++        .Open = Open,
++        .Feed = Feed,
++        .SizeChanged = SizeChanged,
++        .SetHDRInfo = SetHDRInfo,
++        .SetDisplayArea = SetDisplayArea,
++        .Close = Close,
++};
++
++SS4S_EXPORTED bool SS4S_ModuleOpen_MEDIACODEC(SS4S_Module *module, const SS4S_LibraryContext *context) {
++    module->Name = "mediacodec";
++    module->VideoDriver = &MediaCodecVideoDriver;
++    module->PlayerDriver = &MediaCodecPlayerDriver;
++    LibContext = context;
++    return true;
++}
++
++SS4S_EXPORTED SS4S_ModuleCheckFlag SS4S_ModuleCheck_MEDIACODEC(SS4S_ModuleCheckFlag flags) {
++    /* libmediandk is part of every Android release this app runs on; whether a decoder exists is
++     * GetCapabilities()'s question, asked once SDL's Java side is up. */
++    return flags & SS4S_MODULE_CHECK_VIDEO;
++}
 diff --git a/modules/ffmpeg/CMakeLists.txt b/modules/ffmpeg/CMakeLists.txt
 new file mode 100644
 index 0000000000000000000000000000000000000000..16a322e418df38c7c30b9394c75e4a78729f6edc
@@ -1837,10 +2768,26 @@ index ef66c0b3cc373cc1414e18c68ddf804d910c3214..7e17d30b3dd5d077902da1195f8fb5d5
  
  typedef SS4S_ModuleCheckFlag (SS4S_ModuleCheckFunction)(SS4S_ModuleCheckFlag flags);
 diff --git a/modules/list-ini/CMakeLists.txt b/modules/list-ini/CMakeLists.txt
-index 0d4a5fb609943ae428f67d92a81c03f742c4c42b..e2bb30995d7268b64985280707ec6dada2fbe4a4 100644
+index 0d4a5fb609943ae428f67d92a81c03f742c4c42b..92ef8af77ce7b38a52baad0d2f4fb67dbc3b7dbf 100644
 --- a/modules/list-ini/CMakeLists.txt
 +++ b/modules/list-ini/CMakeLists.txt
-@@ -16,4 +16,6 @@ if (HAS_DLFCN)
+@@ -1,6 +1,8 @@
+-if (HAS_DLFCN)
++if (HAS_DLFCN AND NOT ANDROID)
+     set(SS4S_INI_LIB_TYPE SHARED)
+ else ()
++    # Android: the list is not beside the libraries (see modules_ini.c), so nothing needs this to be a
++    # separate shared object -- and an APK would not install one named ss4s_modules.so anyway.
+     set(SS4S_INI_LIB_TYPE STATIC)
+ endif ()
+ add_library(ss4s-modules-list-ini ${SS4S_INI_LIB_TYPE} modules_ini.c)
+@@ -11,9 +13,11 @@ set_target_properties(ss4s-modules-list-ini PROPERTIES
+         )
+ target_include_directories(ss4s-modules-list-ini PUBLIC include PRIVATE include/ss4s)
+ 
+-if (HAS_DLFCN)
++if (HAS_DLFCN AND NOT ANDROID)
+     target_compile_definitions(ss4s-modules-list-ini PRIVATE _GNU_SOURCE HAS_DLADDR)
      target_link_libraries(ss4s-modules-list-ini PRIVATE dl)
  endif ()
  
@@ -1850,11 +2797,14 @@ index 0d4a5fb609943ae428f67d92a81c03f742c4c42b..e2bb30995d7268b64985280707ec6dad
 +        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 +        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR})
 diff --git a/modules/list-ini/modules_ini.c b/modules/list-ini/modules_ini.c
-index 49be525fc3058e8196d42cae0c2c5cc72cf7f1bc..4256bfafb00a1ed3d6a31fcfea811adc024ff338 100644
+index 49be525fc3058e8196d42cae0c2c5cc72cf7f1bc..96cec6948160a3ba75e990d7937352b020c70f06 100644
 --- a/modules/list-ini/modules_ini.c
 +++ b/modules/list-ini/modules_ini.c
-@@ -3,6 +3,11 @@
+@@ -1,8 +1,14 @@
+ #include "modules_ini.h"
+ 
  #include <stdio.h>
++#include <stdlib.h>
  #include <limits.h>
  
 +#ifdef _WIN32
@@ -1865,11 +2815,16 @@ index 49be525fc3058e8196d42cae0c2c5cc72cf7f1bc..4256bfafb00a1ed3d6a31fcfea811adc
  #ifdef HAS_DLADDR
  
  #include <dlfcn.h>
-@@ -15,6 +20,22 @@
+@@ -15,6 +21,27 @@
  #endif
  
  FILE *SS4S_ModulesListFileOpen() {
-+#ifdef _WIN32
++#if defined(__ANDROID__)
++    /* The package manager extracts only lib*.so files into the native library directory, so the list is an
++     * APK asset the app unpacks and names here before SS4S starts. */
++    const char *path = getenv("SS4S_MODULES_INI");
++    return path != NULL && path[0] != '\0' ? fopen(path, "r") : NULL;
++#elif defined(_WIN32)
 +    wchar_t iniPath[32768];
 +    DWORD pathLen = GetModuleFileNameW(NULL, iniPath, (DWORD) (sizeof(iniPath) / sizeof(iniPath[0])));
 +    if (pathLen == 0 || pathLen >= sizeof(iniPath) / sizeof(iniPath[0])) {
@@ -1888,7 +2843,7 @@ index 49be525fc3058e8196d42cae0c2c5cc72cf7f1bc..4256bfafb00a1ed3d6a31fcfea811adc
      char iniPath[PATH_MAX];
  #ifdef HAS_DLADDR
      Dl_info info;
-@@ -30,8 +51,9 @@ FILE *SS4S_ModulesListFileOpen() {
+@@ -30,8 +57,9 @@ FILE *SS4S_ModulesListFileOpen() {
      snprintf(iniPath, 255, "ss4s_modules.ini");
  #endif
      return fopen(iniPath, "r");
@@ -2267,10 +3222,10 @@ index 6f02d7fe51dc1ad45949a495e2fac548fa214e49..80edd10939b6f2a9ea11c7d86f509750
      free(instance);
  }
 diff --git a/modules/sdl/sdl.c b/modules/sdl/sdl.c
-index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003cea02614 100644
+index b0f27b53c5e51a3968078fbd605190699b4c2510..30c55a0e4733b78cc02dba665bd18809f9cdf304 100644
 --- a/modules/sdl/sdl.c
 +++ b/modules/sdl/sdl.c
-@@ -1,40 +1,125 @@
+@@ -1,40 +1,179 @@
  #include <stdlib.h>
 +#include <string.h>
  #include "ss4s/modapi.h"
@@ -2279,6 +3234,11 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
  #include <SDL2/SDL.h>
 +#ifndef _WIN32
 +#include <time.h>
++#endif
++#if defined(__ANDROID__)
++#include <stdio.h>
++#include <SDL2/SDL_system.h>
++#include <jni.h>
 +#endif
 +
 +/* Written only by callback, read by Close only after SDL joins it. */
@@ -2368,11 +3328,60 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
 +        (unsigned long long) instance->pull_deadline_misses, (unsigned long long) instance->pull_publish_skips);
 +}
 +
++#if defined(__ANDROID__)
++static bool NamedDevice(const char *device) {
++    return device != NULL && device[0] != '\0' && strcmp(device, "default") != 0;
++}
++
++/* ANDROID NUMBERS ITS OUTPUTS, and the numbers change across reboots and reconnections, so Eclipse stores a name
++ * built from what stays ("HDMI: LG TV", deploy/android/.../AudioOutputs.java) and the activity says which
++ * output carries that name now. 0: not connected now. -1: there is no activity to ask (the co-op peer has no
++ * Java VM, and plays nothing itself: its sound goes to the primary over the co-op audio socket). */
++static int AndroidOutputId(const char *name) {
++    if (getenv("ECLIPSE_ANDROID_PEER") != NULL) {
++        return -1;
++    }
++    JNIEnv *env = (JNIEnv *) SDL_AndroidGetJNIEnv();
++    jobject activity = env != NULL ? (jobject) SDL_AndroidGetActivity() : NULL;
++    if (activity == NULL) {
++        return -1;
++    }
++    jclass cls = (*env)->GetObjectClass(env, activity);
++    (*env)->DeleteLocalRef(env, activity);
++    int id = 0;
++    jmethodID method = cls != NULL ? (*env)->GetStaticMethodID(env, cls, "getAudioOutputId", "(Ljava/lang/String;)I")
++                                   : NULL;
++    if (method != NULL) {
++        jstring jname = (*env)->NewStringUTF(env, name);
++        if (jname != NULL) {
++            id = (int) (*env)->CallStaticIntMethod(env, cls, method, jname);
++            (*env)->DeleteLocalRef(env, jname);
++        }
++    }
++    if ((*env)->ExceptionCheck(env)) {
++        (*env)->ExceptionClear(env);
++        id = 0;
++    }
++    if (cls != NULL) {
++        (*env)->DeleteLocalRef(env, cls);
++    }
++    return id;
++}
++#endif
++
  static int Init(int argc, char *argv[]) {
      (void) argc;
      (void) argv;
 -    SDL_InitSubSystem(SDL_INIT_AUDIO);
 -    return 0;
++#if defined(__ANDROID__)
++    /* OpenSL ES, SDL's first choice on Android, plays only to the default output. A chosen output needs AAudio,
++     * which SDL opens on a given device; the default keeps OpenSL ES. Like the desktop's device setting, the
++     * choice takes effect when the app starts. An SDL_AUDIODRIVER already set (the co-op peer's "dummy") wins. */
++    if (NamedDevice(LibContext->Audio.device) && SDL_GetHint(SDL_HINT_AUDIODRIVER) == NULL) {
++        SDL_SetHint(SDL_HINT_AUDIODRIVER, "AAudio,openslES");
++    }
++#endif
 +    return SDL_InitSubSystem(SDL_INIT_AUDIO);
  }
  
@@ -2403,7 +3412,7 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
  
      SDL_AudioSpec want, have;
      SDL_zero(want);
-@@ -45,52 +130,223 @@ static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance
+@@ -45,52 +184,257 @@ static SS4S_AudioOpenResult Open(const SS4S_AudioInfo *info, SS4S_AudioInstance
      want.channels = info->numOfChannels;
      want.samples = info->samplesPerFrame;
  
@@ -2414,6 +3423,39 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
 +    if (device_name != NULL && (device_name[0] == '\0' || strcmp(device_name, "default") == 0)) {
 +        device_name = NULL;
 +    }
++#if defined(__ANDROID__)
++    /* The stored name -> the output's current number, which is SDL's name for it. As below, a named output can be
++     * momentarily absent (Bluetooth reconnecting as the stream starts): look again for up to 5 s, and never fall
++     * back to the default, which would put the sound somewhere the user did not choose. */
++    if (device_name != NULL && AndroidOutputId(device_name) < 0) {
++        device_name = NULL;   /* nothing to resolve the name with: no Java VM in this process */
++    }
++    if (device_name != NULL) {
++        for (int attempt = 0; attempt <= 20 && newInstance->device == 0; attempt++) {
++            if (attempt > 0) {
++                SDL_Delay(250);
++            }
++            const int id = AndroidOutputId(device_name);
++            if (id > 0) {
++                char id_name[16];
++                snprintf(id_name, sizeof(id_name), "%d", id);
++                newInstance->device = SDL_OpenAudioDevice(id_name, 0, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
++                if (newInstance->device != 0) {
++                    LibContext->Log(SS4S_LogLevelInfo, "SDLAudio", "Opened output \"%s\" (device %d)%s", device_name,
++                                    id, attempt > 0 ? " after waiting for it" : "");
++                } else if (attempt == 0) {
++                    LibContext->Log(SS4S_LogLevelWarn, "SDLAudio", "Output \"%s\" (device %d) did not open: %s",
++                                    device_name, id, SDL_GetError());
++                }
++            } else if (attempt == 0) {
++                LibContext->Log(SS4S_LogLevelWarn, "SDLAudio", "Output \"%s\" is not connected: waiting up to 5 s",
++                                device_name);
++            }
++        }
++    } else {
++        newInstance->device = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
++    }
++#else
 +    newInstance->device = SDL_OpenAudioDevice(device_name, 0, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
 +    /* A NAMED DEVICE CAN BE MOMENTARILY ABSENT. NVIDIA's HDMI/DP audio drops and re-creates its endpoints whenever
 +     * the display layout changes -- which a co-op host on THIS PC does at the very moment the stream starts
@@ -2442,6 +3484,7 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
 +            }
 +        }
 +    }
++#endif
 +    if (newInstance->device == 0) {
 +        LibContext->Log(SS4S_LogLevelError, "SDLAudio", "Can't open audio device %s: %s",
 +                        device_name != NULL ? device_name : "default", SDL_GetError());
@@ -2650,7 +3693,7 @@ index b0f27b53c5e51a3968078fbd605190699b4c2510..8021deb813a1ed842cedf9c9ecc53003
      }
      free(instance);
  }
-@@ -110,4 +366,4 @@ SS4S_EXPORTED bool SS4S_ModuleOpen_SDL(SS4S_Module *module, const SS4S_LibraryCo
+@@ -110,4 +454,4 @@ SS4S_EXPORTED bool SS4S_ModuleOpen_SDL(SS4S_Module *module, const SS4S_LibraryCo
      module->AudioDriver = &SDLDriver;
      LibContext = context;
      return true;
@@ -3021,6 +4064,22 @@ index 330a1651ea05d99a679e16c918d750c7527ded56..8da6e0bb9e12ece105c3450a168f96b4
 +    .SetDisplayArea = SetDisplayArea,
      .Close = CloseVideo,
  };
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 151012eba5a633a95975184a6d37b307158d7c1e..e4ca8f4b52463cb290568613943d255b1ec61017 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -12,6 +12,9 @@ else ()
+     endif ()
+     if (HAS_PTHREAD)
+         target_sources(ss4s PRIVATE mutex_pthread.c)
+-        target_link_libraries(ss4s PRIVATE pthread)
++        # Android's C library includes pthreads and has no libpthread to link.
++        if (NOT ANDROID)
++            target_link_libraries(ss4s PRIVATE pthread)
++        endif ()
+     endif ()
+ endif ()
+\ No newline at end of file
 diff --git a/src/audio.c b/src/audio.c
 index 8c92fc5ff6d0b9197977bc132baad69c22309b99..d9494a5574dd8ff0a19471424aa1bb7d463a054b 100644
 --- a/src/audio.c
@@ -3258,6 +4317,24 @@ index d0713d3ce0d02ffbec9353d5283b392dcc798d4b..296ffe95dd8faaa014b40ec278043e3d
 +bool SS4S_ModuleOpen(const char *name, SS4S_Module *module, const SS4S_LibraryContext *context,
 +                     SS4S_ModuleAudioGetClockV1Function **audio_clock,
 +                     SS4S_ModuleAudioOpenPullV1Function **audio_pull);
+diff --git a/src/module_impl.h b/src/module_impl.h
+index f6ce60e811c8bbc0034e1a84020cebe37404cacb..7a6de7afac8e30faaa19aab17f458f55039277ee 100644
+--- a/src/module_impl.h
++++ b/src/module_impl.h
+@@ -5,7 +5,13 @@
+ #include <string.h>
+ 
+ __attribute((unused)) static void ModuleFileName(char *out, size_t outLen, const char *name) {
++#if defined(__ANDROID__)
++    /* An APK's package manager installs only lib*.so files into the app's native library directory, so the
++     * Android modules are built as libss4s-<name>.so (modules/CMakeLists.txt). */
++    snprintf(out, outLen, "libss4s-%s%s", name, SS4S_LIBRARY_SUFFIX);
++#else
+     snprintf(out, outLen, "ss4s-%s%s", name, SS4S_LIBRARY_SUFFIX);
++#endif
+ }
+ 
+ __attribute((unused)) static void ModuleFunctionName(char *out, size_t outLen, const char *fnName, const char *module) {
 diff --git a/src/module_libdl.c b/src/module_libdl.c
 index 5ea5f26b5692b1a4dad54026975270770440e26b..185aced6d43b505a846b793e940722081e13423d 100644
 --- a/src/module_libdl.c

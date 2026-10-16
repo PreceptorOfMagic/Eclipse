@@ -4,6 +4,9 @@
 #include <Limelight.h>
 #include <SDL_events.h>
 #include <SDL_timer.h>
+#if TARGET_ANDROID
+#include <SDL_atomic.h>
+#endif
 
 #include "config.h"
 #include "input/input_gamepad.h"
@@ -26,6 +29,15 @@ typedef struct session_input_vmouse_t {
         bool modifier;
     } state;
     SDL_TimerID timer_id;
+#if TARGET_ANDROID
+    /* IN CO-OP THE STICK POINTS LIKE THE MAGIC REMOTE (session_virt_mouse.c). The timer thread adds
+     * its deltas to pending_*; the UI thread, which owns the co-op pointer, applies them to x/y. */
+    struct stream_input_t *input;
+    SDL_atomic_t coop, posted, pending_x, pending_y, pending_scroll;
+    /** UI thread only: the pointer's place in the composite, in host pixels, once it has one. */
+    int x, y;
+    bool placed;
+#endif
 } session_input_vmouse_t;
 
 typedef struct stream_input_t {
@@ -36,6 +48,10 @@ typedef struct stream_input_t {
     bool remoteOkPressed;
     uint32_t remoteOkPressedAt;
     char remoteOkModifiers;
+    /* Android TV remote Back: tap = Escape, hold = overlay (session_keyboard.c). */
+    bool remoteBackPressed;
+    uint32_t remoteBackPressedAt;
+    char remoteBackModifiers;
     bool pointerGestureActive;
     bool pointerGestureDragging;
     bool pointerGestureLeftDown;
@@ -69,6 +85,14 @@ void session_input_screen_keyboard_closed(stream_input_t *input);
 void stream_input_flush_pressed_keys(stream_input_t *input);
 
 void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t *gamepad);
+
+#if TARGET_ANDROID
+/** Announce again, to the second co-op PC, the controllers routed to it (once its session is up). */
+void stream_input_reannounce_peer_gamepads(stream_input_t *input);
+
+/** Press and let go of the first controller's Guide button on the host (the stream menu's Guide button). */
+void stream_input_send_guide(stream_input_t *input);
+#endif
 
 void stream_input_handle_key(stream_input_t *input, const SDL_KeyboardEvent *event);
 

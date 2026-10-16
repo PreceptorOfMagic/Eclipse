@@ -134,3 +134,10 @@ size_t coop_au_splice_halves(const coop_au_t *a, const coop_au_t *b,
                              const coop_poc_params_t *composite, unsigned peer_addr,
                              const unsigned char *nonvcl, size_t nonvcl_len,
                              unsigned char *out, size_t cap);
+
+/** Remove the cabac_zero_words that end any slice FOLLOWED by another slice of the same picture,
+ *  for decoders that do not decode a slice after such padding. The padding carries no picture data,
+ *  so the pictures are unchanged. Returns bytes written to @p out, or 0 when there is nothing to
+ *  remove (feed @p au as it is) or @p out is too small; @p removed (optional) counts the words. */
+size_t coop_au_strip_zero_words(const unsigned char *au, size_t len, unsigned char *out, size_t cap,
+                                unsigned *removed);

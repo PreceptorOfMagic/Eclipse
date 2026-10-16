@@ -304,6 +304,8 @@ static void dump_ui_stack(void) {
 
 #if defined(__GLIBC__)
 #include <execinfo.h>
+#elif defined(__ANDROID__)
+#include "util/backtrace_compat.h"
 #endif
 
 static void out_raw(const char *s, size_t n) {
@@ -451,6 +453,17 @@ static void crash_handler(int sig, siginfo_t *si, void *uctx) {
     void *frames[64];
     const int n = backtrace(frames, 64);
     backtrace_symbols_fd(frames, n, 2);
+#elif defined(__ANDROID__)
+    /* Return addresses only (no dladdr in a signal handler); the maps below resolve them. */
+    void *frames[64];
+    const int n = eclipse_backtrace(frames, 64);
+    for (int i = 0; i < n; i++) {
+        w_str("#");
+        w_int(i);
+        w_str(" pc ");
+        w_num((uintptr_t) frames[i], 16);
+        w_str("\n");
+    }
 #endif
     w_str("--- /proc/self/maps (to resolve the frames above) ---\n");
     w_maps();
@@ -468,6 +481,9 @@ void crash_log_install(void) {
 #if defined(__GLIBC__)
     void *warm[2];
     backtrace(warm, 2);   /* the first call may load libgcc: do it now, not inside the handler */
+#elif defined(__ANDROID__)
+    void *warm[2];
+    eclipse_backtrace(warm, 2);
 #endif
     static char alt[65536];   /* a stack overflow must still be reportable */
     stack_t ss = {.ss_sp = alt, .ss_size = sizeof(alt), .ss_flags = 0};
@@ -513,6 +529,8 @@ static void on_snapshot(int sig, siginfo_t *si, void *uctx) {
     }
 #elif defined(__GLIBC__)
     snap.nframes = backtrace(snap.frames, 64);
+#elif defined(__ANDROID__)
+    snap.nframes = eclipse_backtrace(snap.frames, 64);
 #endif
     snap.done = 1;
     errno = saved;
@@ -533,6 +551,9 @@ static bool watch_prepare(void) {
 #if defined(__GLIBC__)
     void *warm[2];
     backtrace(warm, 2);
+#elif defined(__ANDROID__)
+    void *warm[2];
+    eclipse_backtrace(warm, 2);
 #endif
     return true;
 }
@@ -571,6 +592,10 @@ static void dump_ui_stack(void) {
 #if defined(__GLIBC__)
     if (snap.nframes > 0) {
         backtrace_symbols_fd(snap.frames, snap.nframes, 2);
+    }
+#elif defined(__ANDROID__)
+    for (int i = 0; i < snap.nframes; i++) {
+        out("#%d pc 0x%lx\n", i, (unsigned long) (uintptr_t) snap.frames[i]);
     }
 #endif
     if (!maps_done) {

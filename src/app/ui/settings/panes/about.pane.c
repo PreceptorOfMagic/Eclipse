@@ -82,7 +82,7 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
         about_line(view, locstr("System"), os_str, rowcount++, 1);
     }
     free(os_str);
-#if TARGET_WEBOS
+#if TARGET_WEBOS || TARGET_ANDROID
     if (parent->panel_width > 0 && parent->panel_height > 0) {
         char resolution_text[16];
         SDL_snprintf(resolution_text, sizeof(resolution_text), "%5d * %5d", parent->panel_width, parent->panel_height);
@@ -148,7 +148,7 @@ static void share_logs_cb(lv_event_t *e) {
     /* THE WHOLE REPORT (util/diag_report.h), not a few lines: the file a user sends must stand alone. */
     char *summary = diag_report_build(app);
     char body[2048] = "";
-#if !TARGET_WEBOS
+#if !TARGET_WEBOS && !TARGET_ANDROID
     /* DESKTOPS: everything in one file, in a folder the user can open and attach from. */
     char bundle[1024];
     if (diag_logs_write_bundle(app->settings.conf_dir, summary, bundle, sizeof(bundle))) {
@@ -177,7 +177,8 @@ static void share_logs_cb(lv_event_t *e) {
         strncat(body, locstr("\n\nFor full logs, turn on \"Keep diagnostic logs\" and restart first."),
                 sizeof(body) - strlen(body) - 1);
     }
-#if TARGET_WEBOS
+#if TARGET_WEBOS || TARGET_ANDROID
+    /* A TV's files are out of reach on Android too: the share page is the way out. */
     static const char *buttons[] = {translatable("Stop sharing"), ""};
 #elif defined(_WIN32)
     static const char *buttons[] = {translatable("Open folder"), translatable("Close"), ""};

@@ -30,6 +30,12 @@
 #if defined(_WIN32) || (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK))
 #define COOP_PC_DECODER 1
 #endif
+/* ANDROID: MediaCodec is a strict hardware decoder of the same class (on the NVIDIA Shield, Tegra's NVDEC), so
+ * it takes the PC rules -- the TV-only exceptions above were measured on LG's decoder alone. To be confirmed on
+ * a Shield with the co-op procedure in docs/coop-modes.md before any of the rules is narrowed. */
+#if defined(TARGET_ANDROID)
+#define COOP_PC_DECODER 1
+#endif
 
 /**
  * Start listening and drain incoming access units in the background.
@@ -112,6 +118,10 @@ void coop_coord_request_peer_shutdown(void);
  *  Returns true only for that READY signal; child exit, an explicit startup
  *  failure, and timeout all fail closed. */
 bool coop_coord_wait_secondary_ready(unsigned timeout_ms);
+
+/** The same wait, abandoned (false, with the start state left as it is) as soon as *@p cancel is set --
+ *  for a wait that runs beside the stream instead of blocking its start (session_video.c, Android). */
+bool coop_coord_wait_secondary_ready_cancellable(unsigned timeout_ms, const volatile int *cancel);
 
 /** Stable user-facing explanation for the most recent readiness failure. */
 const char *coop_coord_start_error_message(void);

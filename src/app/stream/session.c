@@ -23,6 +23,9 @@
 #include "stream/video/coop_tunables.h"
 #include "stream/video/coop_session.h"
 #include "stream/video/coop_secondary.h"
+#if defined(TARGET_ANDROID)
+#include "platform/android/android_platform.h"
+#endif
 
 #include <stdio.h>
 
@@ -247,6 +250,12 @@ void session_toggle_vmouse(session_t *session) {
     bool value = session->config.vmouse && !session_input_is_vmouse_active(&session->input.vmouse);
     session_input_set_vmouse_active(&session->input.vmouse, value);
 }
+
+#if TARGET_ANDROID
+void session_send_guide(session_t *session) {
+    stream_input_send_guide(&session->input);
+}
+#endif
 
 void session_screen_keyboard_opened(session_t *session) {
     session_input_screen_keyboard_opened(&session->input);
@@ -703,6 +712,22 @@ void session_config_init(app_t *app, session_config_t *config, const SERVER_DATA
             }
         }
     }
+#if defined(TARGET_ANDROID)
+    /* THE RATE THE TV WILL SHOW. The webOS build asks the host for its panel's NTSC rate (60 -> 59.94,
+     * settings_reconcile_refresh_rate). An Android TV switches modes for the stream, so ask for the frame rate
+     * itself unless the TV has no mode that shows it evenly but has the NTSC one. */
+    {
+        int rates[32];
+        const int count = android_display_refresh_rates(rates, 32);
+        const int x100 = android_stream_refresh_x100(config->stream.fps, config->stream.clientRefreshRateX100,
+                                                     rates, count);
+        if (x100 != config->stream.clientRefreshRateX100) {
+            commons_log_info("Session", "The display shows %d FPS only as %.2f Hz: asking the host for that",
+                             config->stream.fps, x100 / 100.0);
+            config->stream.clientRefreshRateX100 = x100;
+        }
+    }
+#endif
     config->vmouse = app_config->virtual_mouse;
     config->hardware_mouse = app_config->hardware_mouse;
     config->local_audio = app_config->localaudio;

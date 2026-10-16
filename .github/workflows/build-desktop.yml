@@ -31,6 +31,7 @@ jobs:
       - name: Install Dependencies
         run: sudo apt-get -y -qq install libsdl2-dev libsdl2-image-dev libopus-dev libcurl4-openssl-dev uuid-dev
           libavcodec-dev libavutil-dev libexpat1-dev libmbedtls-dev libfontconfig1-dev gettext xvfb
+          ffmpeg
 
       - name: Create Build Environment
         run: cmake -E make_directory ${{github.workspace}}/build

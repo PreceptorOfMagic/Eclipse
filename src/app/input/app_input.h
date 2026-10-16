@@ -36,6 +36,13 @@ typedef struct app_gamepad_state_t {
     app_gamepad_sensor_state_t accelState;
     app_gamepad_sensor_state_t gyroState;
 #endif
+#if TARGET_ANDROID
+    /* VIEW HELD = GUIDE (stream/input/session_gamepad.c): the hold and tap timers (lv_timer_t), the controller
+     * they were started for, and what the host is shown meanwhile. */
+    void *guide_hold_timer, *guide_tap_timer;
+    SDL_JoystickID guide_owner;
+    bool view_masked, guide_down;
+#endif
 } app_gamepad_state_t;
 
 typedef struct app_input_t {

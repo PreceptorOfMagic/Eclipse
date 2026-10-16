@@ -16,7 +16,7 @@
 #include "uuidstr.h"
 
 #include <errno.h>
-#include <execinfo.h>
+#include "util/backtrace_compat.h"
 #include <limits.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -103,8 +103,13 @@ static void coop_fatal_signal(int sig) {
     if (f != NULL) {
         fprintf(f, "!!! secondary FATAL signal=%d (forwarded=%u)\n", sig, coop_fwd);
         void *frames[24];
+#if defined(__ANDROID__)
+        int n = eclipse_backtrace(frames, 24);
+        char **syms = eclipse_backtrace_symbols(frames, n);
+#else
         int n = backtrace(frames, 24);
         char **syms = backtrace_symbols(frames, n);
+#endif
         for (int i = 0; syms != NULL && i < n; ++i) {
             fprintf(f, "    #%d %s\n", i, syms[i]);
         }

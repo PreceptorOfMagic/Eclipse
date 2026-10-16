@@ -209,6 +209,15 @@ static bool coop_hh_tiles = false;
  * first two live tiles runs did, while the primitives themselves decode cleanly offline
  * (tests/coop/test_tile_compose.c). Gate the feed rather than trust every branch. */
 static bool coop_hh_tiled_ok = false;
+#if TARGET_ANDROID
+/* PADDING BEFORE THE SECOND SLICE. The hosts end each picture's slice data with cabac_zero_words, and a
+ * composite puts one host's last slice FIRST, so the padding then precedes the other host's slice. The
+ * SHIELD TV's decoder does not decode a slice after such padding: that pane is flat green, in both co-op
+ * layouts, with no decoder error (measured 2026-10-16; FFmpeg and webOS skip the padding). On Android every
+ * composite goes to the decoder through coop_au_strip_zero_words(), which removes only padding that has a
+ * slice after it -- the pictures are unchanged. Reset with the session. */
+static unsigned coop_zw_aus = 0, coop_zw_words = 0;
+#endif
 static unsigned coop_hh_untiled_blocked = 0;
 /* THE PEER'S PANE AS RECEIVED, gated on /tmp/coop-dump-peer. The primary's own pane is already
  * capturable (/tmp/coop-dump) but the PEER's never was, and without it no offline harness can
@@ -1656,6 +1665,23 @@ static SS4S_VideoFeedResult diag_feed(feed_site_t site, const unsigned char *buf
         }
     }
     avsync_probe_video(len);
+#if TARGET_ANDROID
+    if (coop_live || coop_vt_enabled) {
+        static unsigned char stripped[DECODER_BUFFER_MAX_SIZE];
+        unsigned words = 0;
+        const size_t got = coop_au_strip_zero_words(buf, len, stripped, sizeof(stripped), &words);
+        if (got > 0) {
+            buf = stripped;
+            len = got;
+            if (coop_zw_aus++ == 0 && diag_log != NULL) {
+                fprintf(diag_log, "[COOP] removing cabac_zero_words before a slice (%u in the first picture): "
+                                  "the decoder skips a slice after them\n", words);
+                fflush(diag_log);
+            }
+            coop_zw_words += words;
+        }
+    }
+#endif
     SS4S_VideoFeedResult r = SS4S_PlayerVideoFeed(player, buf, len, flags);
     if (tracing) { coop_trace_emit(r, len, fe, coop_trace_now_ms()); }
     if (diag_fail_every > 0 && site == diag_fail_site) {
@@ -3072,6 +3098,51 @@ static void coop_wayland_probe(void) {}
 static void coop_import_punchthrough(const char *wid) { (void) wid; }
 #endif
 
+#if TARGET_ANDROID
+/* THE SECOND PC IS AWAITED BESIDE THE STREAM ON ANDROID, NOT BEFORE IT. This set-up runs inside moonlight's
+ * startVideoStream, which starts the primary's UDP ping only once it returns -- and the primary host gives up on
+ * a client whose ping has not arrived after a few seconds ("Initial Ping Timeout"). Waiting here for the secondary's
+ * first live frame took 6.7 and 8.4 s on the SHIELD TV, against host time-outs of 6.6 and 8.3 s, and both starts
+ * ended as a network error (2026-10-16). On Android the same 30 s readiness check runs on this thread instead, and
+ * a secondary that fails still ends the session with the co-op error, so co-op never degrades into one pane. */
+static pthread_t coop_ready_thread;
+static bool coop_ready_thread_live = false;
+static volatile int coop_ready_cancel = 0;
+static bool coop_ready_ui = false;
+
+/* On the main thread, like every other controller event. */
+static void coop_reannounce_pads(void *data) {
+    app_t *app = data;
+    if (app->session != NULL) {
+        stream_input_reannounce_peer_gamepads(session_get_input(app->session));
+    }
+}
+
+static void *coop_ready_watch(void *arg) {
+    session_t *watched = arg;
+    if (coop_coord_wait_secondary_ready_cancellable(30000, &coop_ready_cancel)) {
+        if (diag_log != NULL) {
+            fprintf(diag_log, "[COOP-SPAWN] secondary READY with a live frame (%s, awaited beside the stream)\n",
+                    coop_ready_ui ? "ui" : "sentinel");
+            fflush(diag_log);
+        }
+        /* Its controllers may have been announced before it could hear them. */
+        app_bus_post(watched->app, coop_reannounce_pads, watched->app);
+        return NULL;
+    }
+    if (coop_ready_cancel) {
+        return NULL;                            /* the session ended first */
+    }
+    if (diag_log != NULL) {
+        fprintf(diag_log, "[COOP-SPAWN] secondary readiness FAILED: %s\n", coop_coord_start_error_message());
+        fflush(diag_log);
+    }
+    streaming_error(watched, 0, "Could not start co-op: %s", coop_coord_start_error_message());
+    session_interrupt(watched, false, STREAMING_INTERRUPT_ERROR);
+    return NULL;
+}
+#endif
+
 int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags) {
     /* HALF-HEIGHT: the SESSION negotiated 3840x1080 (each host sends only its own rows),
      * but what we hand the decoder is the COMPOSITE of two such pictures. Setting the
@@ -3085,6 +3156,16 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
          * pane, so the two halves stop being two monitors). Slices per picture and pane height
          * are now INDEPENDENT: the panes stay half-height and each host may cut its own pane
          * into as many slices as the encoder needs. */
+#if TARGET_ANDROID
+        /* LEFT/RIGHT DOUBLES THE WIDTH. Each host sends a half-WIDTH pane there (session.c), so the composite
+         * is twice as wide, not twice as tall. Other decoders follow the stream's SPS whatever they are opened
+         * at, so elsewhere this stays as it was; MediaCodec on the SHIELD TV sizes its buffers from what it is
+         * configured with, and opened at 960x2160 for a 1920x1080 composite it showed a sliver of one pane and
+         * green beside it (2026-10-16). */
+        if (access("/tmp/coop-vmirror", F_OK) == 0) {
+            width *= 2;
+        } else
+#endif
         height *= 2;
     }
     coop_pump_start();   /* starfish/SMP callbacks need a pumped GLib context */
@@ -3452,11 +3533,20 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
                 return CALLBACKS_SESSION_ERROR_COOP_START;
             }
             coop_spawned = true;
+            bool ready_in_background = false;
+#if TARGET_ANDROID
+            coop_ready_cancel = 0;
+            coop_ready_ui = coop_ui_session != NULL;
+            coop_ready_thread_live = pthread_create(&coop_ready_thread, NULL, coop_ready_watch, session) == 0;
+            ready_in_background = coop_ready_thread_live;
+#endif
             /* A process id only proves CreateProcess/fork succeeded.  Do not let
              * co-op degrade into a plausible one-pane stream: the helper must
              * prove that it queried the requested host, launched the requested
              * app, connected, and forwarded a live frame. */
-            if (!coop_coord_wait_secondary_ready(30000)) {
+            if (ready_in_background) {
+                /* Android: coop_ready_watch() decides, beside the stream. */
+            } else if (!coop_coord_wait_secondary_ready(30000)) {
                 if (diag_log != NULL) {
                     fprintf(diag_log, "[COOP-SPAWN] secondary readiness FAILED: %s\n",
                             coop_coord_start_error_message());
@@ -3468,7 +3558,7 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
                 coop_spawned = false;
                 return CALLBACKS_SESSION_ERROR_COOP_START;
             }
-            if (diag_log != NULL) {
+            if (!ready_in_background && diag_log != NULL) {
                 fprintf(diag_log, "[COOP-SPAWN] secondary READY with a live frame (%s)\n",
                         coop_ui_session != NULL ? "ui" : "sentinel");
                 fflush(diag_log);
@@ -3514,6 +3604,9 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
     coop_hh_mended = 0;
     coop_hh_poc_fail = 0;
     coop_hh_tiles = access("/tmp/coop-hh-tiles", F_OK) == 0;
+#if TARGET_ANDROID
+    coop_zw_aus = coop_zw_words = 0;
+#endif
     coop_hh_tiled_ok = false;
     coop_hh_untiled_blocked = 0;
     coop_peer_dump_n = 0;
@@ -3657,6 +3750,13 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
 void vdec_delegate_cleanup() {
     coop_netcap_teardown();   /* stop the capture thread BEFORE anything it reads goes away */
     coop_pump_stop();
+#if TARGET_ANDROID
+    if (coop_ready_thread_live) {
+        coop_ready_cancel = 1;              /* the readiness watch must not outlive the session it would end */
+        pthread_join(coop_ready_thread, NULL);
+        coop_ready_thread_live = false;
+    }
+#endif
     if (coop_spawned) {
         coop_coord_request_peer_shutdown();
         coop_coord_reap_secondary();   /* never leave a stale child behind */
@@ -3691,6 +3791,12 @@ void vdec_delegate_cleanup() {
     if (diag_log) {
         fprintf(diag_log, "=== session ended: ok=%u idr_sent=%u idr_throttled=%u errors=%u ===\n",
                 diag_feed_ok, diag_idr_sent, diag_idr_throttled, diag_feed_errors);
+#if TARGET_ANDROID
+        if (coop_zw_aus > 0) {
+            fprintf(diag_log, "[COOP] cabac_zero_words removed before a slice: %u pictures, %u words\n",
+                    coop_zw_aus, coop_zw_words);
+        }
+#endif
 
         /* snapshot UDP counters at session end — diff vs UDP_START shows drops */
         FILE *snmp = fopen("/proc/net/snmp", "r");

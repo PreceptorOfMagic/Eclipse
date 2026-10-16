@@ -648,7 +648,13 @@ static void appload_loaded(apploader_list_t *apps, void *userdata) {
         fragment->focus_backup = 0;
         lv_gridview_focus(fragment->applist, 0);
     }
+    const int focused = lv_gridview_get_focused_index(fragment->applist);
     lv_gridview_set_data_advanced(fragment->applist, apps, changes, num_changes);
+    if (num_changes == 0 && focused >= 0) {
+        /* The same apps: the grid still rebuilt every tile (changes == NULL scraps them all) and the focused one came
+         * back without its ring, so the user could not see what OK would start. Draw it on the same tile again. */
+        lv_gridview_focus(fragment->applist, focused);
+    }
     if (changes != NULL) {
         free(changes);
     }
@@ -1098,7 +1104,10 @@ static void open_context_menu(apps_fragment_t *fragment, appitem_viewholder_t *h
     const apploader_item_t *app = apploader_list_item_by_id(fragment->apploader_apps, holder->app_id);
     assert(app != NULL);
     lv_obj_t *msgbox = lv_msgbox_create(NULL, app->base.name, NULL, NULL, false);
-    lv_obj_set_user_data(msgbox, (void *) holder);
+    /* THE APP, NOT THE TILE. The grid rebuilds its tiles on every app-list reload (each host status update, every
+     * few seconds) and hands this holder to another app; read back at the click, it launched whichever app the tile
+     * now showed -- measured 2026-10-15: the "Desktop" menu started DAVE THE DIVER, and its Info showed that id. */
+    lv_obj_set_user_data(msgbox, (void *) (intptr_t) app->base.id);
     lv_obj_t *content = lv_msgbox_get_content(msgbox);
     lv_obj_add_flag(content, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
@@ -1156,9 +1165,13 @@ static void context_menu_click_cb(lv_event_t *e) {
     if (target->parent != current_target) { return; }
     lv_obj_t *mbox = lv_event_get_current_target(e)->parent;
     apps_fragment_t *self = lv_event_get_user_data(e);
-    appitem_viewholder_t *holder = lv_obj_get_user_data(mbox);
-    const apploader_item_t *app = apploader_list_item_by_id(self->apploader_apps, holder->app_id);
-    assert(app != NULL);
+    const int app_id = (int) (intptr_t) lv_obj_get_user_data(mbox);
+    const apploader_item_t *app = apploader_list_item_by_id(self->apploader_apps, app_id);
+    if (app == NULL) {
+        /* Gone from the host's list since the menu opened: nothing to act on. */
+        lv_msgbox_close_async(mbox);
+        return;
+    }
     if (lv_obj_get_user_data(target) == launcher_quit_game) {
         launcher_quit_game(self);
     } else if (lv_obj_get_user_data(target) == launcher_launch_game) {

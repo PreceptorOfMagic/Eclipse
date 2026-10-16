@@ -19,6 +19,9 @@ typedef struct {
     lv_obj_t *video;
     lv_obj_t *actions;
     lv_obj_t *kbd_btn, *vmouse_btn;
+#if TARGET_ANDROID
+    lv_obj_t *guide_btn;
+#endif
 #if defined(TARGET_WEBOS)
 #endif
     lv_obj_t *suspend_btn, *quit_btn;

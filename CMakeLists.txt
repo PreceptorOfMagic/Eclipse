@@ -49,6 +49,12 @@ if (NOT TARGET_WEBOS AND NOT TARGET_STEAMLINK AND CC_BASENAME MATCHES "^arm-webo
     set(TARGET_WEBOS_ARCH "arm")
 endif ()
 
+# Android TV (NVIDIA Shield and other Android 9+ TV devices): the NDK toolchain file sets ANDROID.
+# scripts/android/build_apk.sh drives this once per ABI and packages the result with deploy/android.
+if (ANDROID)
+    set(TARGET_ANDROID ON)
+endif ()
+
 option(USE_MBEDTLS "" ON)
 option(USE_WERROR "" OFF)
 
@@ -60,7 +66,7 @@ set(COMMONS_LOGGING_SDL ON)
 set(COMMONS_LOGGING_LVGL ON)
 set(COMMONS_LOGGING_SS4S ON)
 
-if (TARGET_WEBOS OR TARGET_STEAMLINK)
+if (TARGET_WEBOS OR TARGET_STEAMLINK OR TARGET_ANDROID)
     option(BUILD_TESTS "" OFF)
 else ()
     option(BUILD_TESTS "" ON)
@@ -68,6 +74,8 @@ endif ()
 
 if (BUILD_TESTS)
     enable_testing()
+    # tests/android type-checks the Android build of the app's sources from the desktop build's commands.
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 endif ()
 
 set(I18N_LOCALES
@@ -120,6 +128,13 @@ elseif (TARGET_STEAMLINK)
     set(CMAKE_INSTALL_PREFIX moonlight-tv)
     set(CMAKE_INSTALL_BINDIR moonlight-tv/bin)
     set(CMAKE_INSTALL_LIBDIR moonlight-tv/lib)
+elseif (TARGET_ANDROID)
+    # Not OS_LINUX: that names the desktop (X11/Wayland, XDG paths, the FFmpeg module). Bionic is still a
+    # Linux libc, so C code guarded by __linux__ applies here; platform/android owns everything else.
+    set(OS_ANDROID TRUE)
+    set(CMAKE_INSTALL_LIBDIR lib)
+    set(CMAKE_INSTALL_BINDIR lib)
+    include(AndroidDeps)
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(OS_LINUX TRUE)
 
@@ -160,7 +175,19 @@ endif ()
 find_package(PkgConfig REQUIRED)
 
 find_package(EXPAT REQUIRED)
-find_package(Fontconfig REQUIRED)
+if (TARGET_ANDROID)
+    # Android has no fontconfig: util/font.c loads the system's font files from /system/fonts directly.
+    set(ECLIPSE_FONTCONFIG_LIBRARIES)
+    # THE CO-OP PEER'S LIBRARIES. The app loads libmain.so in its own linker namespace, which searches the native
+    # library directory; the peer is exec'd into the default namespace, which searches only the system and each
+    # object's OWN RUNPATH (Bionic has no inherited DT_RPATH). So every library here that needs a packaged one
+    # carries RUNPATH $ORIGIN, as build_deps.sh gives curl and mbedTLS; build_apk.sh checks it. Passed to the
+    # linker directly: CMake's Android platform blanks the RPATH flag (Modules/Platform/Android.cmake).
+    add_link_options("LINKER:--enable-new-dtags" "LINKER:-rpath,\$ORIGIN")
+else ()
+    find_package(Fontconfig REQUIRED)
+    set(ECLIPSE_FONTCONFIG_LIBRARIES Fontconfig::Fontconfig)
+endif ()
 find_package(Freetype REQUIRED)
 find_package(CURL REQUIRED)
 
@@ -211,6 +238,9 @@ elseif (OS_WINDOWS)
     # The application and both core libraries are one portable executable on
     # Windows. This is also the layout used by upstream's Windows build fix.
     set(BUILD_SHARED_CORE_LIBS OFF)
+elseif (TARGET_ANDROID)
+    # Linked into libmain.so and the co-op peer executable alike; an APK has no use for separate copies.
+    set(BUILD_SHARED_CORE_LIBS OFF)
 else ()
     set(BUILD_SHARED_CORE_LIBS ON)
 endif ()
@@ -258,6 +288,12 @@ target_include_directories(lvgl SYSTEM PRIVATE ${FREETYPE_INCLUDE_DIRS})
 target_compile_definitions(lvgl PUBLIC LV_CONF_PATH=../../../src/app/lvgl/lv_conf.h)
 target_link_libraries(lvgl PUBLIC ${SDL2_LIBRARIES} ${FREETYPE_LIBRARIES})
 
+if (TARGET_ANDROID AND NOT BUILD_TESTS)
+    # commons include(CTest)s unconditionally, which would build its test programs here too. Cross-compiled
+    # tests cannot run on the build machine, and theirs link -lpthread, which Bionic does not have (pthreads are
+    # in its libc).
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+endif ()
 add_subdirectory(third_party/commons)
 if (OS_WINDOWS)
     # commons selects os_info_generic.c when uname is absent, which is true on
@@ -275,7 +311,34 @@ endif ()
 target_include_directories(lv_gridview SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
 target_include_directories(lv_sdl_img SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS} ${SDL2_IMAGE_INCLUDE_DIRS})
 
-add_executable(moonlight src/main.c)
+if (TARGET_ANDROID)
+    # SDLActivity loads libSDL2.so and then libmain.so and calls SDL_main (SDL_main.h renames main()).
+    add_library(moonlight SHARED src/main.c)
+    set_target_properties(moonlight PROPERTIES OUTPUT_NAME main)
+    # THE CO-OP PEER. The secondary session is a second process (moonlight-common-c keeps one session per
+    # process), started exactly as on the TV and the desktops: fork + exec of this program with
+    # --coop-secondary. An app may only exec files the package manager extracted into its native library
+    # directory, and it extracts only lib*.so -- hence the name. RUNPATH $ORIGIN (above) finds libSDL2.so and
+    # the mbedTLS/curl libraries beside it.
+    add_executable(eclipse-peer src/main.c)
+    set_target_properties(eclipse-peer PROPERTIES OUTPUT_NAME libeclipse_peer SUFFIX ".so")
+    target_compile_definitions(eclipse-peer PRIVATE ECLIPSE_ANDROID_PEER=1 SDL_MAIN_HANDLED=1)
+    target_link_libraries(eclipse-peer PRIVATE moonlight-lib)
+    # setenv/unsetenv that never free what another thread may be reading: Android's own RenderThread calls getenv
+    # while SDL_main starts (src/app/platform/android/env_android.c). Every target with setenv calls of ours.
+    add_library(eclipse-android-env STATIC src/app/platform/android/env_android.c)
+    foreach (target moonlight eclipse-peer ss4s-module-mediacodec)
+        target_link_libraries(${target} PRIVATE eclipse-android-env)
+        target_link_options(${target} PRIVATE "LINKER:--wrap=setenv" "LINKER:--wrap=unsetenv")
+    endforeach ()
+    if (ECLIPSE_ANDROID_SELFTEST)
+        # Self-test APKs only: the TV remote tests/android/device_smoke.sh plugs into the emulator.
+        add_executable(eclipse-test-remote tests/android/test_remote_uinput.c)
+        set_target_properties(eclipse-test-remote PROPERTIES OUTPUT_NAME libeclipse_test_remote SUFFIX ".so")
+    endif ()
+else ()
+    add_executable(moonlight src/main.c)
+endif ()
 if (OS_WINDOWS)
     # Produce a native GUI application rather than opening a console window next
     # to SDL. The resource also gives Explorer stable product/version metadata,
@@ -348,7 +411,7 @@ target_include_directories(moonlight-lib SYSTEM PUBLIC ${SDL2_INCLUDE_DIRS} ${SD
 target_link_libraries(moonlight-lib PUBLIC
         m ${CMAKE_DL_LIBS} Threads::Threads ${SDL2_LIBRARIES} ${SDL2_IMAGE_LIBRARIES}
         moonlight-common-c gamestream lvgl ${INIH_LIBRARIES} ${CURL_LIBRARIES}
-        Fontconfig::Fontconfig ${FREETYPE_LIBRARIES})
+        ${ECLIPSE_FONTCONFIG_LIBRARIES} ${FREETYPE_LIBRARIES})
 
 target_link_libraries(moonlight-lib PUBLIC lv_gridview lv_sdl_img)
 
@@ -358,7 +421,27 @@ target_link_libraries(moonlight-lib PUBLIC ${OPUS_LIBRARIES})
 target_include_directories(moonlight-lib SYSTEM PUBLIC ${MBEDTLS_INCLUDE_DIRS})
 target_link_libraries(moonlight-lib PUBLIC ${MBEDCRYPTO_LIBRARY} ${MBEDX509_LIBRARY})
 
-if (TARGET_WEBOS)
+if (TARGET_ANDROID)
+    # A TV app like the webOS one: always fullscreen, an in-app language setting, video on its own surface
+    # under a translucent UI. There is no libintl; util/i18n reads the same compiled catalogues (.mo) that
+    # the desktops install, packaged as APK assets (platform/android/i18n_android.c).
+    set(FEATURE_FORCE_FULLSCREEN ON)
+    set(FEATURE_I18N_GETTEXT OFF)
+    set(FEATURE_I18N_LANGUAGE_SETTINGS ON)
+    set(FEATURE_INPUT_LIBCEC OFF)
+    set(FEATURE_WINDOW_FULLSCREEN_DESKTOP ON)
+    if (NOT ECLIPSE_ANDROID_APPLICATION_ID)
+        set(ECLIPSE_ANDROID_APPLICATION_ID "io.github.preceptorofmagic.eclipse")
+    endif ()
+    target_compile_definitions(moonlight-lib PUBLIC TARGET_ANDROID OS_ANDROID _GNU_SOURCE
+            APPID="${ECLIPSE_ANDROID_APPLICATION_ID}"
+            GAMECONTROLLERDB_PLATFORM="Android")
+    # Diagnostic logs and co-op traces resolve under the app's own storage (path_android.c), as on the desktops.
+    target_compile_options(moonlight-lib PUBLIC
+            "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/src/app/platform/sdl/desktop_log_paths.h")
+    target_link_libraries(moonlight-lib PUBLIC log android)
+    set_target_properties(moonlight PROPERTIES OUTPUT_NAME main)
+elseif (TARGET_WEBOS)
     set(FEATURE_FORCE_FULLSCREEN ON)
     set(FEATURE_I18N_GETTEXT OFF)
     set(FEATURE_I18N_LANGUAGE_SETTINGS ON)
@@ -510,7 +593,7 @@ endif ()
 
 # Preserve the diagnostic harness's explicit global paths. Ordinary POSIX releases
 # translate only the app's legacy temporary names into its owned cache namespace.
-if ((TARGET_WEBOS OR OS_LINUX) AND NOT AURORA_VENDOR_DIAG AND
+if ((TARGET_WEBOS OR OS_LINUX OR TARGET_ANDROID) AND NOT AURORA_VENDOR_DIAG AND
         NOT WEBOS_APPINFO_ID MATCHES "\\.beta$")
     target_sources(moonlight-lib PRIVATE src/app/platform/posix/runtime_files.c)
     target_compile_definitions(moonlight-lib PUBLIC ECLIPSE_POSIX_RUNTIME=1)
@@ -571,6 +654,8 @@ target_include_directories(moonlight-lib PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 
 if (OS_WINDOWS)
     target_link_libraries(moonlight-lib PUBLIC rpcrt4)
+elseif (TARGET_ANDROID)
+    # No libuuid: commons-uuidstr generates random (version 4) UUIDs with arc4random on Android.
 else ()
     pkg_check_modules(UUID REQUIRED uuid)
     target_link_libraries(moonlight-lib PUBLIC ${UUID_LIBRARIES})
@@ -586,7 +671,14 @@ add_subdirectory(src)
 if (NOT DEFINED CMAKE_INSTALL_BINDIR)
     set(CMAKE_INSTALL_BINDIR bin)
 endif ()
-install(TARGETS moonlight RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if (TARGET_ANDROID)
+    # Collected into the APK's lib/<abi>/ by scripts/android/build_apk.sh.
+    install(TARGETS moonlight eclipse-peer
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR})
+else ()
+    install(TARGETS moonlight RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif ()
 if (OS_WINDOWS)
     # path_assets() resolves beside the executable in a portable build. Ship the
     # project-specific mappings there so first-run controller support does not depend
@@ -604,7 +696,8 @@ if (BUILD_TESTS)
     add_subdirectory(tests)
 endif ()
 
-if (FEATURE_I18N_GETTEXT)
+if (FEATURE_I18N_GETTEXT OR TARGET_ANDROID)
+    # Android has no gettext runtime but ships the same compiled catalogues as APK assets.
     include(MoonlightI18n)
 endif ()
 
