@@ -159,6 +159,22 @@ target_link_libraries(test_android_remote_keys PRIVATE lvgl commons-logging comm
         commons-array-list commons-sockaddr commons-hostport commons-wol commons-ini-writer commons-copyfile
         commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
 add_test(NAME test_android_remote_keys COMMAND test_android_remote_keys)
+
+# View + Start as the host's Guide button (session_gamepad.c, compiled for Android): the SHIELD TV takes the Guide button.
+add_executable(test_android_gamepad_guide test_gamepad_guide.c)
+target_compile_definitions(test_android_gamepad_guide PRIVATE TARGET_ANDROID=1 _GNU_SOURCE
+        SESSION_GAMEPAD_SOURCE="${CMAKE_SOURCE_DIR}/src/app/stream/input/session_gamepad.c")
+target_include_directories(test_android_gamepad_guide BEFORE PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/android-config)
+target_include_directories(test_android_gamepad_guide PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android
+        ${CMAKE_SOURCE_DIR}/src/app ${CMAKE_SOURCE_DIR}/core/moonlight-common-c/src
+        ${CMAKE_SOURCE_DIR}/third_party/ss4s/include ${CMAKE_SOURCE_DIR}/third_party/commons/util/linked-list
+        ${CMAKE_SOURCE_DIR}/core/libgamestream/libgamestream ${CMAKE_SOURCE_DIR}/core/libgamestream)
+target_include_directories(test_android_gamepad_guide SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(test_android_gamepad_guide PRIVATE lvgl commons-logging commons-uuidstr commons-lazy
+        commons-refcounter commons-executor commons-linked-list commons-ss4s-modules-list commons-os-info
+        commons-version-info commons-array-list commons-sockaddr commons-hostport commons-wol commons-ini-writer
+        commons-copyfile commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
+add_test(NAME test_android_gamepad_guide COMMAND test_android_gamepad_guide)
 if (Java_FOUND)
     add_test(NAME test_android_tv_keys COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_java_test.sh
             ${Java_JAVAC_EXECUTABLE} ${Java_JAVA_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/java-tv-keys

@@ -16,6 +16,7 @@
 #define GAMEPAD_COMBO_VMOUSE (LB_FLAG | RS_CLK_FLAG)
 #define GAMEPAD_COMBO_KEYBOARD (RB_FLAG | RS_CLK_FLAG)
 #define GAMEPAD_COMBO_STATS (LB_FLAG | LS_CLK_FLAG)
+#define GAMEPAD_COMBO_GUIDE (BACK_FLAG | PLAY_FLAG)
 
 static bool quit_combo_pressed = false;
 static bool vmouse_combo_pressed = false;
@@ -25,6 +26,8 @@ static bool stats_combo_pressed = false;
 static void release_buttons(stream_input_t *input, app_gamepad_state_t *gamepad);
 
 static bool gamepad_combo_check(int buttons, short combo);
+
+static short wire_buttons(const app_gamepad_state_t *gamepad);
 
 static bool sensor_state_needs_update(const app_gamepad_sensor_state_t *state, uint32_t timestamp,
                                       const float data[3]);
@@ -169,13 +172,13 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
     if (input->view_only || !stream_input_moonlight_gamepad_enabled(input)) {
         return;
     }
-    send_primary_controller(input, gamepad, (short) gamepad->buttons,
+    send_primary_controller(input, gamepad, wire_buttons(gamepad),
                             (unsigned char) gamepad->leftTrigger,
                             (unsigned char) gamepad->rightTrigger,
                             gamepad->leftStickX, gamepad->leftStickY,
                             gamepad->rightStickX, gamepad->rightStickY);
     coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
-                               (short) gamepad->buttons, (unsigned char) gamepad->leftTrigger,
+                               wire_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
                                (unsigned char) gamepad->rightTrigger,
                                gamepad->leftStickX, gamepad->leftStickY,
                                gamepad->rightStickX, gamepad->rightStickY);
@@ -232,19 +235,19 @@ void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEv
     }
 
     if (vmouse_intercepted(input, gamepad)) {
-        send_primary_controller(input, gamepad, (short) gamepad->buttons, 0, 0,
+        send_primary_controller(input, gamepad, wire_buttons(gamepad), 0, 0,
                                 gamepad->leftStickX, gamepad->leftStickY, 0, 0);
         coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
-                                   (short) gamepad->buttons, 0, 0,
+                                   wire_buttons(gamepad), 0, 0,
                                    gamepad->leftStickX, gamepad->leftStickY, 0, 0);
     } else {
-        send_primary_controller(input, gamepad, (short) gamepad->buttons,
+        send_primary_controller(input, gamepad, wire_buttons(gamepad),
                                 (unsigned char) gamepad->leftTrigger,
                                 (unsigned char) gamepad->rightTrigger,
                                 gamepad->leftStickX, gamepad->leftStickY,
                                 gamepad->rightStickX, gamepad->rightStickY);
         coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
-                                   (short) gamepad->buttons, (unsigned char) gamepad->leftTrigger,
+                                   wire_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
                                    (unsigned char) gamepad->rightTrigger,
                                    gamepad->leftStickX, gamepad->leftStickY,
                                    gamepad->rightStickX, gamepad->rightStickY);
@@ -525,6 +528,22 @@ static void send_primary_controller(stream_input_t *input, const app_gamepad_sta
 
 static bool gamepad_combo_check(int buttons, short combo) {
     return (buttons & combo) == combo;
+}
+
+static short wire_buttons(const app_gamepad_state_t *gamepad) {
+    /* VIEW + START IS GUIDE ON ANDROID. The SHIELD TV turns a controller's Xbox/Guide button
+     * (KEYCODE_BUTTON_MODE) into Home before any app sees it (measured 2026-10-16: WindowManager
+     * rewrites keycode 110 to 3 and starts the launcher), so the host's Guide -- Steam Big Picture --
+     * could never be reached. While View and Start are both held, the host gets Guide held instead,
+     * as Moonlight for Android does. Other platforms pass the Guide button through, so they send the
+     * buttons as they are. */
+    short buttons = (short) gamepad->buttons;
+#if TARGET_ANDROID
+    if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_GUIDE)) {
+        buttons = (short) ((buttons & ~GAMEPAD_COMBO_GUIDE) | SPECIAL_FLAG);
+    }
+#endif
+    return buttons;
 }
 
 static bool sensor_state_needs_update(const app_gamepad_sensor_state_t *state, uint32_t timestamp,

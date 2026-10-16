@@ -1,0 +1,165 @@
+/*
+ * View + Start is the host's Guide button on Android (stream/input/session_gamepad.c, compiled here with TARGET_ANDROID).
+ *
+ * The SHIELD TV turns a controller's Xbox/Guide button into Home before any app sees it (2026-10-16), so Steam Big
+ * Picture on the host could not be opened from a controller. While View and Start are both held the host gets Guide
+ * held instead -- from button and from stick/trigger events alike -- and gets View and Start back when one is let
+ * go. What reaches the host is recorded by a fake LiSendMultiControllerEvent.
+ */
+#include SESSION_GAMEPAD_SOURCE
+
+#include <stdio.h>
+
+static short sent[64];
+static int sent_n;
+static int overlay_opened;
+
+int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask, int buttonFlags,
+                               unsigned char leftTrigger, unsigned char rightTrigger, short leftStickX,
+                               short leftStickY, short rightStickX, short rightStickY) {
+    (void) controllerNumber; (void) activeGamepadMask; (void) leftTrigger; (void) rightTrigger;
+    (void) leftStickX; (void) leftStickY; (void) rightStickX; (void) rightStickY;
+    if (sent_n < (int) (sizeof(sent) / sizeof(sent[0]))) { sent[sent_n++] = (short) buttonFlags; }
+    return 0;
+}
+int LiSendControllerArrivalEvent(uint8_t n, uint16_t m, uint8_t t, uint32_t b, uint16_t c) {
+    (void) n; (void) m; (void) t; (void) b; (void) c; return 0;
+}
+int LiSendControllerMotionEvent(uint8_t n, uint8_t t, float x, float y, float z) {
+    (void) n; (void) t; (void) x; (void) y; (void) z; return 0;
+}
+int LiSendControllerTouchEvent(uint8_t n, uint8_t t, uint32_t p, float x, float y, float pr) {
+    (void) n; (void) t; (void) p; (void) x; (void) y; (void) pr; return 0;
+}
+
+static app_gamepad_state_t pad;
+app_gamepad_state_t *app_input_gamepad_state_by_instance_id(app_input_t *input, SDL_JoystickID id) {
+    (void) input; (void) id; return &pad;
+}
+app_gamepad_state_t *app_input_gamepad_state_by_index(app_input_t *input, int index) {
+    (void) input; (void) index; return &pad;
+}
+bool app_input_gamepad_swaps_abxy(SDL_GameController *controller) { (void) controller; return false; }
+short app_input_get_max_gamepads(app_input_t *input) { (void) input; return 4; }
+
+bool bus_pushevent(int which, void *data1, void *data2) {
+    (void) data1; (void) data2;
+    if (which == USER_OPEN_OVERLAY) { overlay_opened++; }
+    return true;
+}
+void commons_log_printf(commons_log_level level, const char *tag, const char *fmt, ...) {
+    (void) level; (void) tag; (void) fmt;
+}
+
+int coop_input_primary_slot(int gs_id) { return gs_id; }
+uint16_t coop_input_primary_mask(uint16_t mask) { return mask; }
+void coop_input_send_arrive(int gs_id, uint16_t mask, uint8_t type, uint16_t caps, uint32_t buttons) {
+    (void) gs_id; (void) mask; (void) type; (void) caps; (void) buttons;
+}
+void coop_input_send_remove(int gs_id, uint16_t mask) { (void) gs_id; (void) mask; }
+void coop_input_send_controller(int gs_id, uint16_t mask, short buttons, unsigned char lt, unsigned char rt,
+                                short lx, short ly, short rx, short ry) {
+    (void) gs_id; (void) mask; (void) buttons; (void) lt; (void) rt; (void) lx; (void) ly; (void) rx; (void) ry;
+}
+void coop_input_send_sensor(int gs_id, uint16_t mask, uint8_t type, uint32_t ts, float x, float y, float z) {
+    (void) gs_id; (void) mask; (void) type; (void) ts; (void) x; (void) y; (void) z;
+}
+void coop_input_send_touchpad(int gs_id, uint16_t mask, uint8_t type, uint32_t id, float x, float y, float p) {
+    (void) gs_id; (void) mask; (void) type; (void) id; (void) x; (void) y; (void) p;
+}
+bool session_input_is_vmouse_active(session_input_vmouse_t *vmouse) { (void) vmouse; return false; }
+void session_toggle_vmouse(session_t *session) { (void) session; }
+void vmouse_set_modifier(session_input_vmouse_t *vmouse, bool pressed) { (void) vmouse; (void) pressed; }
+void vmouse_set_trigger(session_input_vmouse_t *vmouse, char l, char r) { (void) vmouse; (void) l; (void) r; }
+void vmouse_set_vector(session_input_vmouse_t *vmouse, short x, short y) { (void) vmouse; (void) x; (void) y; }
+
+static stream_input_t input;
+static app_input_t app_input;
+
+static void button(SDL_GameControllerButton b, bool down) {
+    SDL_ControllerButtonEvent e;
+    memset(&e, 0, sizeof(e));
+    e.type = down ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+    e.state = down ? SDL_PRESSED : SDL_RELEASED;
+    e.button = (Uint8) b;
+    stream_input_handle_cbutton(&input, &e);
+}
+
+static void stick(short value) {
+    SDL_ControllerAxisEvent e;
+    memset(&e, 0, sizeof(e));
+    e.type = SDL_CONTROLLERAXISMOTION;
+    e.axis = SDL_CONTROLLER_AXIS_LEFTX;
+    e.value = value;
+    stream_input_handle_caxis(&input, &e);
+}
+
+static int failures;
+static void expect_sent(const char *what, const short *want, int n) {
+    int ok = sent_n == n;
+    for (int i = 0; ok && i < n; ++i) { ok = sent[i] == want[i]; }
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s: sent", what);
+        for (int i = 0; i < sent_n; ++i) { fprintf(stderr, " 0x%04x", (unsigned) (unsigned short) sent[i]); }
+        fprintf(stderr, ", want");
+        for (int i = 0; i < n; ++i) { fprintf(stderr, " 0x%04x", (unsigned) (unsigned short) want[i]); }
+        fprintf(stderr, "\n");
+        failures++;
+    } else {
+        printf("ok: %s\n", what);
+    }
+    sent_n = 0;
+}
+
+int main(void) {
+    input.input = &app_input;
+    app_input.activeGamepadMask = 1;
+    pad.gs_id = 0;
+
+    /* View, then Start: View alone reaches the host, then Guide alone while both are held. */
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    expect_sent("View + Start is Guide", (const short[]) {BACK_FLAG, SPECIAL_FLAG}, 2);
+
+    /* Stick movement while both are held keeps Guide held, not View and Start. */
+    stick(12000);
+    expect_sent("Guide stays held through stick movement", (const short[]) {SPECIAL_FLAG}, 1);
+
+    /* Letting go of Start: View is held again; then nothing. */
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    expect_sent("releasing gives View back, then nothing", (const short[]) {BACK_FLAG, 0}, 2);
+    stick(0);
+    sent_n = 0;
+
+    /* Start alone and View alone are themselves. */
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    expect_sent("Start and View alone are unchanged", (const short[]) {PLAY_FLAG, 0, BACK_FLAG, 0}, 4);
+
+    /* A real Guide button (where the platform delivers it) is still Guide. */
+    button(SDL_CONTROLLER_BUTTON_GUIDE, true);
+    button(SDL_CONTROLLER_BUTTON_GUIDE, false);
+    expect_sent("Guide button itself", (const short[]) {SPECIAL_FLAG, 0}, 2);
+
+    /* The stream menu combo (View + Start + LB + RB) still opens the menu. */
+    button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, true);
+    button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, true);
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, false);
+    button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, false);
+    if (overlay_opened != 1) {
+        fprintf(stderr, "FAIL: the stream menu combo opened the menu %d times\n", overlay_opened);
+        failures++;
+    } else {
+        printf("ok: View + Start + LB + RB still opens the stream menu\n");
+    }
+
+    printf("%s\n", failures ? "FAIL" : "PASS");
+    return failures ? 1 : 0;
+}
