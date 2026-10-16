@@ -40,6 +40,9 @@ void pcmanager_auto_discovery_start(pcmanager_t *manager);
 
 void pcmanager_auto_discovery_stop(pcmanager_t *manager);
 
+/** Write the known hosts now (pairings, addresses, per-PC choices). Normally done on clean shutdown. */
+void pcmanager_save_known_hosts(pcmanager_t *manager);
+
 const pclist_t *pcmanager_servers(pcmanager_t *manager);
 
 const pclist_t *pcmanager_node(pcmanager_t *manager, const uuidstr_t *uuid);

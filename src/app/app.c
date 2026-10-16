@@ -416,6 +416,16 @@ static int app_event_filter(void *userdata, SDL_Event *event) {
             if (app_ui_is_opened(&app->ui) && app->session != NULL) {
                 session_interrupt(app->session, false, STREAMING_INTERRUPT_BACKGROUND);
             }
+#if TARGET_ANDROID
+            /* SAVE NOW: ANDROID ENDS A BACKGROUND APP WITHOUT A WORD. Settings and the known hosts are written
+             * on clean shutdown, which an Android TV app almost never gets -- the SHIELD TV SIGKILLs it soon
+             * after it leaves the screen. A host paired since the last start was then lost, and so was the last
+             * co-op pair, so a paused co-op session could not be resumed from its pane (2026-10-16). */
+            settings_save(&app->settings);
+            if (pcmanager != NULL) {
+                pcmanager_save_known_hosts(pcmanager);
+            }
+#endif
             break;
         }
         case SDL_APP_DIDENTERFOREGROUND: {

@@ -2101,6 +2101,11 @@ static void launch_session(coop_dialog_t *dlg) {
                 dlg->assign[i].route == dlg->primary_machine
                 ? COOP_PAD_PRIMARY : COOP_PAD_SECONDARY;
     }
+#if TARGET_ANDROID
+    /* Written at once: Android may end the app without the clean shutdown that would write it, and the pair
+     * is what resumes a paused co-op session from its pane (apps.controller.c). */
+    settings_save(app_configuration);
+#endif
     /* The mouse and keyboard, when assigned (#37): machine -> pane, like a pad's route above.
      * Kept for start_stream, which the PIN/HDR relaunch also reaches without this dialog. */
     g_kbm_pane[0] = g_kbm_pane[1] = -1;
