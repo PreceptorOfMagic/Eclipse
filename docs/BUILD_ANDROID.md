@@ -110,8 +110,11 @@ not: its system package `com.nvidia.shieldtech.hooks` turns the Guide button int
 during a stream (`adb shell cmd package install-existing com.nvidia.shieldtech.hooks` puts it back); this is a
 change to the SHIELD's own software and is untested here. View + Start is then the controller's way home.
 
-In co-op, each controller goes to the PC chosen for it on the co-op screen. The virtual mouse, as on every
-platform, moves the first PC's pointer whichever controller turned it on.
+In co-op, each controller goes to the PC chosen for it on the co-op screen. The virtual mouse points like the LG
+Magic Remote: it starts in the middle of the PC it is over, and pushed past the line between the two pictures it
+becomes the other PC's pointer, arriving at the matching edge. The triggers click, and the wheel and the on-screen
+keyboard type, on whichever PC it is over; while a trigger is held it stays on that PC. Any controller's right stick
+moves it. (On the other platforms the virtual mouse moves the first PC's pointer.)
 
 A TV's own remote reaches a box plugged into the TV only as buttons, over HDMI-CEC: an LG Magic Remote's pointer
 and wheel stay with the TV (measured with the SHIELD TV on an LG G5: no input event reached the SHIELD while the

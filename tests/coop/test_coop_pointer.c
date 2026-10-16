@@ -81,6 +81,12 @@ int LiSendHScrollEvent(signed char scrollClicks) {
     return 0;
 }
 
+/* coop_pointer_scroll_high_res (the Android virtual mouse) only; not exercised here. */
+int LiSendHighResScrollEvent(short scrollAmount) {
+    (void) scrollAmount;
+    return 0;
+}
+
 /* The peer's half: the co-op input link, stubbed. */
 void coop_input_send_mouse_position(int x, int y, int ref_w, int ref_h) {
     pos.target = TO_PEER;

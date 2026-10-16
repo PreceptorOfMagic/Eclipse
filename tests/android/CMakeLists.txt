@@ -176,6 +176,25 @@ target_link_libraries(test_android_gamepad_home PRIVATE lvgl commons-logging com
         commons-copyfile commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
 add_test(NAME test_android_gamepad_home COMMAND test_android_gamepad_home)
 
+# The virtual mouse in co-op points like the magic remote (session_virt_mouse.c compiled for Android, with the real
+# coop_pointer.c): it crosses the divider and clicks on the PC it is over.
+add_executable(test_android_vmouse_coop test_vmouse_coop.c ${CMAKE_SOURCE_DIR}/src/app/stream/input/coop_pointer.c)
+target_compile_definitions(test_android_vmouse_coop PRIVATE TARGET_ANDROID=1 _GNU_SOURCE
+        SESSION_VIRT_MOUSE_SOURCE="${CMAKE_SOURCE_DIR}/src/app/stream/input/session_virt_mouse.c"
+        COOP_PTR_VMIRROR_SENTINEL="${CMAKE_CURRENT_BINARY_DIR}/test-vmouse-coop-vmirror"
+        AURORA_DIAG_LOG="${CMAKE_CURRENT_BINARY_DIR}/test-vmouse-coop-diag.log")
+target_include_directories(test_android_vmouse_coop BEFORE PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/android-config)
+target_include_directories(test_android_vmouse_coop PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android
+        ${CMAKE_SOURCE_DIR}/src/app ${CMAKE_SOURCE_DIR}/src/app/stream/input ${CMAKE_SOURCE_DIR}/core/moonlight-common-c/src
+        ${CMAKE_SOURCE_DIR}/third_party/ss4s/include ${CMAKE_SOURCE_DIR}/third_party/commons/util/linked-list
+        ${CMAKE_SOURCE_DIR}/core/libgamestream/libgamestream ${CMAKE_SOURCE_DIR}/core/libgamestream)
+target_include_directories(test_android_vmouse_coop SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(test_android_vmouse_coop PRIVATE lvgl commons-logging commons-uuidstr commons-lazy
+        commons-refcounter commons-executor commons-linked-list commons-ss4s-modules-list commons-os-info
+        commons-version-info commons-array-list commons-sockaddr commons-hostport commons-wol commons-ini-writer
+        commons-copyfile commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
+add_test(NAME test_android_vmouse_coop COMMAND test_android_vmouse_coop)
+
 # Stopping discovery inside the event pass (discovery.c, compiled for Android): it deadlocked on the SHIELD TV.
 add_executable(test_android_discovery_stop test_discovery_stop_in_events.c)
 target_compile_definitions(test_android_discovery_stop PRIVATE TARGET_ANDROID=1 _GNU_SOURCE
