@@ -20,6 +20,9 @@
 #include "logging_ext_sdl.h"
 #include "logging_ext_ss4s.h"
 #include "backend/backend_root.h"
+#if TARGET_ANDROID
+#include "backend/pcmanager/discovery/discovery.h"
+#endif
 #include "platform/local_input.h"
 #include "platform/input_names.h"
 #include "stream/session.h"
@@ -583,7 +586,13 @@ static int app_event_filter(void *userdata, SDL_Event *event) {
 
 void app_process_events(app_t *app) {
     SDL_PumpEvents();
+#if TARGET_ANDROID
+    discovery_events_dispatching(true);
+#endif
     SDL_FilterEvents(app_event_filter, app);
+#if TARGET_ANDROID
+    discovery_events_dispatching(false);
+#endif
 }
 
 void app_quit_confirm() {

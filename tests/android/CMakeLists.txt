@@ -175,6 +175,18 @@ target_link_libraries(test_android_gamepad_guide PRIVATE lvgl commons-logging co
         commons-version-info commons-array-list commons-sockaddr commons-hostport commons-wol commons-ini-writer
         commons-copyfile commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
 add_test(NAME test_android_gamepad_guide COMMAND test_android_gamepad_guide)
+
+# Stopping discovery inside the event pass (discovery.c, compiled for Android): it deadlocked on the SHIELD TV.
+add_executable(test_android_discovery_stop test_discovery_stop_in_events.c)
+target_compile_definitions(test_android_discovery_stop PRIVATE TARGET_ANDROID=1 _GNU_SOURCE
+        DISCOVERY_SOURCE="${CMAKE_SOURCE_DIR}/src/app/backend/pcmanager/discovery/discovery.c")
+target_include_directories(test_android_discovery_stop BEFORE PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/android-config)
+target_include_directories(test_android_discovery_stop PRIVATE ${CMAKE_SOURCE_DIR}/src/app
+        ${CMAKE_SOURCE_DIR}/src/app/backend/pcmanager/discovery)
+target_include_directories(test_android_discovery_stop SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(test_android_discovery_stop PRIVATE commons-logging commons-sockaddr Threads::Threads ${SDL2_LIBRARIES})
+add_test(NAME test_android_discovery_stop COMMAND test_android_discovery_stop)
+set_tests_properties(test_android_discovery_stop PROPERTIES TIMEOUT 30)
 if (Java_FOUND)
     add_test(NAME test_android_tv_keys COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_java_test.sh
             ${Java_JAVAC_EXECUTABLE} ${Java_JAVA_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/java-tv-keys
