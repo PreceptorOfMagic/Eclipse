@@ -167,6 +167,23 @@ void android_display_request_refresh(int refresh_x100) {
     call_static_void_int("requestRefreshRate", refresh_x100);
 }
 
+void android_go_home(void) {
+    JNIEnv *env = activity_env();
+    if (env == NULL) {
+        return;
+    }
+    jclass cls = activity_class(env);
+    if (cls == NULL) {
+        return;
+    }
+    jmethodID method = (*env)->GetStaticMethodID(env, cls, "goHome", "()V");
+    if (method != NULL) {
+        (*env)->CallStaticVoidMethod(env, cls, method);
+    }
+    clear_exception(env, "goHome");
+    (*env)->DeleteLocalRef(env, cls);
+}
+
 int android_audio_output_names(char **names, int max) {
     JNIEnv *env = activity_env();
     if (env == NULL) {

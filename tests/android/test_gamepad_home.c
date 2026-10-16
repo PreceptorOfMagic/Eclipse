@@ -1,10 +1,10 @@
 /*
- * View + Start is the host's Guide button on Android (stream/input/session_gamepad.c, compiled here with TARGET_ANDROID).
+ * View + Start shows the TV's home screen on Android (stream/input/session_gamepad.c, compiled here with TARGET_ANDROID).
  *
- * The SHIELD TV turns a controller's Xbox/Guide button into Home before any app sees it (2026-10-16), so Steam Big
- * Picture on the host could not be opened from a controller. While View and Start are both held the host gets Guide
- * held instead -- from button and from stick/trigger events alike -- and gets View and Start back when one is let
- * go. What reaches the host is recorded by a fake LiSendMultiControllerEvent.
+ * The SHIELD TV turns a controller's Guide button into Home before any app sees it (2026-10-16). With that rewrite
+ * turned off, so that Guide reaches the host as Guide, a controller needs another way home during a stream: View +
+ * Start, acted on when both are let go. Guide itself still goes to the host, and View + Start + LB + RB still opens
+ * the stream menu. What reaches the host is recorded by a fake LiSendMultiControllerEvent.
  */
 #include SESSION_GAMEPAD_SOURCE
 
@@ -13,6 +13,9 @@
 static short sent[64];
 static int sent_n;
 static int overlay_opened;
+static int went_home;
+
+void android_go_home(void) { went_home++; }
 
 int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask, int buttonFlags,
                                unsigned char leftTrigger, unsigned char rightTrigger, short leftStickX,
@@ -116,21 +119,24 @@ int main(void) {
     app_input.activeGamepadMask = 1;
     pad.gs_id = 0;
 
-    /* View, then Start: View alone reaches the host, then Guide alone while both are held. */
+    /* View, then Start, then both let go: the host gets View only, and the home screen opens on release. */
     button(SDL_CONTROLLER_BUTTON_BACK, true);
     button(SDL_CONTROLLER_BUTTON_START, true);
-    expect_sent("View + Start is Guide", (const short[]) {BACK_FLAG, SPECIAL_FLAG}, 2);
-
-    /* Stick movement while both are held keeps Guide held, not View and Start. */
     stick(12000);
-    expect_sent("Guide stays held through stick movement", (const short[]) {SPECIAL_FLAG}, 1);
-
-    /* Letting go of Start: View is held again; then nothing. */
     button(SDL_CONTROLLER_BUTTON_START, false);
     button(SDL_CONTROLLER_BUTTON_BACK, false);
-    expect_sent("releasing gives View back, then nothing", (const short[]) {BACK_FLAG, 0}, 2);
+    /* View reaches the host alone; from the moment Start joins it, the host sees neither -- through stick
+     * movement and through letting go of either -- and never sees Start or Guide. */
+    expect_sent("View + Start is taken back and never reaches the host as such", (const short[]) {BACK_FLAG, 0, 0, 0, 0}, 5);
+    if (went_home != 1) {
+        fprintf(stderr, "FAIL: View + Start went home %d times\n", went_home);
+        failures++;
+    } else {
+        printf("ok: View + Start shows the home screen\n");
+    }
     stick(0);
     sent_n = 0;
+    went_home = 0;
 
     /* Start alone and View alone are themselves. */
     button(SDL_CONTROLLER_BUTTON_START, true);
@@ -153,6 +159,10 @@ int main(void) {
     button(SDL_CONTROLLER_BUTTON_BACK, false);
     button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, false);
     button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, false);
+    if (went_home != 0) {
+        fprintf(stderr, "FAIL: the stream menu combo also went home\n");
+        failures++;
+    }
     if (overlay_opened != 1) {
         fprintf(stderr, "FAIL: the stream menu combo opened the menu %d times\n", overlay_opened);
         failures++;

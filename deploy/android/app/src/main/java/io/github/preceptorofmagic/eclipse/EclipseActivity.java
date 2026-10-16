@@ -465,6 +465,28 @@ public class EclipseActivity extends SDLActivity {
         });
     }
 
+    /**
+     * Show the home screen, as the Home key does. A controller's Guide button is Home on the SHIELD TV only
+     * until its rewrite is turned off so that Guide reaches the host; View + Start is then the controller's way
+     * home during a stream (session_gamepad.c).
+     */
+    static void goHome() {
+        final EclipseActivity activity = sInstance;
+        if (activity == null) {
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            Intent home = new Intent(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            home.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                activity.startActivity(home);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "goHome", e);
+            }
+        });
+    }
+
     /* --- video ------------------------------------------------------------------------------------------ */
 
     /** The surface the MediaCodec module renders into; null until Android has created it. */

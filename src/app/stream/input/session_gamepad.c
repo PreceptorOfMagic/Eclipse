@@ -16,16 +16,27 @@
 #define GAMEPAD_COMBO_VMOUSE (LB_FLAG | RS_CLK_FLAG)
 #define GAMEPAD_COMBO_KEYBOARD (RB_FLAG | RS_CLK_FLAG)
 #define GAMEPAD_COMBO_STATS (LB_FLAG | LS_CLK_FLAG)
-#define GAMEPAD_COMBO_GUIDE (BACK_FLAG | PLAY_FLAG)
+#if TARGET_ANDROID
+/* VIEW + START IS THE WAY HOME ON ANDROID. The SHIELD TV turns a controller's Guide button into Home (its
+ * window manager rewrites KEYCODE_BUTTON_MODE to HOME, 2026-10-16); with that taken off so that Guide can
+ * reach the host, a controller has no other way back to the TV's home screen during a stream. */
+#define GAMEPAD_COMBO_HOME (BACK_FLAG | PLAY_FLAG)
+#include "platform/android/android_platform.h"
+#endif
 
 static bool quit_combo_pressed = false;
 static bool vmouse_combo_pressed = false;
 static bool keyboard_combo_pressed = false;
 static bool stats_combo_pressed = false;
+#if TARGET_ANDROID
+static bool home_combo_pressed = false;
+#endif
 
 static void release_buttons(stream_input_t *input, app_gamepad_state_t *gamepad);
 
 static bool gamepad_combo_check(int buttons, short combo);
+
+static short host_buttons(const app_gamepad_state_t *gamepad);
 
 static short wire_buttons(const app_gamepad_state_t *gamepad);
 
@@ -134,6 +145,9 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
 
     if (gamepad_combo_check(gamepad->buttons, QUIT_BUTTONS)) {
         quit_combo_pressed = true;
+#if TARGET_ANDROID
+        home_combo_pressed = false;         /* View + Start on the way to the stream menu combo */
+#endif
         return;
     } else if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_VMOUSE)) {
         vmouse_combo_pressed = true;
@@ -145,6 +159,27 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
         stats_combo_pressed = true;
         return;
     }
+#if TARGET_ANDROID
+    else if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_HOME)) {
+        if (!home_combo_pressed) {
+            home_combo_pressed = true;
+            /* Whichever of the two went first reached the host: take it back now. */
+            if (!input->view_only && stream_input_moonlight_gamepad_enabled(input)) {
+                send_primary_controller(input, gamepad, host_buttons(gamepad),
+                                        (unsigned char) gamepad->leftTrigger,
+                                        (unsigned char) gamepad->rightTrigger,
+                                        gamepad->leftStickX, gamepad->leftStickY,
+                                        gamepad->rightStickX, gamepad->rightStickY);
+                coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
+                                           host_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
+                                           (unsigned char) gamepad->rightTrigger,
+                                           gamepad->leftStickX, gamepad->leftStickY,
+                                           gamepad->rightStickX, gamepad->rightStickY);
+            }
+        }
+        return;
+    }
+#endif
     if (gamepad->buttons == 0) {
         if (quit_combo_pressed) {
             quit_combo_pressed = false;
@@ -167,18 +202,26 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
             bus_pushevent(USER_TOGGLE_STATS_PIN, NULL, NULL);
             return;
         }
+#if TARGET_ANDROID
+        else if (home_combo_pressed) {
+            home_combo_pressed = false;
+            release_buttons(input, gamepad);
+            android_go_home();
+            return;
+        }
+#endif
     }
 
     if (input->view_only || !stream_input_moonlight_gamepad_enabled(input)) {
         return;
     }
-    send_primary_controller(input, gamepad, wire_buttons(gamepad),
+    send_primary_controller(input, gamepad, host_buttons(gamepad),
                             (unsigned char) gamepad->leftTrigger,
                             (unsigned char) gamepad->rightTrigger,
                             gamepad->leftStickX, gamepad->leftStickY,
                             gamepad->rightStickX, gamepad->rightStickY);
     coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
-                               wire_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
+                               host_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
                                (unsigned char) gamepad->rightTrigger,
                                gamepad->leftStickX, gamepad->leftStickY,
                                gamepad->rightStickX, gamepad->rightStickY);
@@ -235,19 +278,19 @@ void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEv
     }
 
     if (vmouse_intercepted(input, gamepad)) {
-        send_primary_controller(input, gamepad, wire_buttons(gamepad), 0, 0,
+        send_primary_controller(input, gamepad, host_buttons(gamepad), 0, 0,
                                 gamepad->leftStickX, gamepad->leftStickY, 0, 0);
         coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
-                                   wire_buttons(gamepad), 0, 0,
+                                   host_buttons(gamepad), 0, 0,
                                    gamepad->leftStickX, gamepad->leftStickY, 0, 0);
     } else {
-        send_primary_controller(input, gamepad, wire_buttons(gamepad),
+        send_primary_controller(input, gamepad, host_buttons(gamepad),
                                 (unsigned char) gamepad->leftTrigger,
                                 (unsigned char) gamepad->rightTrigger,
                                 gamepad->leftStickX, gamepad->leftStickY,
                                 gamepad->rightStickX, gamepad->rightStickY);
         coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
-                                   wire_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
+                                   host_buttons(gamepad), (unsigned char) gamepad->leftTrigger,
                                    (unsigned char) gamepad->rightTrigger,
                                    gamepad->leftStickX, gamepad->leftStickY,
                                    gamepad->rightStickX, gamepad->rightStickY);
@@ -530,17 +573,13 @@ static bool gamepad_combo_check(int buttons, short combo) {
     return (buttons & combo) == combo;
 }
 
-static short wire_buttons(const app_gamepad_state_t *gamepad) {
-    /* VIEW + START IS GUIDE ON ANDROID. The SHIELD TV turns a controller's Xbox/Guide button
-     * (KEYCODE_BUTTON_MODE) into Home before any app sees it (measured 2026-10-16: WindowManager
-     * rewrites keycode 110 to 3 and starts the launcher), so the host's Guide -- Steam Big Picture --
-     * could never be reached. While View and Start are both held, the host gets Guide held instead,
-     * as Moonlight for Android does. Other platforms pass the Guide button through, so they send the
-     * buttons as they are. */
+static short host_buttons(const app_gamepad_state_t *gamepad) {
     short buttons = (short) gamepad->buttons;
 #if TARGET_ANDROID
-    if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_GUIDE)) {
-        buttons = (short) ((buttons & ~GAMEPAD_COMBO_GUIDE) | SPECIAL_FLAG);
+    /* The way home is not the host's View + Start: from the moment the combo forms until it is let go,
+     * the host sees neither, whatever else changes meanwhile. */
+    if (home_combo_pressed) {
+        buttons = (short) (buttons & ~GAMEPAD_COMBO_HOME);
     }
 #endif
     return buttons;

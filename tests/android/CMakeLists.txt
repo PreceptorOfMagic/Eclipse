@@ -160,21 +160,21 @@ target_link_libraries(test_android_remote_keys PRIVATE lvgl commons-logging comm
         commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
 add_test(NAME test_android_remote_keys COMMAND test_android_remote_keys)
 
-# View + Start as the host's Guide button (session_gamepad.c, compiled for Android): the SHIELD TV takes the Guide button.
-add_executable(test_android_gamepad_guide test_gamepad_guide.c)
-target_compile_definitions(test_android_gamepad_guide PRIVATE TARGET_ANDROID=1 _GNU_SOURCE
+# View + Start shows the home screen (session_gamepad.c, compiled for Android): the SHIELD TV's Guide button.
+add_executable(test_android_gamepad_home test_gamepad_home.c)
+target_compile_definitions(test_android_gamepad_home PRIVATE TARGET_ANDROID=1 _GNU_SOURCE
         SESSION_GAMEPAD_SOURCE="${CMAKE_SOURCE_DIR}/src/app/stream/input/session_gamepad.c")
-target_include_directories(test_android_gamepad_guide BEFORE PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/android-config)
-target_include_directories(test_android_gamepad_guide PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android
+target_include_directories(test_android_gamepad_home BEFORE PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/android-config)
+target_include_directories(test_android_gamepad_home PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android
         ${CMAKE_SOURCE_DIR}/src/app ${CMAKE_SOURCE_DIR}/core/moonlight-common-c/src
         ${CMAKE_SOURCE_DIR}/third_party/ss4s/include ${CMAKE_SOURCE_DIR}/third_party/commons/util/linked-list
         ${CMAKE_SOURCE_DIR}/core/libgamestream/libgamestream ${CMAKE_SOURCE_DIR}/core/libgamestream)
-target_include_directories(test_android_gamepad_guide SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
-target_link_libraries(test_android_gamepad_guide PRIVATE lvgl commons-logging commons-uuidstr commons-lazy
+target_include_directories(test_android_gamepad_home SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(test_android_gamepad_home PRIVATE lvgl commons-logging commons-uuidstr commons-lazy
         commons-refcounter commons-executor commons-linked-list commons-ss4s-modules-list commons-os-info
         commons-version-info commons-array-list commons-sockaddr commons-hostport commons-wol commons-ini-writer
         commons-copyfile commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
-add_test(NAME test_android_gamepad_guide COMMAND test_android_gamepad_guide)
+add_test(NAME test_android_gamepad_home COMMAND test_android_gamepad_home)
 
 # Stopping discovery inside the event pass (discovery.c, compiled for Android): it deadlocked on the SHIELD TV.
 add_executable(test_android_discovery_stop test_discovery_stop_in_events.c)
