@@ -5,6 +5,11 @@
  * turned off, so that Guide reaches the host as Guide, a controller needs another way home during a stream: View +
  * Start, acted on when both are let go. Guide itself still goes to the host, and View + Start + LB + RB still opens
  * the stream menu. What reaches the host is recorded by a fake LiSendMultiControllerEvent.
+ *
+ * Where the system takes Guide (the SHIELD TV), holding View is the Guide button, as Sunshine's back_button_timeout
+ * does it: after GUIDE_HOLD_MS the host sees View let go, then Guide pressed and let go GUIDE_TAP_MS later, and View
+ * stays let go until it is. The stream menu's Guide button taps Guide on the first controller. The LVGL timers are
+ * fired by hand here, which is what LVGL does when their time is up.
  */
 #include SESSION_GAMEPAD_SOURCE
 
@@ -16,6 +21,10 @@ static int overlay_opened;
 static int went_home;
 
 void android_go_home(void) { went_home++; }
+
+static bool guide_is_home;
+bool android_guide_is_home(void) { return guide_is_home; }
+app_t *global = NULL;
 
 int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask, int buttonFlags,
                                unsigned char leftTrigger, unsigned char rightTrigger, short leftStickX,
@@ -114,6 +123,27 @@ static void expect_sent(const char *what, const short *want, int n) {
     sent_n = 0;
 }
 
+static void check(const char *what, bool ok) {
+    if (!ok) {
+        fprintf(stderr, "FAIL: %s\n", what);
+        failures++;
+    } else {
+        printf("ok: %s\n", what);
+    }
+}
+
+/** What LVGL does when a run-once timer's time is up: run it, then delete it. */
+static void fire(void **slot) {
+    lv_timer_t *timer = *slot;
+    if (timer == NULL) {
+        fprintf(stderr, "FAIL: no timer to fire\n");
+        failures++;
+        return;
+    }
+    timer->timer_cb(timer);
+    lv_timer_del(timer);
+}
+
 int main(void) {
     input.input = &app_input;
     app_input.activeGamepadMask = 1;
@@ -169,6 +199,82 @@ int main(void) {
     } else {
         printf("ok: View + Start + LB + RB still opens the stream menu\n");
     }
+
+    /* ── Where the system takes Guide: View held = Guide, as Sunshine does it ── */
+    lv_init();
+    static app_t app;
+    static session_t session;
+    session.input.input = &app_input;
+    app.session = &session;
+    global = &app;
+    sent_n = 0;
+    overlay_opened = 0;
+
+    /* Not where Guide reaches the app: View is only View. */
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    check("no hold timer where the system leaves Guide alone", pad.guide_hold_timer == NULL);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    expect_sent("View alone, as before", (const short[]) {BACK_FLAG, 0}, 2);
+
+    guide_is_home = true;
+
+    /* Held: View, then View let go, Guide, Guide let go; letting go of View afterwards changes nothing. */
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    check("a hold timer for View", pad.guide_hold_timer != NULL);
+    fire(&pad.guide_hold_timer);
+    check("a tap timer for Guide", pad.guide_tap_timer != NULL);
+    fire(&pad.guide_tap_timer);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    expect_sent("View held: View, View up, Guide, Guide up, then nothing new",
+                (const short[]) {BACK_FLAG, 0, SPECIAL_FLAG, 0, 0}, 5);
+
+    /* Let go before the time is up: only View, and the timer is gone. */
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    check("a short press cancels the hold", pad.guide_hold_timer == NULL);
+    expect_sent("View tapped is View", (const short[]) {BACK_FLAG, 0}, 2);
+
+    /* Other buttons held with View are still sent; Guide joins them and View stays up while they change. */
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    button(SDL_CONTROLLER_BUTTON_A, true);
+    fire(&pad.guide_hold_timer);
+    button(SDL_CONTROLLER_BUTTON_A, false);
+    fire(&pad.guide_tap_timer);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    expect_sent("View + A held: A stays, View goes up, Guide taps",
+                (const short[]) {BACK_FLAG, BACK_FLAG | A_FLAG, A_FLAG, A_FLAG | SPECIAL_FLAG, SPECIAL_FLAG, 0, 0}, 7);
+
+    /* View let go during the Guide tap: Guide still lets go on time. */
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    fire(&pad.guide_hold_timer);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    fire(&pad.guide_tap_timer);
+    expect_sent("View let go during the tap", (const short[]) {BACK_FLAG, 0, SPECIAL_FLAG, SPECIAL_FLAG, 0}, 5);
+
+    /* View + Start (the way home) held past the time: no Guide, still home. */
+    went_home = 0;
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    fire(&pad.guide_hold_timer);
+    check("no Guide during View + Start", pad.guide_tap_timer == NULL);
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    check("View + Start still goes home", went_home == 1);
+    sent_n = 0;
+
+    /* The stream menu's Guide button. */
+    stream_input_send_guide(&session.input);
+    fire(&pad.guide_tap_timer);
+    expect_sent("stream menu Guide taps Guide", (const short[]) {SPECIAL_FLAG, 0}, 2);
+
+    /* The session gone before the hold is up: nothing is sent. */
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    app.session = NULL;
+    fire(&pad.guide_hold_timer);
+    check("no Guide after the session ended", pad.guide_tap_timer == NULL);
+    app.session = &session;
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    sent_n = 0;
 
     printf("%s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;

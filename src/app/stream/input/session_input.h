@@ -89,6 +89,9 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
 #if TARGET_ANDROID
 /** Announce again, to the second co-op PC, the controllers routed to it (once its session is up). */
 void stream_input_reannounce_peer_gamepads(stream_input_t *input);
+
+/** Press and let go of the first controller's Guide button on the host (the stream menu's Guide button). */
+void stream_input_send_guide(stream_input_t *input);
 #endif
 
 void stream_input_handle_key(stream_input_t *input, const SDL_KeyboardEvent *event);

@@ -77,6 +77,11 @@ int android_sdk_int(void) {
     return value != NULL ? atoi(value) : 0;
 }
 
+bool android_guide_is_home(void) {
+    const char *value = getenv(ANDROID_ENV_GUIDE_IS_HOME);
+    return value != NULL && value[0] == '1';
+}
+
 const char *android_device_name(void) {
     const char *value = getenv(ANDROID_ENV_DEVICE);
     return value != NULL && value[0] != '\0' ? value : "Android device";

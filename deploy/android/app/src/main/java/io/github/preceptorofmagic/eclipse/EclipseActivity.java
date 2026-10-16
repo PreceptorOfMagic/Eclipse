@@ -199,6 +199,21 @@ public class EclipseActivity extends SDLActivity {
         SDLActivity.nativeSetenv("ECLIPSE_ANDROID_NATIVE_DIR", getApplicationInfo().nativeLibraryDir);
         SDLActivity.nativeSetenv("ECLIPSE_ANDROID_SDK_INT", Integer.toString(Build.VERSION.SDK_INT));
         SDLActivity.nativeSetenv("ECLIPSE_ANDROID_DEVICE", Build.MANUFACTURER + " " + Build.MODEL);
+        SDLActivity.nativeSetenv("ECLIPSE_ANDROID_GUIDE_IS_HOME", guideIsHome() ? "1" : "0");
+    }
+
+    /**
+     * Whether the system takes a controller's Guide button before any app sees it. On the SHIELD TV the package
+     * com.nvidia.shieldtech.hooks swallows the Guide (Xbox) button and presses Home instead (its
+     * NvNormalizedKeylayout, 2026-10-16), and offers apps no way out, so holding View is the Guide button there
+     * (session_gamepad.c). Where that package is gone or disabled, the Guide button reaches Eclipse itself.
+     */
+    private boolean guideIsHome() {
+        try {
+            return getPackageManager().getApplicationInfo("com.nvidia.shieldtech.hooks", 0).enabled;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
     }
 
     /**

@@ -104,11 +104,11 @@ LB + right stick click for the virtual mouse, RB + right stick click for the on-
 Android: **View + Start shows the TV's home screen**, acted on when both are let go; the PC sees neither button.
 
 A controller's Guide (Xbox) button goes to the PC, as on a PC, wherever Android delivers it. The SHIELD TV does
-not: its system package `com.nvidia.shieldtech.hooks` turns the Guide button into Home before any app sees it
-(measured: keycode 110 rewritten to 3, and the launcher started). Removing that package for the main user,
-`adb shell pm uninstall -k --user 0 com.nvidia.shieldtech.hooks`, is reported to let the Guide button reach apps
-during a stream (`adb shell cmd package install-existing com.nvidia.shieldtech.hooks` puts it back); this is a
-change to the SHIELD's own software and is untested here. View + Start is then the controller's way home.
+not: its system package `com.nvidia.shieldtech.hooks` turns the Guide button into Home before any app sees it, and
+lets no app opt out (Steam Link and Moonlight live with the same). So on a SHIELD, as Sunshine's
+`back_button_timeout` setting does on a host, **holding View for 2 seconds is the Guide button**: the PC sees View
+let go, then Guide pressed and let go. The stream menu also has a **Guide button** that presses the first
+controller's Guide. The Xbox button itself stays the SHIELD's Home.
 
 In co-op, each controller goes to the PC chosen for it on the co-op screen. The virtual mouse points like the LG
 Magic Remote: it starts in the middle of the PC it is over, and pushed past the line between the two pictures it

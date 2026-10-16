@@ -251,6 +251,12 @@ void session_toggle_vmouse(session_t *session) {
     session_input_set_vmouse_active(&session->input.vmouse, value);
 }
 
+#if TARGET_ANDROID
+void session_send_guide(session_t *session) {
+    stream_input_send_guide(&session->input);
+}
+#endif
+
 void session_screen_keyboard_opened(session_t *session) {
     session_input_screen_keyboard_opened(&session->input);
 }

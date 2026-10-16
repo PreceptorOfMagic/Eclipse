@@ -18,6 +18,12 @@
     <!-- SDL: controller rumble on devices that route it through the system vibrator. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- The SHIELD TV's system package that turns a controller's Guide button into Home (EclipseActivity.guideIsHome);
+         Android 11 hides other packages from an app unless it names them here. -->
+    <queries>
+        <package android:name="com.nvidia.shieldtech.hooks" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:banner="@drawable/banner"

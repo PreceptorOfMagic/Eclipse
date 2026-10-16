@@ -19,6 +19,7 @@
 #define ANDROID_ENV_NATIVE_DIR "ECLIPSE_ANDROID_NATIVE_DIR"   /* ApplicationInfo.nativeLibraryDir */
 #define ANDROID_ENV_SDK_INT "ECLIPSE_ANDROID_SDK_INT"         /* Build.VERSION.SDK_INT */
 #define ANDROID_ENV_DEVICE "ECLIPSE_ANDROID_DEVICE"           /* Build.MANUFACTURER + " " + Build.MODEL */
+#define ANDROID_ENV_GUIDE_IS_HOME "ECLIPSE_ANDROID_GUIDE_IS_HOME" /* "1": the system turns a pad's Guide into Home */
 
 /* The co-op peer executable, packaged as lib/<abi>/libeclipse_peer.so (see CMakeLists.txt). */
 #define ANDROID_PEER_EXECUTABLE "libeclipse_peer.so"
@@ -61,6 +62,10 @@ int android_sdk_int(void);
 
 /** "NVIDIA SHIELD Android TV" and the like, for logs and the support report. */
 const char *android_device_name(void);
+
+/** True where the system takes a controller's Guide button for itself before any app sees it: the SHIELD TV,
+ *  whose com.nvidia.shieldtech.hooks turns it into Home (EclipseActivity.guideIsHome). */
+bool android_guide_is_home(void);
 
 /**
  * The physical display: resolution of the current mode (not the 1080p UI surface Android TV gives an app),

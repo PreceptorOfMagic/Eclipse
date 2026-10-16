@@ -97,6 +97,11 @@ bool session_has_input(session_t *session);
 
 void session_toggle_vmouse(session_t *session);
 
+#if TARGET_ANDROID
+/** The stream menu's Guide button: the controller's own is the TV's on some boxes (session_gamepad.c). */
+void session_send_guide(session_t *session);
+#endif
+
 void session_screen_keyboard_opened(session_t *session);
 
 void session_screen_keyboard_closed(session_t *session);
