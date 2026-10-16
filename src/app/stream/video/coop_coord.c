@@ -885,7 +885,14 @@ void coop_coord_request_peer_shutdown(void) {
 }
 
 bool coop_coord_wait_secondary_ready(unsigned timeout_ms) {
+    return coop_coord_wait_secondary_ready_cancellable(timeout_ms, NULL);
+}
+
+bool coop_coord_wait_secondary_ready_cancellable(unsigned timeout_ms, const volatile int *cancel) {
     for (unsigned waited = 0; waited < timeout_ms; waited += 10) {
+        if (cancel != NULL && *cancel) {
+            return false;                       /* the session went first: decide nothing */
+        }
         pthread_mutex_lock(&coord_lock);
         const enum coop_coord_start_state state = coord_start_state;
         pthread_mutex_unlock(&coord_lock);

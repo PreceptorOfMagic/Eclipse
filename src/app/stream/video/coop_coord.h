@@ -119,6 +119,10 @@ void coop_coord_request_peer_shutdown(void);
  *  failure, and timeout all fail closed. */
 bool coop_coord_wait_secondary_ready(unsigned timeout_ms);
 
+/** The same wait, abandoned (false, with the start state left as it is) as soon as *@p cancel is set --
+ *  for a wait that runs beside the stream instead of blocking its start (session_video.c, Android). */
+bool coop_coord_wait_secondary_ready_cancellable(unsigned timeout_ms, const volatile int *cancel);
+
 /** Stable user-facing explanation for the most recent readiness failure. */
 const char *coop_coord_start_error_message(void);
 
