@@ -3110,6 +3110,14 @@ static bool coop_ready_thread_live = false;
 static volatile int coop_ready_cancel = 0;
 static bool coop_ready_ui = false;
 
+/* On the main thread, like every other controller event. */
+static void coop_reannounce_pads(void *data) {
+    app_t *app = data;
+    if (app->session != NULL) {
+        stream_input_reannounce_peer_gamepads(session_get_input(app->session));
+    }
+}
+
 static void *coop_ready_watch(void *arg) {
     session_t *watched = arg;
     if (coop_coord_wait_secondary_ready_cancellable(30000, &coop_ready_cancel)) {
@@ -3118,6 +3126,8 @@ static void *coop_ready_watch(void *arg) {
                     coop_ready_ui ? "ui" : "sentinel");
             fflush(diag_log);
         }
+        /* Its controllers may have been announced before it could hear them. */
+        app_bus_post(watched->app, coop_reannounce_pads, watched->app);
         return NULL;
     }
     if (coop_ready_cancel) {

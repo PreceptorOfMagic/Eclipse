@@ -38,7 +38,8 @@ static bool gamepad_combo_check(int buttons, short combo);
 
 static short host_buttons(const app_gamepad_state_t *gamepad);
 
-static short wire_buttons(const app_gamepad_state_t *gamepad);
+static void gamepad_arrival_info(const app_gamepad_state_t *gamepad, uint8_t *type_out, uint16_t *caps_out,
+                                 bool log);
 
 static bool sensor_state_needs_update(const app_gamepad_sensor_state_t *state, uint32_t timestamp,
                                       const float data[3]);
@@ -436,10 +437,50 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
         return;
     }
     input->announcedGamepadMask |= 1 << gamepad->gs_id;
-    uint8_t type = LI_CTYPE_XBOX;
-    uint16_t capabilities = LI_CCAP_ANALOG_TRIGGERS;
     commons_log_info("Input", "Controller %d arrived. Name: %s", gamepad->gs_id,
                      SDL_GameControllerName(gamepad->controller));
+    uint8_t type;
+    uint16_t capabilities;
+    gamepad_arrival_info(gamepad, &type, &capabilities, true);
+    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask;
+    const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
+    if (primary_slot >= 0) {
+        LiSendControllerArrivalEvent((uint16_t) primary_slot,
+                                     coop_input_primary_mask(active_mask), type, 0xFFFFFFFF,
+                                     capabilities);
+    }
+    coop_input_send_arrive(gamepad->gs_id, active_mask, type, capabilities, 0xFFFFFFFF);
+}
+
+#if TARGET_ANDROID
+void stream_input_reannounce_peer_gamepads(stream_input_t *input) {
+    /* The second co-op PC's controllers, announced again once its session is up. On Android the primary's
+     * stream starts before the secondary is ready (session_video.c), so their first arrival can come while
+     * the coordinator has no secondary to give it to, and is dropped: PC1 then made a default pad on the
+     * first input, without the controller's type or features (2026-10-16). coop_input_send_arrive() sends
+     * only the pads routed to the secondary. */
+    if (input == NULL || input->view_only || !stream_input_moonlight_gamepad_enabled(input)) {
+        return;
+    }
+    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask;
+    for (size_t i = 0; i < input->input->gamepads_count; ++i) {
+        app_gamepad_state_t *gamepad = &input->input->gamepads[i];
+        if (gamepad->controller == NULL || gamepad->gs_id < 0 ||
+            (input->announcedGamepadMask & (1 << gamepad->gs_id)) == 0) {
+            continue;
+        }
+        uint8_t type;
+        uint16_t capabilities;
+        gamepad_arrival_info(gamepad, &type, &capabilities, false);
+        coop_input_send_arrive(gamepad->gs_id, active_mask, type, capabilities, 0xFFFFFFFF);
+    }
+}
+#endif
+
+static void gamepad_arrival_info(const app_gamepad_state_t *gamepad, uint8_t *type_out, uint16_t *caps_out,
+                                 bool log) {
+    uint8_t type = LI_CTYPE_XBOX;
+    uint16_t capabilities = LI_CCAP_ANALOG_TRIGGERS;
     switch (SDL_GameControllerGetType(gamepad->controller)) {
 #if SDL_VERSION_ATLEAST(2, 24, 0)
         case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
@@ -459,7 +500,7 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
         case SDL_CONTROLLER_TYPE_PS5: {
             type = LI_CTYPE_PS;
             capabilities |= LI_CCAP_TOUCHPAD;
-            commons_log_info("Input", "  controller capability: touchpad");
+            if (log) commons_log_info("Input", "  controller capability: touchpad");
             break;
         }
         default: {
@@ -469,11 +510,11 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
 #if SDL_VERSION_ATLEAST(2, 0, 18)
     if (SDL_GameControllerHasRumble(gamepad->controller)) {
         capabilities |= LI_CCAP_RUMBLE;
-        commons_log_info("Input", "  controller capability: rumble");
+        if (log) commons_log_info("Input", "  controller capability: rumble");
     }
     if (SDL_GameControllerHasRumbleTriggers(gamepad->controller)) {
         capabilities |= LI_CCAP_TRIGGER_RUMBLE;
-        commons_log_info("Input", "  controller capability: trigger rumble");
+        if (log) commons_log_info("Input", "  controller capability: trigger rumble");
     }
 #else
     capabilities |= LI_CCAP_RUMBLE;
@@ -484,25 +525,19 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
 #if SDL_VERSION_ATLEAST(2, 0, 14)
     if (SDL_GameControllerHasSensor(gamepad->controller, SDL_SENSOR_ACCEL)) {
         capabilities |= LI_CCAP_ACCEL;
-        commons_log_info("Input", "  controller capability: accelerometer");
+        if (log) commons_log_info("Input", "  controller capability: accelerometer");
     }
     if (SDL_GameControllerHasSensor(gamepad->controller, SDL_SENSOR_GYRO)) {
         capabilities |= LI_CCAP_GYRO;
-        commons_log_info("Input", "  controller capability: gyroscope");
+        if (log) commons_log_info("Input", "  controller capability: gyroscope");
     }
     if (SDL_GameControllerHasLED(gamepad->controller)) {
         capabilities |= LI_CCAP_RGB_LED;
-        commons_log_info("Input", "  controller capability: RGB LED");
+        if (log) commons_log_info("Input", "  controller capability: RGB LED");
     }
 #endif
-    const uint16_t active_mask = (uint16_t) input->input->activeGamepadMask;
-    const int primary_slot = coop_input_primary_slot(gamepad->gs_id);
-    if (primary_slot >= 0) {
-        LiSendControllerArrivalEvent((uint16_t) primary_slot,
-                                     coop_input_primary_mask(active_mask), type, 0xFFFFFFFF,
-                                     capabilities);
-    }
-    coop_input_send_arrive(gamepad->gs_id, active_mask, type, capabilities, 0xFFFFFFFF);
+    *type_out = type;
+    *caps_out = capabilities;
 }
 
 static void stream_input_send_gamepad_remove(stream_input_t *input, app_gamepad_state_t *gamepad) {
