@@ -8,6 +8,9 @@
 #
 #   --abi <abi>           arm64-v8a | armeabi-v7a | x86_64 (repeatable; default: all three)
 #   --debug               a debuggable APK (assembleDebug) instead of the release build
+#   --optimized           with --debug: native code built as the release build's is (RelWithDebInfo, -O2), not
+#                         as Debug (-O0). For timing and throughput on a device: a -O0 build's numbers do not
+#                         describe the release (its receive path, Reed-Solomon FEC included, is unoptimised)
 #   --selftest            a TEST APK with the emulator self-test hooks (never a release)
 #   --clean               start every ABI from an empty build directory
 #   --require-clean-tree  refuse a modified checkout (release builds)
@@ -25,15 +28,16 @@ SYMBOLS="$ROOT/build/android-symbols"
 DL="$ROOT/build/downloads-android"
 API=28
 ABIS=()
-CLEAN=0; REQUIRE_CLEAN=0; VARIANT=release; SELFTEST=OFF
+CLEAN=0; REQUIRE_CLEAN=0; VARIANT=release; SELFTEST=OFF; OPTIMIZED=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --abi) ABIS+=("$2"); shift 2 ;;
         --debug) VARIANT=debug; shift ;;
+        --optimized) OPTIMIZED=1; shift ;;
         --selftest) SELFTEST=ON; shift ;;
         --clean) CLEAN=1; shift ;;
         --require-clean-tree) REQUIRE_CLEAN=1; shift ;;
-        *) echo "usage: $0 [--abi <abi>]... [--debug] [--selftest] [--clean] [--require-clean-tree]" >&2; exit 2 ;;
+        *) echo "usage: $0 [--abi <abi>]... [--debug [--optimized]] [--selftest] [--clean] [--require-clean-tree]" >&2; exit 2 ;;
     esac
 done
 [ ${#ABIS[@]} -gt 0 ] || ABIS=(arm64-v8a armeabi-v7a x86_64)
@@ -100,7 +104,7 @@ rm -rf "$STAGE" "$SYMBOLS"
 mkdir -p "$STAGE/jniLibs" "$STAGE/assets/eclipse" "$SYMBOLS"
 MODULES_INI=""
 CMAKE_BUILD_TYPE=RelWithDebInfo
-[ "$VARIANT" = debug ] && CMAKE_BUILD_TYPE=Debug
+[ "$VARIANT" = debug ] && [ "$OPTIMIZED" = 0 ] && CMAKE_BUILD_TYPE=Debug
 for abi in "${ABIS[@]}"; do
     BUILD="$ROOT/build/android-$abi"
     step "build $abi ($CMAKE_BUILD_TYPE)"
