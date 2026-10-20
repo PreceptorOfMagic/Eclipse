@@ -18,6 +18,9 @@
 #   display    the TV's refresh rates, and the display mode a 60 FPS stream asks for taking effect
 #   audio      the outputs Settings -> Audio offers, by name, and the first of them opened as a stream opens a
 #              chosen output: by its current number, on SDL's AAudio driver
+#   audio-background  an output closed while the app is in the background (sent Home), as a stream's audio is
+#              when the app is switched away, on SDL's own driver and on AAudio: the close must finish without the
+#              app coming back
 #   video      composite.265 (a co-op composite), solo.264, left.265 (a narrow, letterboxed picture) and, with
 #              --uhd, uhd.265 (4K Main10) play through SS4S and the MediaCodec module onto the video surface
 #              under the UI: every access unit accepted, at least 90% of the pictures decoded, no codec error
@@ -252,6 +255,46 @@ if run_selftest platform --ez selftest_display true --ez selftest_audio true; th
         *) fail "audio: output list or open (see $W/platform.logcat.txt)" ;;
     esac
 fi
+
+# --- closing audio with the app in the background -------------------------------------------------------
+# Switching the app away mid-stream ends the stream, which closes its audio while Android has the app paused.
+# The case plays an output and closes it once it sees the app in the background: it is sent Home here when it
+# says "playing", and brought back after the verdict, which frees a close that is stuck. Both drivers: SDL's own
+# choice (OpenSL ES, a stream with no chosen output) and AAudio (a chosen output) hung there until the app came
+# back (2026-10-16/20, scripts/android/patches/sdl2-2.32.10-android-{opensles-close-while-paused,
+# aaudio-pause-without-lock}.patch).
+for bg_driver in default AAudio; do
+    log_mark
+    adb shell am start -W -S -n "$ACTIVITY" --es selftest_audio_background "$bg_driver" >/dev/null
+    bg_log="$W/audio-background-$bg_driver.logcat.txt"
+    bg_start=$SECONDS
+    until grep -q "SELFTEST audio-background playing" "$bg_log" 2>/dev/null || crashed "$bg_log" 2>/dev/null ||
+          [ $((SECONDS - bg_start)) -ge 60 ]; do
+        sleep 1
+        log_dump >"$bg_log"
+    done
+    adb shell input keyevent KEYCODE_HOME
+    until grep -q "SELFTEST audio-background .*result=" "$bg_log" || crashed "$bg_log" ||
+          [ $((SECONDS - bg_start)) -ge 90 ]; do
+        sleep 1
+        log_dump >"$bg_log"
+    done
+    adb shell am start -n "$ACTIVITY" >/dev/null   # back in front: lets a stuck close finish, so the case ends
+    until grep -q "SELFTEST done" "$bg_log" || crashed "$bg_log" || [ $((SECONDS - bg_start)) -ge 120 ]; do
+        sleep 1
+        log_dump >"$bg_log"
+    done
+    bg="$(grep -o "SELFTEST audio-background .*result=[A-Z]*" "$bg_log" | head -1 || true)"
+    echo "  ${bg:-no audio-background result}"
+    if crashed "$bg_log"; then
+        fail "audio-background ($bg_driver): the app crashed (see $bg_log)"
+    else
+        case "$bg" in
+            *result=PASS*) pass "audio-background ($bg_driver): audio closed at once with the app in the background" ;;
+            *) fail "audio-background ($bg_driver): closing audio in the background did not finish (see $bg_log)" ;;
+        esac
+    fi
+done
 
 # --- single streams -------------------------------------------------------------------------------------
 run_selftest h264 --es selftest_video "$DATA/files/selftest/solo.264" --es selftest_codec h264 \

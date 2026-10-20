@@ -114,6 +114,11 @@ public class EclipseActivity extends SDLActivity {
             if (intent.getBooleanExtra("selftest_keys", false)) {
                 args.add("--selftest-keys");
             }
+            String audioBackground = intent.getStringExtra("selftest_audio_background");
+            if (audioBackground != null) {
+                args.add("--selftest-audio-background");
+                args.add(audioBackground);
+            }
         }
         return args.toArray(new String[0]);
     }

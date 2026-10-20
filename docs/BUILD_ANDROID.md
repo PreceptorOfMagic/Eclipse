@@ -248,7 +248,8 @@ They check that the interface starts and survives d-pad input; that no remote-li
 and, on an emulator, that Up and Back from a d-pad device arrive as the keys the remote's Back (tap/hold) and OK
 (hold) depend on; that the TV's refresh rates are read and the mode
 for a 60 FPS stream takes effect; that the audio outputs are listed by name and one opens by its current number on
-AAudio; that the co-op peer executable runs from the
+AAudio; that an output closes at once while the app is in the background (the script sends it Home), on SDL's own
+driver and on AAudio; that the co-op peer executable runs from the
 installed package (it must exit saying it cannot reach the coordinator: the dynamic linker's failure exits 1 too)
 and, spawned exactly as a co-op stream spawns it, starts up without a Java VM and answers the
 coordinator over the co-op control channel; and that a co-op composite, H.264, a narrow letterboxed HEVC picture and (with `--uhd`, for real
@@ -285,7 +286,11 @@ follow the same checklist as for a webOS release.
 - **Audio** uses SS4S's SDL module, with the same clock and pull path as the desktop: OpenSL ES for the system
   default output, AAudio for a chosen one (SDL carries `scripts/android/patches/sdl2-2.32.10-android-audio-hotplug.patch`
   so outputs connected after start-up are offered too, and `sdl2-2.32.10-android-aaudio-close-race.patch`: unpatched,
-  closing an AAudio output could crash the event thread, which checks the stream on every event pump).
+  closing an AAudio output could crash the event thread, which checks the stream on every event pump). Switching the
+  app away ends a stream, which closes its audio while Android has the app paused; unpatched SDL 2 then waited for
+  the app to come back -- the app froze and the PC went on streaming to it for minutes -- on both drivers:
+  `sdl2-2.32.10-android-opensles-close-while-paused.patch` lets OpenSL ES's audio thread notice the close, and
+  `sdl2-2.32.10-android-aaudio-pause-without-lock.patch` pauses AAudio without holding the lock a close needs.
 - **Remote and controllers**: a TV remote reaches Eclipse as keys (SDL carries
   `scripts/android/patches/sdl2-2.32.10-android-tv-remote.patch`; unpatched SDL 2 takes any device with a d-pad
   for a joystick, which turned Back into Escape and OK into Enter), and, as on webOS, nothing remote-like is ever

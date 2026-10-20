@@ -734,6 +734,7 @@ host_app_id <id> --ez coop true`; parsed by `src/app/platform/android/app_androi
 | `selftest_size` | `WxH` | SRC | the size of `selftest_video` |
 | `selftest_peer` | boolean | SRC | exec the co-op peer, then the full co-op start-up handshake; `SELFTEST peer` / `SELFTEST coop-handshake` |
 | `selftest_audio` | boolean | SRC | list the audio outputs by name and open the first on AAudio by its current id; `SELFTEST audio` |
+| `selftest_audio_background` | string: `default` or an SDL driver name (`AAudio`) | SRC+TEST | self-test builds only (EclipseActivity -> `--selftest-audio-background <driver>`, selftest_android.c): open an output on that driver, play, and close it once the app is in the background; `SELFTEST audio-background ... closed after N ms result=` (PASS under 3000 ms, a watchdog logs FAIL at 8000 ms). tests/android/device_smoke.sh sends the app Home and runs both drivers. **Measured 2026-10-20 on the SHIELD TV:** before the SDL patches both hung until the app came back (openslES 11079 ms, AAudio 10976 ms); after, 77-150 ms (openslES) and 52-60 ms (AAudio). |
 | `selftest_display` | boolean | SRC | the display's refresh rates and a mode request taking effect; `SELFTEST display` |
 | `selftest_keys` | boolean | SRC | every input device and SDL's joystick verdict, then log the SDL events of keys sent to it; `SELFTEST input-devices` / `SELFTEST key` |
 

@@ -1,0 +1,35 @@
+SDL 2.32.10 (Android): closing an OpenSL ES output while the activity is paused.
+
+close_audio_device() marks the device shut down and then joins its audio thread; the driver has no say before the
+join. OpenSL ES's audio thread waits in openslES_WaitDevice for a buffer to finish playing: SDL_SemWait on playsem,
+which only the buffer-queue callback posts. While the activity is paused, Android_PumpEvents_Blocking has set the
+player to SL_PLAYSTATE_PAUSED (openslES_PauseDevices), so no buffer finishes and nothing posts the semaphore: a
+close from another thread while the app is in the background hangs until the app comes back to the front.
+OpenSL ES is SDL's first Android driver, so this is the output every stream without a chosen output gets.
+Measured on the SHIELD TV 2026-10-16: switching the app off during a stream left the session worker in
+LiStopConnection -> SS4S_PlayerAudioClose -> SDL_CloseAudioDevice -> SDL_WaitThread, the audio thread (SDLAudioP2)
+in SDL_SemWait, and the host streaming to the frozen app until its own timeout ~3.7 minutes later.
+
+openslES_WaitDevice now waits in 100 ms slices and returns once the device is shutting down. SDL_RunAudio checks
+shutdown at the top of its loop; a buffer the paused player refuses posts the semaphore itself (openslES_PlayDevice),
+so the thread drains what it holds and leaves. While the device is open and not closing, nothing changes.
+Capture (openslES_CaptureFromDevice) waits the same way; Eclipse does not capture on Android, so it is left alone.
+
+--- a/src/audio/openslES/SDL_openslES.c
++++ b/src/audio/openslES/SDL_openslES.c
+@@ -630,8 +630,13 @@
+ 
+     LOGV("openslES_WaitDevice()");
+ 
+-    /* Wait for an audio chunk to finish */
+-    SDL_SemWait(audiodata->playsem);
++    /* Wait for an audio chunk to finish -- or for the device to close. While the activity is paused the player is
++     * paused too (openslES_PauseDevices), no chunk finishes, and close_audio_device joins this thread. */
++    while (SDL_SemWaitTimeout(audiodata->playsem, 100) == SDL_MUTEX_TIMEDOUT) {
++        if (SDL_AtomicGet(&this->shutdown)) {
++            return;
++        }
++    }
+ }
+ 
+ static void openslES_PlayDevice(_THIS)

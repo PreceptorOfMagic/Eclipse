@@ -63,7 +63,9 @@ STEPS=(mbedtls curl opus inih expat freetype sdl2 sdl2image)
 CURL_PATCH="$ROOT/scripts/linux/portable/patches/curl-8.22.0-mbedtls-pem-key-blob.patch"
 SDL_PATCHES=("$ROOT/scripts/android/patches/sdl2-2.32.10-android-audio-hotplug.patch"
              "$ROOT/scripts/android/patches/sdl2-2.32.10-android-tv-remote.patch"
-             "$ROOT/scripts/android/patches/sdl2-2.32.10-android-aaudio-close-race.patch")
+             "$ROOT/scripts/android/patches/sdl2-2.32.10-android-aaudio-close-race.patch"
+             "$ROOT/scripts/android/patches/sdl2-2.32.10-android-opensles-close-while-paused.patch"
+             "$ROOT/scripts/android/patches/sdl2-2.32.10-android-aaudio-pause-without-lock.patch")
 
 # A step's stamp records everything that decides its output; a changed pin, patch, NDK or API rebuilds it.
 STAMP_INPUTS="api=$API ndk=$(basename "$NDK") script=$(sha256sum "${BASH_SOURCE[0]}" | cut -c1-16)"

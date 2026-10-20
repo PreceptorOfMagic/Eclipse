@@ -23,6 +23,11 @@
  *                             emulator's own keyboard-with-a-d-pad, as a remote's arrive
  *   --selftest-audio          the audio outputs the settings offer, by name; then the path a chosen output takes:
  *                             SDL on AAudio, the output opened by its current number, half a second of silence
+ *   --selftest-audio-background <driver>
+ *                             SDL's default output on <driver> ("default": SDL's own choice, what a stream with no
+ *                             chosen output gets; "AAudio": what a chosen output gets) playing, then closed once the
+ *                             app is in the background -- what a stream does when the app is switched away; the
+ *                             close must not wait for the app to come back (device_smoke.sh sends it Home)
  *
  * Results are "SELFTEST ..." lines in the log (logcat), then the app quits.
  */
@@ -47,9 +52,10 @@
 
 static struct {
     char video[PATH_MAX];
+    char audio_background_driver[32];   /* "" = SDL's own choice */
     SS4S_VideoCodec codec;
     int width, height;
-    bool peer, audio, display, keys;
+    bool peer, audio, display, keys, audio_background;
 } selftest;
 
 void android_selftest_parse(int argc, char *argv[]) {
@@ -73,6 +79,12 @@ void android_selftest_parse(int argc, char *argv[]) {
             selftest.display = true;
         } else if (strcmp(argv[i], "--selftest-keys") == 0) {
             selftest.keys = true;
+        } else if (strcmp(argv[i], "--selftest-audio-background") == 0 && value != NULL) {
+            selftest.audio_background = true;
+            if (strcmp(value, "default") != 0) {
+                snprintf(selftest.audio_background_driver, sizeof(selftest.audio_background_driver), "%s", value);
+            }
+            ++i;
         }
     }
 }
@@ -294,6 +306,75 @@ static void selftest_audio(void) {
     }
 }
 
+/*
+ * CLOSING AUDIO WITH THE APP IN THE BACKGROUND. Switching the app away during a stream ends the stream, which closes
+ * its audio while Android has the activity paused and SDL has paused its output (Android_PumpEvents_Blocking). On
+ * SDL's default OpenSL ES driver that close joined the audio thread, which waited for a buffer the paused player
+ * never finished: the stream's teardown hung until the app came back, and the host went on streaming (SHIELD TV,
+ * 2026-10-16; scripts/android/patches/sdl2-2.32.10-android-opensles-close-while-paused.patch). device_smoke.sh sends
+ * the app Home once this says "playing", and brings it back after the verdict so that the run can end either way.
+ */
+static SDL_atomic_t background_close_done;
+
+static int background_close_watchdog(void *arg) {
+    (void) arg;
+    for (int waited = 0; waited < 8000; waited += 100) {
+        if (SDL_AtomicGet(&background_close_done)) {
+            return 0;
+        }
+        SDL_Delay(100);
+    }
+    commons_log_error("SELFTEST", "SELFTEST audio-background close still blocked after 8000 ms result=FAIL");
+    return 0;
+}
+
+static void selftest_audio_background(void) {
+    /* SDL's own choice of driver (what a stream with no chosen output gets), or the one asked for: AAudio is what a
+     * chosen output gets (third_party/ss4s/modules/sdl/sdl.c). */
+    const char *asked = selftest.audio_background_driver[0] != '\0' ? selftest.audio_background_driver : NULL;
+    if (SDL_AudioInit(asked) != 0) {
+        commons_log_error("SELFTEST", "SELFTEST audio-background driver=%s unavailable: %s result=FAIL",
+                          asked != NULL ? asked : "default", SDL_GetError());
+        return;
+    }
+    const char *driver = SDL_GetCurrentAudioDriver();
+    if (driver == NULL) {
+        driver = "none";
+    }
+    SDL_AudioSpec want = {.freq = 48000, .format = AUDIO_S16LSB, .channels = 2, .samples = 240,
+            .callback = silence}, have;
+    const SDL_AudioDeviceID device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (device == 0) {
+        commons_log_error("SELFTEST", "SELFTEST audio-background driver=%s open failed: %s result=FAIL", driver,
+                          SDL_GetError());
+        return;
+    }
+    SDL_PauseAudioDevice(device, 0);
+    commons_log_info("SELFTEST", "SELFTEST audio-background playing driver=%s", driver);
+    /* SDL marks the window minimised on the event pass that then pauses the audio and blocks the main loop. */
+    bool background = false;
+    for (int waited = 0; waited < 20000 && !background; waited += 100) {
+        SDL_Delay(100);
+        background = global != NULL && global->ui.window != NULL &&
+                     (SDL_GetWindowFlags(global->ui.window) & SDL_WINDOW_MINIMIZED) != 0;
+    }
+    SDL_Delay(1000);   /* past the audio pause, which follows the minimise on that same pass */
+    SDL_AtomicSet(&background_close_done, 0);
+    SDL_Thread *watchdog = SDL_CreateThread(background_close_watchdog, "selftest-wdog", NULL);
+    const Uint32 started = SDL_GetTicks();
+    SDL_CloseAudioDevice(device);
+    const Uint32 took = SDL_GetTicks() - started;
+    SDL_AtomicSet(&background_close_done, 1);
+    if (watchdog != NULL) {
+        SDL_WaitThread(watchdog, NULL);
+    }
+    commons_log_info("SELFTEST", "SELFTEST audio-background driver=%s background=%d closed after %u ms result=%s",
+                     driver, (int) background, (unsigned) took, background && took < 3000 ? "PASS" : "FAIL");
+    if (asked != NULL) {
+        SDL_AudioInit(NULL);   /* back to SDL's own choice */
+    }
+}
+
 /* Access units: a new one starts at the first parameter set, SEI or AUD -- or the first slice of a picture --
  * after a picture's slices (Annex B, H.264 and H.265). */
 static bool starts_access_unit(SS4S_VideoCodec codec, const unsigned char *nal, size_t len, bool *vcl) {
@@ -418,6 +499,9 @@ static int selftest_thread(void *arg) {
     if (selftest.audio) {
         selftest_audio();
     }
+    if (selftest.audio_background) {
+        selftest_audio_background();
+    }
     commons_log_info("SELFTEST", "SELFTEST done");
     SDL_Event quit = {.type = SDL_QUIT};
     SDL_PushEvent(&quit);
@@ -425,7 +509,8 @@ static int selftest_thread(void *arg) {
 }
 
 void android_selftest_start(void) {
-    if (!selftest.peer && !selftest.audio && !selftest.display && !selftest.keys && selftest.video[0] == '\0') {
+    if (!selftest.peer && !selftest.audio && !selftest.display && !selftest.keys && !selftest.audio_background &&
+        selftest.video[0] == '\0') {
         return;
     }
     SDL_Thread *thread = SDL_CreateThread(selftest_thread, "selftest", NULL);

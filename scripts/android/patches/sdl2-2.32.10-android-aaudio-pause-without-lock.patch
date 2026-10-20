@@ -1,0 +1,71 @@
+SDL 2.32.10 (Android): closing an AAudio output while the activity is paused.
+
+aaudio_PauseDevices, run by Android_PumpEvents_Blocking just before the event loop blocks for the pause, paused
+playback by taking the device's mixer lock and keeping it until aaudio_ResumeDevices. close_audio_device takes that
+same lock first (the default LockDevice), so closing the output from another thread while the app was in the
+background waited for the app to come back. AAudio is the driver a chosen output gets
+(third_party/ss4s/modules/sdl/sdl.c). Measured on the SHIELD TV 2026-10-20 with the device smoke test's
+audio-background case on AAudio: the close was still blocked after 8 s, and finished 10976 ms after it started, once
+the test brought the app back. The SDL2 branch upstream is unchanged here.
+
+Playback is now paused by a flag instead: aaudio_PauseDevices sets it and pauses the stream, aaudio_ResumeDevices
+starts the stream and clears it -- on every resume, so a device opened after one that was closed while paused does
+not start out silent. While it is set, aaudio_PlayDevice writes nothing and sleeps for the time its buffer would
+have played, so the audio thread neither spins nor writes to a paused stream; the application's callback goes on
+being called at that rate. Capture keeps the mixer lock: Eclipse does not capture on Android.
+
+--- a/src/audio/aaudio/SDL_aaudio.c
++++ b/src/audio/aaudio/SDL_aaudio.c
+@@ -23,6 +23,7 @@
+ #ifdef SDL_AUDIO_DRIVER_AAUDIO
+ 
+ #include "SDL_audio.h"
++#include "SDL_timer.h"
+ #include "SDL_loadso.h"
+ #include "../SDL_audio_c.h"
+ #include "../../core/android/SDL_android.h"
+@@ -51,6 +52,10 @@
+  * thread closing the device closes that stream: guards both pointers, and the stream while it is in use. A
+  * spinlock, so it needs no set-up and outlives every device. */
+ static SDL_SpinLock devices_lock = 0;
++/* Set while the activity is paused, and the playback stream with it (aaudio_PauseDevices): the audio thread then
++ * writes nothing and waits a buffer's length instead. Cleared on every resume, so a device opened after one that
++ * was closed while paused does not start out silent. */
++static SDL_atomic_t playback_paused;
+ 
+ static int aaudio_LoadFunctions(AAUDIO_Data *data)
+ {
+@@ -311,6 +316,11 @@
+     struct SDL_PrivateAudioData *private = this->hidden;
+     aaudio_result_t res;
+     int64_t timeoutNanoseconds = 1 * 1000 * 1000; /* 8 ms */
++    if (SDL_AtomicGet(&playback_paused)) {
++        /* The stream is paused with the activity: write nothing, and take the time this buffer would have played. */
++        SDL_Delay((this->spec.samples * 1000) / this->spec.freq);
++        return;
++    }
+     res = ctx.AAudioStream_write(private->stream, private->mixbuf, private->mixlen / private->frame_size, timeoutNanoseconds);
+     if (res < 0) {
+         LOGI("%s : %s", __func__, ctx.AAudio_convertResultToText(res));
+@@ -442,8 +452,10 @@
+ {
+     /* TODO: Handle multiple devices? */
+     struct SDL_PrivateAudioData *private;
++    /* Playback is paused by a flag, not by holding its mixer lock until the resume: close_audio_device takes that
++     * lock first, so closing the device from another thread while the activity was paused waited for the resume. */
++    SDL_AtomicSet(&playback_paused, 1);
+     if (audioDevice && audioDevice->hidden) {
+-        SDL_LockMutex(audioDevice->mixer_lock);
+         private = (struct SDL_PrivateAudioData *)audioDevice->hidden;
+         if (private->stream) {
+             aaudio_result_t res = ctx.AAudioStream_requestPause(private->stream);
+@@ -482,8 +494,8 @@
+                 SDL_SetError("%s : %s", __func__, ctx.AAudio_convertResultToText(res));
+             }
+         }
+-        SDL_UnlockMutex(audioDevice->mixer_lock);
+     }
++    SDL_AtomicSet(&playback_paused, 0);
+ 
+     if (captureDevice && captureDevice->hidden) {
+         private = (struct SDL_PrivateAudioData *)captureDevice->hidden;
