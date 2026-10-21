@@ -20,8 +20,9 @@
  * the middle keeps the option it chose highlighted until it is pushed towards another (in V+ the middle meant
  * Continue). The d-pad moves the highlight a step per press instead of choosing when let go ("exiting instantly after
  * clicking any direction"): from the centre to that option, from an option back to the centre with the opposite
- * direction. B takes the highlight back to Continue, so a wheel opened by accident can be left. Only Start's release
- * chooses.
+ * direction. A stick steps the same way, once per new direction it points ("it skips over [the centre] on a push of
+ * the stick all the way to the other side"). B takes the highlight back to Continue, so a wheel opened by accident
+ * can be left. Only Start's release chooses.
  */
 
 #include <stdbool.h>
@@ -55,6 +56,7 @@ typedef struct start_wheel_t {
     bool captured;                  /* a direction was pushed: the controller is the wheel's */
     start_wheel_action_t pending;   /* chosen, to run once the controller is let go */
     int held;                       /* buttons down at the last input: a d-pad or B press is a new one */
+    start_wheel_action_t stick_dir; /* where the choosing stick points now; CONTINUE = back in the middle */
 } start_wheel_t;
 
 /** The controller as the wheel reads it: Limelight's *_FLAG buttons, and the sticks as sent to the host
