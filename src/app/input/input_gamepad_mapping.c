@@ -84,9 +84,9 @@ void app_input_reload_gamepad_mapping(app_input_t *input) {
  * community gamecontrollerdb.txt carries the old one with no version, and loaded over SDL's (as the config-file hint
  * does) it won: a Nintendo Switch Pro Controller on the SHIELD TV (Android 11) got Android 9's layout -- + as the
  * right stick, ZR as Start, L and R as the triggers, ZL as View -- so no button shortcut and no Start wheel worked on
- * it (logged mapping and raw buttons, 2026-10-22). A controller SDL already maps keeps SDL's mapping; the database
- * still adds every controller SDL does not know. Lines are filtered by platform exactly as
- * SDL_GameControllerAddMappingsFromRW does.
+ * it (logged mapping and raw buttons, 2026-10-22). A controller whose mapping SDL chose by Android version keeps it;
+ * the database still adds every controller SDL does not know and replaces SDL's other mappings, as it always did.
+ * Lines are filtered by platform exactly as SDL_GameControllerAddMappingsFromRW does.
  */
 int app_input_add_missing_gamepad_mappings(const char *path) {
     SDL_RWops *rw = path != NULL ? SDL_RWFromFile(path, "r") : NULL;
@@ -120,9 +120,13 @@ int app_input_add_missing_gamepad_mappings(const char *path) {
         }
         char guid_text[64];
         SDL_strlcpy(guid_text, line, (size_t) (comma - line) + 1);
+        /* Only a mapping SDL chose by Android version keeps out the database's: the others the database still
+         * replaces as before (the Xbox Series controller's Share button, misc1, is in the database's and not SDL's). */
         char *existing = SDL_GameControllerMappingForGUID(SDL_JoystickGetGUIDFromString(guid_text));
-        if (existing != NULL) {
-            SDL_free(existing);
+        const bool by_version = existing != NULL &&
+                                (SDL_strstr(existing, "sdk>=:") != NULL || SDL_strstr(existing, "sdk<=:") != NULL);
+        SDL_free(existing);
+        if (by_version) {
             kept++;
             continue;
         }
@@ -131,8 +135,8 @@ int app_input_add_missing_gamepad_mappings(const char *path) {
         }
     }
     SDL_free(buf);
-    commons_log_info("Input", "Controller database: %d mappings added, %d controllers kept SDL's own mapping", added,
-                     kept);
+    commons_log_info("Input", "Controller database: %d mappings applied, %d controllers kept SDL's Android-version "
+                              "mapping", added, kept);
     return added;
 }
 #endif
