@@ -214,6 +214,37 @@ static void testOtherDirectionChanges(void) {
     TEST_ASSERT_EQUAL(START_WHEEL_KEYBOARD, wheel.selected);
 }
 
+/* A stick steps like the d-pad (user, 2026-10-22: "it skips over [the centre] on a push of the stick all the way to
+ * the other side"): pushed the other way from an option it goes back to Continue, pushed again to the far option. */
+static void testStickOppositeGoesToCentre(void) {
+    hold_start();
+    pad.rx = FULL;
+    input();
+    input();
+    TEST_ASSERT_EQUAL(START_WHEEL_MOUSE, wheel.selected);
+    pad.rx = 0;
+    input();
+    pad.rx = -FULL;
+    input();
+    input();
+    TEST_ASSERT_EQUAL(START_WHEEL_CONTINUE, wheel.selected);
+    pad.rx = 0;
+    input();
+    pad.rx = -FULL;
+    input();
+    input();
+    TEST_ASSERT_EQUAL(START_WHEEL_PERFORMANCE, wheel.selected);
+    /* A flick straight across, never seen in the middle, is one step too. */
+    pad.rx = FULL;
+    input();
+    input();
+    TEST_ASSERT_EQUAL(START_WHEEL_CONTINUE, wheel.selected);
+    /* Held where it points, nothing more happens. */
+    input();
+    input();
+    TEST_ASSERT_EQUAL(START_WHEEL_CONTINUE, wheel.selected);
+}
+
 /* Hysteresis: a chosen direction holds until the stick drops below the exit threshold. */
 static void testDirectionHolds(void) {
     hold_start();
@@ -258,6 +289,7 @@ int main(void) {
     RUN_TEST(testHeldBeforeShowIsNotAPress);
     RUN_TEST(testCentreKeepsChoice);
     RUN_TEST(testOtherDirectionChanges);
+    RUN_TEST(testStickOppositeGoesToCentre);
     RUN_TEST(testDirectionHolds);
     RUN_TEST(testCancel);
     RUN_TEST(testHeldDoesNotCapture);

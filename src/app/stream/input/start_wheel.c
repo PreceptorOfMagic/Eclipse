@@ -44,6 +44,7 @@ static void clear_gesture(start_wheel_t *wheel) {
     wheel->candidate = START_WHEEL_CONTINUE;
     wheel->candidate_events = 0;
     wheel->captured = false;
+    wheel->stick_dir = START_WHEEL_CONTINUE;
 }
 
 void start_wheel_reset(start_wheel_t *wheel) {
@@ -140,10 +141,11 @@ static bool direction_held(float x, float y, start_wheel_action_t action) {
     }
 }
 
-/** x right, y DOWN. */
-static start_wheel_action_t action_for_axis(const start_wheel_t *wheel, float x, float y) {
-    if (wheel->selected != START_WHEEL_CONTINUE && direction_held(x, y, wheel->selected)) {
-        return wheel->selected;
+/** Where a stick points, x right and y DOWN: still `held` while it stays that way past the exit threshold (the
+ *  hysteresis), a new direction once it is pushed past the enter threshold, else CONTINUE (no direction yet). */
+static start_wheel_action_t direction_for_axis(start_wheel_action_t held, float x, float y) {
+    if (held != START_WHEEL_CONTINUE && direction_held(x, y, held)) {
+        return held;
     }
     if (x * x + y * y < WHEEL_EXIT * WHEEL_EXIT || magnitude(x, y) < WHEEL_ENTER) {
         return START_WHEEL_CONTINUE;
@@ -155,8 +157,8 @@ static start_wheel_action_t action_for_axis(const start_wheel_t *wheel, float x,
 }
 
 /** A stick's new direction counts once it has held for two events (V+: two frames). */
-static start_wheel_action_t stabilize(start_wheel_t *wheel, start_wheel_action_t candidate) {
-    if (candidate == wheel->selected) {
+static start_wheel_action_t settle(start_wheel_t *wheel, start_wheel_action_t candidate) {
+    if (candidate == wheel->stick_dir) {
         wheel->candidate = START_WHEEL_CONTINUE;
         wheel->candidate_events = 0;
         return candidate;
@@ -164,14 +166,14 @@ static start_wheel_action_t stabilize(start_wheel_t *wheel, start_wheel_action_t
     if (wheel->candidate != candidate) {
         wheel->candidate = candidate;
         wheel->candidate_events = 1;
-        return wheel->selected;
+        return wheel->stick_dir;
     }
     if (++wheel->candidate_events >= 2) {
         wheel->candidate = START_WHEEL_CONTINUE;
         wheel->candidate_events = 0;
         return candidate;
     }
-    return wheel->selected;
+    return wheel->stick_dir;
 }
 
 static start_wheel_action_t opposite(start_wheel_action_t action) {
@@ -189,14 +191,17 @@ static start_wheel_action_t opposite(start_wheel_action_t action) {
     }
 }
 
-/** One d-pad press moves the highlight a step: from the centre to that option, from an option back to the centre
- *  when it points the other way, else to the option it points at. */
-static start_wheel_action_t dpad_step(start_wheel_action_t from, int press) {
-    const start_wheel_action_t to = (press & UP_FLAG) ? START_WHEEL_MENU
-                                    : (press & RIGHT_FLAG) ? START_WHEEL_MOUSE
-                                    : (press & DOWN_FLAG) ? START_WHEEL_KEYBOARD
-                                    : START_WHEEL_PERFORMANCE;
+/** One step of the highlight towards `to` (a d-pad press, or a stick pointing somewhere new): from the centre to that
+ *  option, from an option back to the centre when `to` is its opposite, else to `to`. */
+static start_wheel_action_t step(start_wheel_action_t from, start_wheel_action_t to) {
     return from != START_WHEEL_CONTINUE && to == opposite(from) ? START_WHEEL_CONTINUE : to;
+}
+
+static start_wheel_action_t dpad_direction(int press) {
+    return (press & UP_FLAG) ? START_WHEEL_MENU
+           : (press & RIGHT_FLAG) ? START_WHEEL_MOUSE
+           : (press & DOWN_FLAG) ? START_WHEEL_KEYBOARD
+           : START_WHEEL_PERFORMANCE;
 }
 
 static void choose(start_wheel_t *wheel, const start_wheel_pad_t *pad, start_wheel_update_t *update) {
@@ -214,17 +219,24 @@ static void choose(start_wheel_t *wheel, const start_wheel_pad_t *pad, start_whe
     if (back) {
         next = START_WHEEL_CONTINUE;
     } else if (dpad) {
-        next = dpad_step(wheel->selected, dpad);
+        next = step(wheel->selected, dpad_direction(dpad));
     } else {
         wheel->source = resolve_source(wheel, lx, ly, rx, ry);
         if (wheel->source == SOURCE_NONE) {
-            /* A stick let back to the middle keeps its choice while Start is held (user, 2026-10-22). */
+            /* Back in the middle: the highlight stays (user, 2026-10-22), and the next push is a new step. */
+            wheel->stick_dir = START_WHEEL_CONTINUE;
             wheel->candidate = START_WHEEL_CONTINUE;
             wheel->candidate_events = 0;
             return;
         }
         const bool right = wheel->source == SOURCE_RIGHT_STICK;
-        next = stabilize(wheel, action_for_axis(wheel, right ? rx : lx, right ? ry : ly));
+        const start_wheel_action_t dir = settle(wheel, direction_for_axis(wheel->stick_dir, right ? rx : lx,
+                                                                          right ? ry : ly));
+        if (dir == START_WHEEL_CONTINUE || dir == wheel->stick_dir) {
+            return;
+        }
+        wheel->stick_dir = dir;
+        next = step(wheel->selected, dir);
     }
     if (back || dpad) {
         wheel->candidate = START_WHEEL_CONTINUE;
