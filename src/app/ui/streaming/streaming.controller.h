@@ -4,6 +4,7 @@
 
 #include "client.h"
 #include "stream/session.h"
+#include "start_wheel.view.h"
 
 typedef struct app_t app_t;
 
@@ -39,6 +40,7 @@ typedef struct {
     lv_obj_t *stats_pin;
     lv_obj_t *notice, *notice_label;
     lv_obj_t *soft_kbd;
+    start_wheel_view_t wheel;   /* hold Start (stream/input/start_wheel.h); made on first use */
     lv_style_t overlay_button_style;
     lv_style_t overlay_button_style_focused;
     lv_style_t overlay_button_label_style;

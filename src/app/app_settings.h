@@ -103,6 +103,13 @@ typedef struct app_settings_t {
      *  Nintendo pads follow swap_abxy like any other. Unset (-1) until read: an existing config gets the
      *  layout swap_abxy already gave these pads, a new one AS_PRINTED -- so detection is on either way. */
     int nintendo_layout;
+    /** Controller shortcuts during a stream: CONTROLLER_SHORTCUTS_ALL (default) / _COMBOS / _WHEEL / _NONE.
+     *
+     *  COMBOS are the button combinations (stream/input/session_gamepad.c): View + Start + LB + RB the stream menu,
+     *  LB + RS the virtual mouse, RB + RS the keyboard, LB + LS the performance panel, and on Android View + Start
+     *  home and View held = Guide. The WHEEL is holding Start (stream/input/start_wheel.h), which every controller
+     *  can do. Either can be turned off without the other (user, 2026-10-21). */
+    int controller_shortcuts;
     bool syskey_capture;
     /** webOS: keep the stream on the TV's WIRED card (USB-Ethernet adapter): WIRED_PIN_AUTO / _OFF / _ON.
      *
@@ -340,6 +347,13 @@ enum {
     NINTENDO_LAYOUT_OFF = 0,
     NINTENDO_LAYOUT_AS_PRINTED = 1,
     NINTENDO_LAYOUT_XBOX = 2,
+};
+
+enum {
+    CONTROLLER_SHORTCUTS_ALL = 0,
+    CONTROLLER_SHORTCUTS_COMBOS = 1,
+    CONTROLLER_SHORTCUTS_WHEEL = 2,
+    CONTROLLER_SHORTCUTS_NONE = 3,
 };
 
 enum {

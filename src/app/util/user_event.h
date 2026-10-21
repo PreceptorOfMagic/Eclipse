@@ -16,6 +16,8 @@
 #define USER_CLOSE_SOFT_KEYBOARD 532
 #define USER_OPEN_SOFT_KEYBOARD 533
 #define USER_TOGGLE_STATS_PIN 534
+/* The Start wheel's picture (stream/input/start_wheel.h): data1 = 0 to hide it, else 1 + the highlighted action. */
+#define USER_START_WHEEL 535
 
 
 extern unsigned int app_userevent_remotebutton;

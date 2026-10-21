@@ -70,6 +70,9 @@ void stream_input_flush_pressed_keys(stream_input_t *input);
 
 void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t *gamepad);
 
+/** Close the Start wheel (start_wheel.h) without acting: the stream menu or the keyboard opened another way. */
+void stream_input_cancel_start_wheel(void);
+
 void stream_input_handle_key(stream_input_t *input, const SDL_KeyboardEvent *event);
 
 void stream_input_handle_text(stream_input_t *input, const SDL_TextInputEvent *event);

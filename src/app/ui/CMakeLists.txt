@@ -17,6 +17,7 @@ target_sources(moonlight-lib PRIVATE
         launcher/coverloader.c
         streaming/streaming.view.c
         streaming/streaming.controller.c
+        streaming/start_wheel.view.c
         streaming/soft_keyboard.c
         streaming/pin_autoentry.c
         streaming/hints.c
