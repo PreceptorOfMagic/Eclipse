@@ -68,10 +68,74 @@ void app_input_copy_initial_gamepad_mapping(const app_settings_t *settings) {
 }
 
 void app_input_reload_gamepad_mapping(app_input_t *input) {
+#if TARGET_ANDROID
+    app_input_add_missing_gamepad_mappings(input->gcdb_updater.path);
+#else
     int num_mapping = SDL_GameControllerAddMappingsFromRW(SDL_RWFromFile(input->gcdb_updater.path, "r"),
                                                           SDL_TRUE);
     commons_log_debug("Input", "Added %d gamepad mapping", num_mapping);
+#endif
 }
+
+#if TARGET_ANDROID
+/*
+ * ON ANDROID THE DOWNLOADED DATABASE ONLY FILLS GAPS. SDL's own table keys some Android mappings by Android version
+ * (`sdk>=:29` / `sdk<=:28`: the key layouts changed with Android 10 and 11) and keeps the one for this device. The
+ * community gamecontrollerdb.txt carries the old one with no version, and loaded over SDL's (as the config-file hint
+ * does) it won: a Nintendo Switch Pro Controller on the SHIELD TV (Android 11) got Android 9's layout -- + as the
+ * right stick, ZR as Start, L and R as the triggers, ZL as View -- so no button shortcut and no Start wheel worked on
+ * it (logged mapping and raw buttons, 2026-10-22). A controller SDL already maps keeps SDL's mapping; the database
+ * still adds every controller SDL does not know. Lines are filtered by platform exactly as
+ * SDL_GameControllerAddMappingsFromRW does.
+ */
+int app_input_add_missing_gamepad_mappings(const char *path) {
+    SDL_RWops *rw = path != NULL ? SDL_RWFromFile(path, "r") : NULL;
+    if (rw == NULL) {
+        return 0;
+    }
+    const Sint64 size = SDL_RWsize(rw);
+    char *buf = size > 0 ? SDL_malloc((size_t) size + 1) : NULL;
+    if (buf == NULL || SDL_RWread(rw, buf, (size_t) size, 1) != 1) {
+        SDL_free(buf);
+        SDL_RWclose(rw);
+        return 0;
+    }
+    SDL_RWclose(rw);
+    buf[size] = '\0';
+    char platform_field[64];
+    SDL_snprintf(platform_field, sizeof(platform_field), "platform:%s,", SDL_GetPlatform());
+    int added = 0, kept = 0;
+    for (char *line = buf, *next; line != NULL && *line != '\0'; line = next) {
+        next = SDL_strchr(line, '\n');
+        if (next != NULL) {
+            *next++ = '\0';
+        }
+        const size_t len = SDL_strlen(line);
+        if (len > 0 && line[len - 1] == '\r') {
+            line[len - 1] = '\0';
+        }
+        const char *comma = SDL_strchr(line, ',');
+        if (line[0] == '#' || comma == NULL || comma - line >= 64 || SDL_strstr(line, platform_field) == NULL) {
+            continue;
+        }
+        char guid_text[64];
+        SDL_strlcpy(guid_text, line, (size_t) (comma - line) + 1);
+        char *existing = SDL_GameControllerMappingForGUID(SDL_JoystickGetGUIDFromString(guid_text));
+        if (existing != NULL) {
+            SDL_free(existing);
+            kept++;
+            continue;
+        }
+        if (SDL_GameControllerAddMapping(line) > 0) {
+            added++;
+        }
+    }
+    SDL_free(buf);
+    commons_log_info("Input", "Controller database: %d mappings added, %d controllers kept SDL's own mapping", added,
+                     kept);
+    return added;
+}
+#endif
 
 static void gcdb_updated(commons_gcdb_status_t result, void *context) {
     (void) context;

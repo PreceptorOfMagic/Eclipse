@@ -9,7 +9,7 @@ void app_input_init(app_input_t *input, app_t *app) {
     input->app = app;
     if (app->settings.condb_path != NULL) {
         app_input_copy_initial_gamepad_mapping(&app->settings);
-#if SDL_VERSION_ATLEAST(2, 0, 10)
+#if SDL_VERSION_ATLEAST(2, 0, 10) && !TARGET_ANDROID
         SDL_SetHint(SDL_HINT_GAMECONTROLLERCONFIG_FILE, app->settings.condb_path);
 #endif
     }
@@ -19,6 +19,10 @@ void app_input_init(app_input_t *input, app_t *app) {
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "1");
 #endif
     SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
+#if TARGET_ANDROID
+    /* The database after SDL's own table, and only where SDL has nothing (input_gamepad_mapping.c). */
+    app_input_add_missing_gamepad_mappings(app->settings.condb_path);
+#endif
     input->max_num_gamepads = 4;
     input->gamepads_count = 0;
     for (int i = 0; i < input->max_num_gamepads; i++) {

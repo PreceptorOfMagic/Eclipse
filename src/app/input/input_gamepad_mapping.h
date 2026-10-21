@@ -12,3 +12,9 @@ void app_input_deinit_gamepad_mapping(app_input_t *input);
 void app_input_copy_initial_gamepad_mapping(const app_settings_t *settings);
 
 void app_input_reload_gamepad_mapping(app_input_t *input);
+
+#if TARGET_ANDROID
+/** Android: add the controller database's mappings for controllers SDL has no mapping of its own for (see the .c).
+ *  @return mappings added */
+int app_input_add_missing_gamepad_mappings(const char *path);
+#endif
