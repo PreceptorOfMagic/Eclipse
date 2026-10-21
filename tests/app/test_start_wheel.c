@@ -127,8 +127,8 @@ static void testDpadChoosesOnDpadRelease(void) {
     TEST_ASSERT_EQUAL(START_WHEEL_MOUSE, update.run);
 }
 
-/* Pushed, then back to the centre before letting go: Continue, nothing runs, and the release stays local. */
-static void testBackToCentreIsContinue(void) {
+/* Pushed, then back to the centre before letting go: the choice stays (user, 2026-10-22), and runs on release. */
+static void testCentreKeepsChoice(void) {
     hold_start();
     pad.rx = FULL;
     input();
@@ -137,12 +137,27 @@ static void testBackToCentreIsContinue(void) {
     pad.rx = 0;
     input();
     input();
-    TEST_ASSERT_EQUAL(START_WHEEL_CONTINUE, wheel.selected);
+    input();
+    TEST_ASSERT_EQUAL(START_WHEEL_MOUSE, wheel.selected);
     pad.buttons = 0;
     const start_wheel_update_t update = input();
     TEST_ASSERT_TRUE(update.consume);
-    TEST_ASSERT_EQUAL(START_WHEEL_CONTINUE, update.run);
+    TEST_ASSERT_EQUAL(START_WHEEL_MOUSE, update.run);
     TEST_ASSERT_EQUAL(START_WHEEL_IDLE, wheel.state);
+}
+
+/* ... and moves on only when pushed towards another option. */
+static void testOtherDirectionChanges(void) {
+    hold_start();
+    pad.rx = FULL;
+    input();
+    input();
+    pad.rx = 0;
+    input();
+    pad.ly = -FULL;                         /* left stick down */
+    input();
+    input();
+    TEST_ASSERT_EQUAL(START_WHEEL_KEYBOARD, wheel.selected);
 }
 
 /* Hysteresis: a chosen direction holds until the stick drops below the exit threshold. */
@@ -185,7 +200,8 @@ int main(void) {
     RUN_TEST(testStickChoosesOnStartRelease);
     RUN_TEST(testDirections);
     RUN_TEST(testDpadChoosesOnDpadRelease);
-    RUN_TEST(testBackToCentreIsContinue);
+    RUN_TEST(testCentreKeepsChoice);
+    RUN_TEST(testOtherDirectionChanges);
     RUN_TEST(testDirectionHolds);
     RUN_TEST(testCancel);
     RUN_TEST(testHeldDoesNotCapture);
