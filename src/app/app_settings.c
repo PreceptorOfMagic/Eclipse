@@ -183,6 +183,7 @@ void settings_initialize(app_settings_t *config, char *conf_dir) {
     config->wired_pin_mode = WIRED_PIN_AUTO;
     config->host_monitor_mode = HOST_MONITOR_CHOOSE;
     config->nintendo_layout = -1;   /* resolved from swap_abxy once the file is read (settings_read) */
+    config->controller_shortcuts = CONTROLLER_SHORTCUTS_ALL;
     config->fullscreen = true;
     /* Keep a valid restore rectangle even when the first launch is fullscreen. The
      * desktop setting can be toggled live; leaving fullscreen must never hand SDL
@@ -389,6 +390,7 @@ bool settings_save(app_settings_t *config) {
 #endif
     ini_write_bool(fp, "swap_abxy", config->swap_abxy);
     ini_write_int(fp, "nintendo_layout", config->nintendo_layout);
+    ini_write_int(fp, "controller_shortcuts", config->controller_shortcuts);
     ini_write_int(fp, "stick_deadzone", config->stick_deadzone);
     ini_write_bool(fp, "syskey_capture", config->syskey_capture);
     ini_write_int(fp, "coop_orientation", config->coop_orientation);
@@ -903,6 +905,10 @@ static int settings_parse(app_settings_t *config, const char *section, const cha
         const int layout = atoi(value);
         config->nintendo_layout = layout >= NINTENDO_LAYOUT_OFF && layout <= NINTENDO_LAYOUT_XBOX
                                   ? layout : NINTENDO_LAYOUT_AS_PRINTED;
+    } else if (INI_NAME_MATCH("controller_shortcuts")) {
+        const int shortcuts = atoi(value);
+        config->controller_shortcuts = shortcuts >= CONTROLLER_SHORTCUTS_ALL && shortcuts <= CONTROLLER_SHORTCUTS_NONE
+                                       ? shortcuts : CONTROLLER_SHORTCUTS_ALL;
     } else if (INI_NAME_MATCH("syskey_capture")) {
         config->syskey_capture = INI_IS_TRUE(value);
     } else if (INI_NAME_MATCH("coop_orientation")) {

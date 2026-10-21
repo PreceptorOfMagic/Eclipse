@@ -103,6 +103,14 @@ Controllers work as on the other platforms, with the same combinations (Start + 
 LB + right stick click for the virtual mouse, RB + right stick click for the on-screen keyboard), plus one for
 Android: **View + Start shows the TV's home screen**, acted on when both are let go; the PC sees neither button.
 
+**Hold Start for the shortcut wheel**, on every platform and any controller (the combinations above need buttons
+some controllers lack). After 0.75 s a wheel shows; push either stick or the d-pad towards **Menu** (up), **Mouse**
+(right), **Keyboard** (down) or **Performance** (left). With a stick, letting go of Start chooses; with the d-pad,
+letting go of the d-pad does; the choice happens once the controller is let go. A short press of Start is Start, and
+the controller keeps playing while the wheel only shows: the PC stops seeing it from the first push towards a choice
+until it is let go. Letting go of Start without pushing anything closes the wheel. This is the Start gesture of
+Moonlight V+. **Settings > Input > Controller shortcuts** turns the combinations, the wheel, or both off.
+
 A controller's Guide (Xbox) button goes to the PC, as on a PC, wherever Android delivers it. The SHIELD TV does
 not: its system package `com.nvidia.shieldtech.hooks` turns the Guide button into Home before any app sees it, and
 lets no app opt out (Steam Link and Moonlight live with the same). So on a SHIELD, as Sunshine's

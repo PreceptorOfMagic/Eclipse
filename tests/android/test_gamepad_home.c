@@ -28,6 +28,11 @@ void android_go_home(void) { went_home++; }
 static bool guide_is_home;
 bool android_guide_is_home(void) { return guide_is_home; }
 app_t *global = NULL;
+static app_settings_t settings;
+PCONFIGURATION app_configuration = &settings;
+
+static intptr_t wheel_picture_code = -1;   /* the last USER_START_WHEEL: 0 hidden, else 1 + the highlighted action */
+static int vmouse_toggles;
 
 int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask, int buttonFlags,
                                unsigned char leftTrigger, unsigned char rightTrigger, short leftStickX,
@@ -58,8 +63,9 @@ bool app_input_gamepad_swaps_abxy(SDL_GameController *controller) { (void) contr
 short app_input_get_max_gamepads(app_input_t *input) { (void) input; return 4; }
 
 bool bus_pushevent(int which, void *data1, void *data2) {
-    (void) data1; (void) data2;
+    (void) data2;
     if (which == USER_OPEN_OVERLAY) { overlay_opened++; }
+    if (which == USER_START_WHEEL) { wheel_picture_code = (intptr_t) data1; }
     return true;
 }
 void commons_log_printf(commons_log_level level, const char *tag, const char *fmt, ...) {
@@ -88,7 +94,7 @@ static short vm_x, vm_y;
 static int vm_vec_calls, vm_trig_calls;
 static char vm_l, vm_r;
 bool session_input_is_vmouse_active(session_input_vmouse_t *vmouse) { (void) vmouse; return vmouse_active; }
-void session_toggle_vmouse(session_t *session) { (void) session; }
+void session_toggle_vmouse(session_t *session) { (void) session; vmouse_toggles++; }
 void vmouse_set_modifier(session_input_vmouse_t *vmouse, bool pressed) { (void) vmouse; (void) pressed; }
 void vmouse_set_trigger(session_input_vmouse_t *vmouse, char l, char r) {
     (void) vmouse; vm_l = l; vm_r = r; vm_trig_calls++;
@@ -171,6 +177,8 @@ int main(void) {
     input.input = &app_input;
     app_input.activeGamepadMask = 1;
     pad.gs_id = 0;
+    /* The button combos alone until the Start wheel's own cases at the end: its hold timer needs LVGL running. */
+    settings.controller_shortcuts = CONTROLLER_SHORTCUTS_COMBOS;
 
     /* View, then Start, then both let go: the host gets View only, and the home screen opens on release. */
     button(SDL_CONTROLLER_BUTTON_BACK, true);
@@ -331,6 +339,72 @@ int main(void) {
     axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 20000);
     axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 0);
     check("virtual mouse off: the stick is the controller's own", vm_vec_calls == 0);
+
+    /* ── THE START WHEEL (start_wheel.h): hold Start, push a direction, let go ── */
+    settings.controller_shortcuts = CONTROLLER_SHORTCUTS_ALL;
+    input.session = &session;
+    pad.buttons = 0;
+    pad.leftStickX = pad.leftStickY = pad.rightStickX = pad.rightStickY = 0;
+    sent_n = 0;
+
+    /* A tap is Start, as before: no wheel. */
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    check("Start arms the wheel's hold timer", wheel.hold_timer != NULL);
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    check("a tap disarms it, no wheel", wheel.hold_timer == NULL && wheel_picture_code == -1);
+    expect_sent("a tapped Start reaches the host", (const short[]) {PLAY_FLAG, 0}, 2);
+
+    /* Held: the wheel shows. The stick right takes the controller (the host sees it at rest, once) and highlights
+     * Mouse; Start let go chooses; the stick back runs it. */
+    vmouse_toggles = 0;
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    fire((void **) &wheel.hold_timer);
+    check("held, the wheel shows", wheel_picture_code == 1 + START_WHEEL_CONTINUE);
+    axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 32767);
+    axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 32767);
+    check("the stick right highlights Mouse", wheel_picture_code == 1 + START_WHEEL_MOUSE);
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    check("Start let go closes the wheel", wheel_picture_code == 0);
+    check("the choice waits for the stick to come back", vmouse_toggles == 0);
+    axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 0);
+    check("the stick back: the virtual mouse toggles", vmouse_toggles == 1);
+    expect_sent("the host saw Start, then the controller at rest, and nothing of the wheel",
+                (const short[]) {PLAY_FLAG, 0}, 2);
+
+    /* A combo wins: View + Start forming cancels the hold, and the stream menu combo still opens the menu. */
+    overlay_opened = 0;
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    check("View + Start cancels the wheel's hold", wheel.hold_timer == NULL);
+    button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, true);
+    button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, true);
+    button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, false);
+    button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, false);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    check("with both on, the stream menu combo still opens the menu", overlay_opened == 1);
+
+    /* The setting: "Start wheel only" turns the combos off, "Button combos only" and "Off" the wheel. */
+    settings.controller_shortcuts = CONTROLLER_SHORTCUTS_WHEEL;
+    overlay_opened = 0;
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    button(SDL_CONTROLLER_BUTTON_BACK, true);
+    button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, true);
+    button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, true);
+    button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, false);
+    button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER, false);
+    button(SDL_CONTROLLER_BUTTON_BACK, false);
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    check("Start wheel only: the stream menu combo does nothing", overlay_opened == 0);
+    settings.controller_shortcuts = CONTROLLER_SHORTCUTS_COMBOS;
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    check("Button combos only: Start arms no wheel", wheel.hold_timer == NULL);
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    settings.controller_shortcuts = CONTROLLER_SHORTCUTS_NONE;
+    button(SDL_CONTROLLER_BUTTON_START, true);
+    check("Off: Start arms no wheel", wheel.hold_timer == NULL);
+    button(SDL_CONTROLLER_BUTTON_START, false);
+    sent_n = 0;
 
     printf("%s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;

@@ -161,7 +161,7 @@ target_link_libraries(test_android_remote_keys PRIVATE lvgl commons-logging comm
 add_test(NAME test_android_remote_keys COMMAND test_android_remote_keys)
 
 # View + Start shows the home screen (session_gamepad.c, compiled for Android): the SHIELD TV's Guide button.
-add_executable(test_android_gamepad_home test_gamepad_home.c)
+add_executable(test_android_gamepad_home test_gamepad_home.c ${CMAKE_SOURCE_DIR}/src/app/stream/input/start_wheel.c)
 target_compile_definitions(test_android_gamepad_home PRIVATE TARGET_ANDROID=1 _GNU_SOURCE
         SESSION_GAMEPAD_SOURCE="${CMAKE_SOURCE_DIR}/src/app/stream/input/session_gamepad.c")
 target_include_directories(test_android_gamepad_home BEFORE PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/android-config)

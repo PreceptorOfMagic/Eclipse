@@ -11,6 +11,8 @@
 #include "stream/input/session_virt_mouse.h"
 #include "logging.h"
 #include "coop_input.h"
+#include "start_wheel.h"
+#include "stream/session_priv.h"
 
 #define QUIT_BUTTONS (PLAY_FLAG | BACK_FLAG | LB_FLAG | RB_FLAG)
 #define GAMEPAD_COMBO_VMOUSE (LB_FLAG | RS_CLK_FLAG)
@@ -22,7 +24,6 @@
  * reach the host, a controller has no other way back to the TV's home screen during a stream. */
 #define GAMEPAD_COMBO_HOME (BACK_FLAG | PLAY_FLAG)
 #include "platform/android/android_platform.h"
-#include "stream/session_priv.h"
 
 /*
  * HOLDING VIEW IS THE GUIDE BUTTON WHERE THE SYSTEM TAKES GUIDE, COPIED FROM SUNSHINE. The SHIELD TV swallows a
@@ -48,7 +49,30 @@ static bool home_combo_pressed = false;
 
 static void release_buttons(stream_input_t *input, app_gamepad_state_t *gamepad);
 
-static bool gamepad_combo_check(int buttons, short combo);
+static bool gamepad_combo_check(const app_gamepad_state_t *gamepad, short combo);
+
+static void shortcut_log(const app_gamepad_state_t *gamepad, const char *what);
+
+static bool wheel_on_button(stream_input_t *input, app_gamepad_state_t *gamepad, int button, bool down,
+                            uint32_t timestamp);
+
+static bool wheel_on_axis(stream_input_t *input, app_gamepad_state_t *gamepad);
+
+static void wheel_cancel(void);
+
+static SDL_JoystickID wheel_owner(void);
+
+/* CONTROLLER SHORTCUTS (Settings > Input; app_settings.h controller_shortcuts): the button combos, the Start wheel
+ * (start_wheel.h), both or neither. */
+static bool combos_enabled(void) {
+    return app_configuration->controller_shortcuts == CONTROLLER_SHORTCUTS_ALL ||
+           app_configuration->controller_shortcuts == CONTROLLER_SHORTCUTS_COMBOS;
+}
+
+static bool wheel_enabled(void) {
+    return app_configuration->controller_shortcuts == CONTROLLER_SHORTCUTS_ALL ||
+           app_configuration->controller_shortcuts == CONTROLLER_SHORTCUTS_WHEEL;
+}
 
 static short host_buttons(const app_gamepad_state_t *gamepad);
 
@@ -157,30 +181,34 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
     } else {
         gamepad->buttons &= ~button;
     }
+    if (wheel_on_button(input, gamepad, button, event->type == SDL_CONTROLLERBUTTONDOWN, event->timestamp)) {
+        return;
+    }
 #if TARGET_ANDROID
     if (button == BACK_FLAG) {
-        guide_hold_view(gamepad, event->type == SDL_CONTROLLERBUTTONDOWN);
+        /* One of the button combos: off with them. */
+        guide_hold_view(gamepad, event->type == SDL_CONTROLLERBUTTONDOWN && combos_enabled());
     }
 #endif
 
-    if (gamepad_combo_check(gamepad->buttons, QUIT_BUTTONS)) {
+    if (gamepad_combo_check(gamepad, QUIT_BUTTONS)) {
         quit_combo_pressed = true;
 #if TARGET_ANDROID
         home_combo_pressed = false;         /* View + Start on the way to the stream menu combo */
 #endif
         return;
-    } else if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_VMOUSE)) {
+    } else if (gamepad_combo_check(gamepad, GAMEPAD_COMBO_VMOUSE)) {
         vmouse_combo_pressed = true;
         return;
-    } else if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_KEYBOARD)) {
+    } else if (gamepad_combo_check(gamepad, GAMEPAD_COMBO_KEYBOARD)) {
         keyboard_combo_pressed = true;
         return;
-    } else if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_STATS)) {
+    } else if (gamepad_combo_check(gamepad, GAMEPAD_COMBO_STATS)) {
         stats_combo_pressed = true;
         return;
     }
 #if TARGET_ANDROID
-    else if (gamepad_combo_check(gamepad->buttons, GAMEPAD_COMBO_HOME)) {
+    else if (gamepad_combo_check(gamepad, GAMEPAD_COMBO_HOME)) {
         if (!home_combo_pressed) {
             home_combo_pressed = true;
             /* Whichever of the two went first reached the host: take it back now. */
@@ -203,21 +231,25 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
     if (gamepad->buttons == 0) {
         if (quit_combo_pressed) {
             quit_combo_pressed = false;
+            shortcut_log(gamepad, "stream menu");
             release_buttons(input, gamepad);
             bus_pushevent(USER_OPEN_OVERLAY, NULL, NULL);
             return;
         } else if (vmouse_combo_pressed) {
             vmouse_combo_pressed = false;
+            shortcut_log(gamepad, "virtual mouse");
             release_buttons(input, gamepad);
             session_toggle_vmouse(input->session);
             return;
         } else if (keyboard_combo_pressed) {
             keyboard_combo_pressed = false;
+            shortcut_log(gamepad, "keyboard");
             release_buttons(input, gamepad);
             bus_pushevent(USER_OPEN_SOFT_KEYBOARD, NULL, NULL);
             return;
         } else if (stats_combo_pressed) {
             stats_combo_pressed = false;
+            shortcut_log(gamepad, "performance");
             release_buttons(input, gamepad);
             bus_pushevent(USER_TOGGLE_STATS_PIN, NULL, NULL);
             return;
@@ -225,6 +257,7 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
 #if TARGET_ANDROID
         else if (home_combo_pressed) {
             home_combo_pressed = false;
+            shortcut_log(gamepad, "Android home");
             release_buttons(input, gamepad);
             android_go_home();
             return;
@@ -292,6 +325,10 @@ void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEv
     }
     filter_deadzone_2axis(input, &gamepad->leftStickX, &gamepad->leftStickY);
     filter_deadzone_2axis(input, &gamepad->rightStickX, &gamepad->rightStickY);
+
+    if (wheel_on_axis(input, gamepad)) {
+        return;
+    }
 
     if (vmouse_intercepted(input, gamepad)) {
         vmouse_set_vector(&input->vmouse, gamepad->rightStickX, gamepad->rightStickY);
@@ -581,6 +618,9 @@ static void gamepad_arrival_info(const app_gamepad_state_t *gamepad, uint8_t *ty
 }
 
 static void stream_input_send_gamepad_remove(stream_input_t *input, app_gamepad_state_t *gamepad) {
+    if (gamepad->instance_id == wheel_owner()) {
+        wheel_cancel();
+    }
     if (!stream_input_moonlight_gamepad_enabled(input)) {
         return;
     }
@@ -644,8 +684,22 @@ static void send_primary_controller(stream_input_t *input, const app_gamepad_sta
 }
 
 
-static bool gamepad_combo_check(int buttons, short combo) {
-    return (buttons & combo) == combo;
+static bool gamepad_combo_check(const app_gamepad_state_t *gamepad, short combo) {
+    if (!combos_enabled() || (gamepad->buttons & combo) != combo) {
+        return false;
+    }
+    /* A combo wins over this controller's Start wheel: View + Start + LB + RB is often begun with Start, and held.
+     * Another player's wheel is theirs. */
+    if (gamepad->instance_id == wheel_owner()) {
+        wheel_cancel();
+    }
+    return true;
+}
+
+static void shortcut_log(const app_gamepad_state_t *gamepad, const char *what) {
+    /* Which shortcut fired, from which controller: one that "does nothing" on some controller leaves a trace. */
+    commons_log_info("Input", "Controller #%d (%s): shortcut %s", gamepad->gs_id,
+                     SDL_GameControllerName(gamepad->controller), what);
 }
 
 static short host_buttons(const app_gamepad_state_t *gamepad) {
@@ -697,6 +751,155 @@ static bool filter_deadzone_2axis(stream_input_t *input, short *x, short *y) {
         return true;
     }
     return false;
+}
+
+/* THE START WHEEL (start_wheel.h): one at a time, owned by the controller whose Start opened it; every other
+ * controller plays on. UI thread only, like the combos above. */
+static struct {
+    start_wheel_t state;
+    session_t *session;     /* the stream it belongs to: a timer or a state from an earlier stream is stale */
+    SDL_JoystickID owner;
+    lv_timer_t *hold_timer;
+} wheel = {.owner = -1};
+
+static SDL_JoystickID wheel_owner(void) {
+    return wheel.owner;
+}
+
+static start_wheel_pad_t wheel_pad(const app_gamepad_state_t *gamepad) {
+    const start_wheel_pad_t pad = {gamepad->buttons, gamepad->leftStickX, gamepad->leftStickY, gamepad->rightStickX,
+                                   gamepad->rightStickY};
+    return pad;
+}
+
+static void wheel_stop_timer(void) {
+    if (wheel.hold_timer != NULL) {
+        lv_timer_del(wheel.hold_timer);
+        wheel.hold_timer = NULL;
+    }
+}
+
+/** The picture (ui/streaming/start_wheel.view.c): data1 is 0 to hide it, else 1 + the highlighted action. */
+static void wheel_picture(bool visible) {
+    bus_pushevent(USER_START_WHEEL, (void *) (intptr_t) (visible ? 1 + (int) wheel.state.selected : 0), NULL);
+}
+
+static void wheel_run(stream_input_t *input, const app_gamepad_state_t *gamepad, start_wheel_action_t action) {
+    if (action == START_WHEEL_CONTINUE) {
+        return;
+    }
+    commons_log_info("Input", "Controller #%d (%s): Start wheel %s", gamepad->gs_id,
+                     SDL_GameControllerName(gamepad->controller), start_wheel_action_name(action));
+    switch (action) {
+        case START_WHEEL_MENU:
+            bus_pushevent(USER_OPEN_OVERLAY, NULL, NULL);
+            break;
+        case START_WHEEL_MOUSE:
+            session_toggle_vmouse(input->session);
+            break;
+        case START_WHEEL_KEYBOARD:
+            bus_pushevent(USER_OPEN_SOFT_KEYBOARD, NULL, NULL);
+            break;
+        case START_WHEEL_PERFORMANCE:
+            bus_pushevent(USER_TOGGLE_STATS_PIN, NULL, NULL);
+            break;
+        default:
+            break;
+    }
+}
+
+static void wheel_apply(stream_input_t *input, app_gamepad_state_t *gamepad, start_wheel_update_t update) {
+    if (update.neutral) {
+        /* The wheel has the controller: the host sees it at rest until it is let go (V+: sendNeutralState), and a
+         * virtual mouse this stick was steering stops. */
+        if (session_input_is_vmouse_active(&input->vmouse)) {
+            vmouse_set_vector(&input->vmouse, 0, 0);
+            vmouse_set_trigger(&input->vmouse, 0, 0);
+        }
+        if (!input->view_only && stream_input_moonlight_gamepad_enabled(input)) {
+            send_primary_controller(input, gamepad, 0, 0, 0, 0, 0, 0, 0);
+            coop_input_send_controller(gamepad->gs_id, (uint16_t) input->input->activeGamepadMask,
+                                       0, 0, 0, 0, 0, 0, 0);
+        }
+    }
+    if (update.show || update.changed) {
+        wheel_picture(true);
+    }
+    if (update.hide) {
+        wheel_picture(false);
+    }
+    if (wheel.state.state == START_WHEEL_IDLE) {
+        wheel_stop_timer();
+        wheel.owner = -1;
+    }
+    wheel_run(input, gamepad, update.run);
+}
+
+static void wheel_cancel(void) {
+    wheel_stop_timer();
+    if (wheel.state.state != START_WHEEL_IDLE && start_wheel_cancel(&wheel.state).hide) {
+        wheel_picture(false);
+    }
+    wheel.owner = -1;
+}
+
+static void wheel_hold_timer_cb(lv_timer_t *timer) {
+    LV_UNUSED(timer);
+    wheel.hold_timer = NULL;        /* run once: LVGL deletes the timer when this returns */
+    session_t *session = global != NULL ? global->session : NULL;
+    app_gamepad_state_t *gamepad = session != NULL && session == wheel.session
+                                   ? app_input_gamepad_state_by_instance_id(session->input.input, wheel.owner) : NULL;
+    if (gamepad == NULL || !(gamepad->buttons & PLAY_FLAG)) {
+        wheel_cancel();
+        return;
+    }
+    /* This timer is the hold's clock: it is made at Start's press and deleted whenever the gesture ends. */
+    wheel_apply(&session->input, gamepad,
+                start_wheel_hold_elapsed(&wheel.state, wheel.state.start_down_ms + START_WHEEL_HOLD_MS));
+}
+
+/** Start opens the wheel; the owner's buttons then go to it first. True when the event is the wheel's alone. */
+static bool wheel_on_button(stream_input_t *input, app_gamepad_state_t *gamepad, int button, bool down,
+                            uint32_t timestamp) {
+    if (wheel.session != input->session) {
+        wheel_stop_timer();
+        start_wheel_reset(&wheel.state);
+        wheel.owner = -1;
+        wheel.session = input->session;
+    }
+    if (wheel.state.state == START_WHEEL_IDLE) {
+        if (button == PLAY_FLAG && down && wheel_enabled()) {
+            wheel.owner = gamepad->instance_id;
+            start_wheel_start_down(&wheel.state, timestamp);
+            wheel_stop_timer();
+            wheel.hold_timer = lv_timer_create(wheel_hold_timer_cb, START_WHEEL_HOLD_MS, NULL);
+            lv_timer_set_repeat_count(wheel.hold_timer, 1);
+        }
+        return false;
+    }
+    if (gamepad->instance_id != wheel.owner) {
+        return false;
+    }
+    const start_wheel_pad_t pad = wheel_pad(gamepad);
+    const start_wheel_update_t update = start_wheel_input(&wheel.state, &pad);
+    wheel_apply(input, gamepad, update);
+    return update.consume;
+}
+
+/** The owner's sticks choose while the wheel shows. True when the event is the wheel's alone. */
+static bool wheel_on_axis(stream_input_t *input, app_gamepad_state_t *gamepad) {
+    if (wheel.session != input->session || wheel.state.state == START_WHEEL_IDLE ||
+        gamepad->instance_id != wheel.owner) {
+        return false;
+    }
+    const start_wheel_pad_t pad = wheel_pad(gamepad);
+    const start_wheel_update_t update = start_wheel_input(&wheel.state, &pad);
+    wheel_apply(input, gamepad, update);
+    return update.consume;
+}
+
+void stream_input_cancel_start_wheel(void) {
+    wheel_cancel();
 }
 
 #if TARGET_ANDROID

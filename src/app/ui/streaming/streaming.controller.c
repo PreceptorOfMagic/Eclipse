@@ -16,6 +16,7 @@
 
 #include "util/bus.h"
 #include "stream/session.h"
+#include "stream/input/session_input.h"
 #include "util/user_event.h"
 #include "util/i18n.h"
 #include "logging.h"
@@ -47,6 +48,8 @@ static void on_cancel_key(lv_event_t *event);
 static void soft_keyboard_close_cb(void *userdata);
 
 static bool show_overlay(streaming_controller_t *controller);
+
+static void close_start_wheel(streaming_controller_t *controller);
 
 static void on_view_created(lv_fragment_t *self, lv_obj_t *view);
 
@@ -583,6 +586,10 @@ static bool on_event(lv_fragment_t *self, int code, void *userdata) {
             show_overlay(controller);
             return true;
         }
+        case USER_START_WHEEL: {
+            start_wheel_view_update(&controller->wheel, (int) (intptr_t) ((ui_userevent_t *) userdata)->data1);
+            return true;
+        }
         case USER_CLOSE_SOFT_KEYBOARD: {
             if (streaming_soft_keyboard_shown()) {
                 soft_keyboard_close_cb(controller);
@@ -597,6 +604,7 @@ static bool on_event(lv_fragment_t *self, int code, void *userdata) {
             if (controller->soft_kbd) {
                 return true;
             }
+            close_start_wheel(controller);
             hide_overlay_impl(controller);
             session_screen_keyboard_opened(controller->global->session);
             controller->soft_kbd = soft_keyboard_create(
@@ -670,6 +678,7 @@ static void on_delete_obj(lv_fragment_t *self, lv_obj_t *view) {
     if (controller->notice) {
         lv_obj_del(controller->notice);
     }
+    start_wheel_view_destroy(&controller->wheel);
     if (controller->stats->parent != controller->overlay) {
         lv_obj_del(controller->stats);
     }
@@ -760,10 +769,17 @@ static void stream_fragment_del_timer_cb(lv_timer_t *timer) {
     lv_fragment_del(fragment);
 }
 
+/* The stream menu or the keyboard has the controllers now: a Start wheel still open goes without acting. */
+static void close_start_wheel(streaming_controller_t *controller) {
+    start_wheel_view_update(&controller->wheel, 0);
+    stream_input_cancel_start_wheel();
+}
+
 bool show_overlay(streaming_controller_t *controller) {
     if (overlay_showing) {
         return false;
     }
+    close_start_wheel(controller);
     overlay_showing = true;
     lv_obj_clear_flag(controller->base.obj, LV_OBJ_FLAG_HIDDEN);
 

@@ -66,6 +66,7 @@ Requires Android 9 or newer. The SHIELD TV (Android 11) is the primary target. T
 - Use H.264 or HEVC on desktop targets, with capability-gated AV1 and HDR10 paths on compatible webOS hardware.
 - Send gamepad, keyboard and mouse input, including supported rumble, trigger rumble, touchpad, gyro, accelerometer and RGB capabilities.
 - Open the on-screen keyboard, use the gamepad virtual mouse and inspect live codec, size, frame rate, latency, drop and bitrate statistics.
+- Hold Start on any controller for the shortcut wheel (stream menu, virtual mouse, keyboard, performance); the button combinations still work, and either can be turned off in Settings > Input.
 
 ## First stream and co-op
 

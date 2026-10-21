@@ -27,6 +27,13 @@ static const pref_dropdown_int_entry_t nintendo_layout_entries[] = {
         {.name = "Don't detect them", .value = NINTENDO_LAYOUT_OFF},
 };
 
+static const pref_dropdown_int_entry_t controller_shortcuts_entries[] = {
+        {.name = "Button combos and Start wheel", .value = CONTROLLER_SHORTCUTS_ALL},
+        {.name = "Button combos only", .value = CONTROLLER_SHORTCUTS_COMBOS},
+        {.name = "Start wheel only", .value = CONTROLLER_SHORTCUTS_WHEEL},
+        {.name = "Off", .value = CONTROLLER_SHORTCUTS_NONE},
+};
+
 static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *view);
 
 static void pane_ctor(lv_fragment_t *self, void *args);
@@ -123,6 +130,16 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
                     false);
 
     pref_desc_label(view, locstr("Press RB + RS on the gamepad during streaming to open the keyboard."), false);
+
+    pref_title_label(view, locstr("Controller shortcuts"));
+    lv_obj_t *shortcuts = pref_dropdown_int(view, controller_shortcuts_entries,
+                                            sizeof(controller_shortcuts_entries) /
+                                            sizeof(controller_shortcuts_entries[0]),
+                                            &app_configuration->controller_shortcuts, NULL);
+    lv_obj_set_width(shortcuts, LV_PCT(100));
+    pref_desc_label(view, locstr("Start wheel: hold Start, push a stick or the d-pad towards Menu, Mouse, Keyboard "
+                                 "or Performance, and let go. It works on any controller. Button combos: "
+                                 "LB + RB + View + Start opens the stream menu, and the combos above."), false);
 
 #if FEATURE_INPUT_EVMOUSE
     hwmouse_state_update(pane);
