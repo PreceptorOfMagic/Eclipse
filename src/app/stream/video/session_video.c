@@ -549,6 +549,33 @@ static unsigned char coop_vt_skip_tile[256u * 1024u];
 static unsigned char *coop_conv_buf = NULL;
 static size_t coop_conv_cap = 0;
 static unsigned coop_hh_converted = 0;
+#if TARGET_ANDROID
+/* A PEER IDR CONVERTED BESIDE OUR SLICE MUST STATE ITS REFERENCES THE WAY OUR SLICE DOES.
+ * HEVC requires short_term_ref_pic_set_sps_flag to be the same in every slice of a picture. Our
+ * NVENC slices point at the SPS's one set; the keepref conversion spells the same set out. FFmpeg
+ * decodes both to identical pictures, but the SHIELD TV's decoder mis-decodes the peer's slice and
+ * the pane goes green until the host repaints it -- ~11 s at every co-op start, measured
+ * 2026-10-21 by replaying one startup through it: green as fed, clean with only this changed.
+ * So when our slice points at the SPS set, the peer's converted slice does too. Anything else --
+ * our slice spelling its set out, an SPS with more than one set -- keeps the keepref form. */
+static unsigned coop_hh_rps_sps = 0;
+static size_t coop_hh_peer_idr_to_trail_sps(const unsigned char *mine, size_t mine_len,
+                                            const unsigned char *peer, size_t peer_len) {
+    coop_slice_info_t ours;
+    if (coop_conv_buf == NULL || coop_hh_src.num_short_term_ref_pic_sets != 1 ||
+        !coop_slice_refcheck(&coop_hh_src, mine, mine_len, &ours) || !ours.rps_from_sps) {
+        return 0;
+    }
+    const size_t cn = coop_slice_idr_to_trail_sps(&coop_hh_peer_params, peer, peer_len, 0,
+                                                  coop_conv_buf, coop_conv_cap);
+    if (cn > 0 && coop_hh_rps_sps++ == 0 && diag_log != NULL) {
+        fprintf(diag_log, "[COOP] converted peer IDR points at the SPS reference set, as our slice does "
+                          "(the decoder mis-decodes a slice whose RPS is stated differently)\n");
+        fflush(diag_log);
+    }
+    return cn;
+}
+#endif
 /* Last pane slice received, kept so a fallback picture can REPEAT it instead of
  * substituting our own half. Emitting our slice 1 writes THIS host's content into
  * the bottom of the decoder's reference picture, which breaks the other host's
@@ -3606,6 +3633,7 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
     coop_hh_tiles = access("/tmp/coop-hh-tiles", F_OK) == 0;
 #if TARGET_ANDROID
     coop_zw_aus = coop_zw_words = 0;
+    coop_hh_rps_sps = 0;
 #endif
     coop_hh_tiled_ok = false;
     coop_hh_untiled_blocked = 0;
@@ -3795,6 +3823,10 @@ void vdec_delegate_cleanup() {
         if (coop_zw_aus > 0) {
             fprintf(diag_log, "[COOP] cabac_zero_words removed before a slice: %u pictures, %u words\n",
                     coop_zw_aus, coop_zw_words);
+        }
+        if (coop_hh_rps_sps > 0) {
+            fprintf(diag_log, "[COOP] peer IDRs converted to point at the SPS reference set: %u\n",
+                    coop_hh_rps_sps);
         }
 #endif
 
@@ -5527,10 +5559,16 @@ int vdec_delegate_submit(PDECODE_UNIT decodeUnit) {
                     /* WINDOWS ONLY, as in rpsfix3 -- and UNTESTED in horizontal on Windows. This
                      * conversion is counted by `converted` on [COOP-HH], the counter register §11
                      * measured when its keepref swap turned the TV BLACK on 2026-08-16. */
-                    size_t cn = coop_conv_buf == NULL ? 0 :
-                        coop_slice_idr_to_trail_keepref(&coop_hh_peer_params, peer.slice[0],
-                                                peer.slice_len[0], 0,
-                                                coop_conv_buf, coop_conv_cap);
+                    size_t cn = 0;
+#if TARGET_ANDROID
+                    cn = coop_hh_peer_idr_to_trail_sps(mine.slice[0], mine.slice_len[0],
+                                                       peer.slice[0], peer.slice_len[0]);
+#endif
+                    if (cn == 0 && coop_conv_buf != NULL) {
+                        cn = coop_slice_idr_to_trail_keepref(&coop_hh_peer_params, peer.slice[0],
+                                                             peer.slice_len[0], 0,
+                                                             coop_conv_buf, coop_conv_cap);
+                    }
 #else
                     size_t cn = coop_conv_buf == NULL ? 0 :
                         coop_slice_idr_to_trail(&coop_hh_peer_params, peer.slice[0],

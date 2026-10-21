@@ -103,6 +103,8 @@ typedef struct {
     unsigned first_neg_delta;            /**< nearest negative ref: 1 == POC-1; 0 == none */
     unsigned first_neg_used;             /**< used_by_curr_pic_s0_flag[0] */
     unsigned rps_unresolved;             /**< 1 = we could not derive the delta; treat as suspect */
+    unsigned rps_from_sps;               /**< 1 = short_term_ref_pic_set_sps_flag: the RPS is one of the
+                                          *   SPS's sets rather than spelled out in this header */
 } coop_slice_info_t;
 
 /** Read the fields above out of a slice NAL. False if the header walk cannot handle it. */
@@ -243,6 +245,22 @@ size_t coop_slice_idr_to_trail(const coop_poc_params_t *p, const unsigned char *
 size_t coop_slice_idr_to_trail_keepref(const coop_poc_params_t *p, const unsigned char *nal,
                                        size_t len, unsigned poc,
                                        unsigned char *out, size_t out_cap);
+
+/**
+ * As coop_slice_idr_to_trail_keepref, but the converted slice POINTS AT the SPS's reference
+ * set (short_term_ref_pic_set_sps_flag = 1) instead of spelling one out -- for a picture whose
+ * other slice does the same. HEVC requires short_term_ref_pic_set_sps_flag to be the same in
+ * every slice of a picture. The keepref form spells out the very set NVENC's SPS declares, so
+ * the pictures are unchanged, but the SHIELD TV's decoder (MediaCodec, OMX.Nvidia.h265.decode)
+ * mis-decodes that slice when the flags differ: the pane goes green and stays green until the
+ * host repaints it (measured 2026-10-21; FFmpeg decodes both forms to identical pictures).
+ *
+ * Only for an SPS that declares exactly ONE set, where the index is implicit; returns 0
+ * otherwise, as for any slice the walk refuses.
+ */
+size_t coop_slice_idr_to_trail_sps(const coop_poc_params_t *p, const unsigned char *nal,
+                                   size_t len, unsigned poc,
+                                   unsigned char *out, size_t out_cap);
 
 size_t coop_slice_set_address(const coop_poc_params_t *p, const unsigned char *nal, size_t len,
                               unsigned addr, unsigned char *out, size_t out_cap);

@@ -176,6 +176,12 @@ target_link_libraries(test_android_gamepad_home PRIVATE lvgl commons-logging com
         commons-copyfile commons-gamecontrollerdb-updater ${SDL2_LIBRARIES})
 add_test(NAME test_android_gamepad_home COMMAND test_android_gamepad_home)
 
+# A peer IDR converted to point at the SPS's reference set, as the slice beside it does (the SHIELD's decoder turned
+# a pane green when the two stated it differently).
+add_executable(test_android_coop_idr_sps test_coop_idr_sps.c ${CMAKE_SOURCE_DIR}/src/app/stream/video/coop_poc.c)
+target_include_directories(test_android_coop_idr_sps PRIVATE ${CMAKE_SOURCE_DIR}/src/app/stream/video)
+add_test(NAME test_android_coop_idr_sps COMMAND test_android_coop_idr_sps)
+
 # The virtual mouse in co-op points like the magic remote (session_virt_mouse.c compiled for Android, with the real
 # coop_pointer.c): it crosses the divider and clicks on the PC it is over.
 add_executable(test_android_vmouse_coop test_vmouse_coop.c ${CMAKE_SOURCE_DIR}/src/app/stream/input/coop_pointer.c)

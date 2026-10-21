@@ -569,6 +569,7 @@ static size_t slice_header_end_bit_x(const coop_poc_params_t *p, int t,
             /* Only set 0 was captured from the SPS (NVENC declares one). Anything else is
              * reported UNRESOLVED rather than silently passing the check. */
             if (info != NULL) {
+                info->rps_from_sps = 1;
                 if (sel == 0) {
                     info->first_neg_delta = p->sps_rps0_first_neg_delta;
                     info->first_neg_used = p->sps_rps0_first_neg_used;
@@ -579,6 +580,7 @@ static size_t slice_header_end_bit_x(const coop_poc_params_t *p, int t,
             }
         } else if (info != NULL) {
             /* sps_flag set with a single declared set: index 0 is implicit, no bits read. */
+            info->rps_from_sps = 1;
             info->first_neg_delta = p->sps_rps0_first_neg_delta;
             info->first_neg_used = p->sps_rps0_first_neg_used;
             info->rps_unresolved = p->sps_rps0_unresolved;
@@ -748,7 +750,8 @@ size_t coop_slice_set_address(const coop_poc_params_t *p, const unsigned char *n
  * even though the picture around it is a trailing picture that does reference.
  */
 static size_t idr_to_trail_x(const coop_poc_params_t *p, const unsigned char *nal, size_t len,
-                             unsigned poc, bool keep_ref, unsigned char *out, size_t out_cap) {
+                             unsigned poc, bool keep_ref, bool sps_set,
+                             unsigned char *out, size_t out_cap) {
     static unsigned char rb[4u * 1024u * 1024u + 64u];
     static unsigned char nrb[4u * 1024u * 1024u + 64u];
     size_t n = to_rbsp(nal, len, rb, sizeof(rb));
@@ -822,36 +825,42 @@ static size_t idr_to_trail_x(const coop_poc_params_t *p, const unsigned char *na
 
     /* THE INSERTION: everything a non-IRAP slice header carries that an IDR does not. */
     bw_put(&w, poc & ((1u << p->log2_max_poc_lsb) - 1u), p->log2_max_poc_lsb);
-    bw_put(&w, 0, 1);                            /* short_term_ref_pic_set_sps_flag = 0 */
-    /* st_ref_pic_set(stRpsIdx) with stRpsIdx = num_short_term_ref_pic_sets. The spec gates
-     * inter_ref_pic_set_prediction_flag on stRpsIdx != 0, so an SPS that declares ANY set
-     * (NVENC declares 1) makes this bit MANDATORY. Omitting it is not a missing default:
-     * the decoder reads our num_negative_pics ue(v) '1' AS the flag, takes the
-     * inter-prediction branch, and every later field -- SAO flags, slice_qp_delta, the
-     * byte at which CABAC starts -- is off. skip_st_ref_pic_set() above already reads it,
-     * so the parser and the writer disagreed and only a PIXEL check could show it. */
-    if (p->num_short_term_ref_pic_sets != 0) {
-        bw_put(&w, 0, 1);                        /* inter_ref_pic_set_prediction_flag = 0 */
-    }
-    if (keep_ref) {
-        /* KEEP THE PREVIOUS PICTURE AS A REFERENCE.
-         *
-         * The empty-RPS form below is right when this converted slice is slice 1 and OUR
-         * inter slice -- carrying the real RPS -- is slice 0. It is WRONG when the converted
-         * slice is slice 0, because the first slice is what the decoder derives DPB state
-         * from: an empty RPS there evicts the previous picture, and the concealment slice
-         * spliced in beside it then has nothing to copy from. That is the whole reason an
-         * unpaired IDR could not carry a concealment slice.
-         *
-         * An I-slice never reads a reference list, so declaring one costs it nothing -- it
-         * only keeps the previous picture alive for the OTHER slice of the same picture. */
-        bw_ue(&w, 1);                            /* num_negative_pics = 1 */
-        bw_ue(&w, 0);                            /* num_positive_pics = 0 */
-        bw_ue(&w, 0);                            /* delta_poc_s0_minus1[0] = 0 -> POC-1 */
-        bw_put(&w, 1, 1);                        /* used_by_curr_pic_s0_flag[0] = 1 */
+    if (sps_set) {
+        /* POINT AT THE SPS's ONE SET, as the picture's other slice does (see
+         * coop_slice_idr_to_trail_sps). With a single declared set the index is implicit. */
+        bw_put(&w, 1, 1);                        /* short_term_ref_pic_set_sps_flag = 1 */
     } else {
-    bw_ue(&w, 0);                                /* num_negative_pics = 0 */
-    bw_ue(&w, 0);                                /* num_positive_pics = 0  -> EMPTY RPS */
+        bw_put(&w, 0, 1);                        /* short_term_ref_pic_set_sps_flag = 0 */
+        /* st_ref_pic_set(stRpsIdx) with stRpsIdx = num_short_term_ref_pic_sets. The spec gates
+         * inter_ref_pic_set_prediction_flag on stRpsIdx != 0, so an SPS that declares ANY set
+         * (NVENC declares 1) makes this bit MANDATORY. Omitting it is not a missing default:
+         * the decoder reads our num_negative_pics ue(v) '1' AS the flag, takes the
+         * inter-prediction branch, and every later field -- SAO flags, slice_qp_delta, the
+         * byte at which CABAC starts -- is off. skip_st_ref_pic_set() above already reads it,
+         * so the parser and the writer disagreed and only a PIXEL check could show it. */
+        if (p->num_short_term_ref_pic_sets != 0) {
+            bw_put(&w, 0, 1);                    /* inter_ref_pic_set_prediction_flag = 0 */
+        }
+        if (keep_ref) {
+            /* KEEP THE PREVIOUS PICTURE AS A REFERENCE.
+             *
+             * The empty-RPS form below is right when this converted slice is slice 1 and OUR
+             * inter slice -- carrying the real RPS -- is slice 0. It is WRONG when the converted
+             * slice is slice 0, because the first slice is what the decoder derives DPB state
+             * from: an empty RPS there evicts the previous picture, and the concealment slice
+             * spliced in beside it then has nothing to copy from. That is the whole reason an
+             * unpaired IDR could not carry a concealment slice.
+             *
+             * An I-slice never reads a reference list, so declaring one costs it nothing -- it
+             * only keeps the previous picture alive for the OTHER slice of the same picture. */
+            bw_ue(&w, 1);                        /* num_negative_pics = 1 */
+            bw_ue(&w, 0);                        /* num_positive_pics = 0 */
+            bw_ue(&w, 0);                        /* delta_poc_s0_minus1[0] = 0 -> POC-1 */
+            bw_put(&w, 1, 1);                    /* used_by_curr_pic_s0_flag[0] = 1 */
+        } else {
+            bw_ue(&w, 0);                        /* num_negative_pics = 0 */
+            bw_ue(&w, 0);                        /* num_positive_pics = 0  -> EMPTY RPS */
+        }
     }
     if (p->long_term_ref_pics_present) {
         bw_ue(&w, 0);                            /* num_long_term_sps  */
@@ -883,13 +892,22 @@ static size_t idr_to_trail_x(const coop_poc_params_t *p, const unsigned char *na
 
 size_t coop_slice_idr_to_trail(const coop_poc_params_t *p, const unsigned char *nal, size_t len,
                                unsigned poc, unsigned char *out, size_t out_cap) {
-    return idr_to_trail_x(p, nal, len, poc, false, out, out_cap);
+    return idr_to_trail_x(p, nal, len, poc, false, false, out, out_cap);
 }
 
 size_t coop_slice_idr_to_trail_keepref(const coop_poc_params_t *p, const unsigned char *nal,
                                        size_t len, unsigned poc,
                                        unsigned char *out, size_t out_cap) {
-    return idr_to_trail_x(p, nal, len, poc, true, out, out_cap);
+    return idr_to_trail_x(p, nal, len, poc, true, false, out, out_cap);
+}
+
+size_t coop_slice_idr_to_trail_sps(const coop_poc_params_t *p, const unsigned char *nal,
+                                   size_t len, unsigned poc,
+                                   unsigned char *out, size_t out_cap) {
+    if (p == NULL || p->num_short_term_ref_pic_sets != 1) {
+        return 0;                       /* the index would need bits, and we would have to pick one */
+    }
+    return idr_to_trail_x(p, nal, len, poc, true, true, out, out_cap);
 }
 
 size_t coop_slice_to_tile(const coop_poc_params_t *src, const coop_poc_params_t *comp,
