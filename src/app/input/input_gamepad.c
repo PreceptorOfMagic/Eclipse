@@ -140,6 +140,13 @@ app_gamepad_state_t *app_input_gamepad_state_init(app_input_t *input, SDL_GameCo
                      app_input_gamepad_is_nintendo(controller)
                      ? (app_input_gamepad_swaps_abxy(controller) ? "swapped (Xbox positions)" : "as printed")
                      : "");
+#if TARGET_ANDROID
+    /* WHICH BUTTON IS WHICH, as SDL maps this controller: a Switch Pro Controller's + reaches SDL as BUTTON_START on
+     * the SHIELD TV and still never arrives as the controller's Start (2026-10-22). The mapping says where it goes. */
+    char *mapping = SDL_GameControllerMapping(controller);
+    commons_log_info("Input", "Controller #%d mapping: %s", state->gs_id, mapping != NULL ? mapping : "(none)");
+    SDL_free(mapping);
+#endif
     return state;
 }
 
