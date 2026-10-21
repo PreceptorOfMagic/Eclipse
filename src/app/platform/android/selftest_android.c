@@ -5,7 +5,8 @@
  * Started by launch arguments (EclipseActivity passes the "selftest_*" Intent extras through):
  *
  *   --selftest-video <file>   play an Annex B H.264/H.265 file through SS4S, i.e. the MediaCodec module and
- *   --selftest-codec <c>      the video surface under the UI, exactly as a stream's pictures go (h264|hevc)
+ *   --selftest-codec <c>      the video surface under the UI, exactly as a stream's pictures go (h264|hevc);
+ *                             the launcher is hidden meanwhile, so a screen capture shows the decoded picture
  *   --selftest-size <WxH>
  *   --selftest-peer           the co-op peer, in two steps:
  *                             1. exec it against a socket nothing listens on: it must start, fail to reach the
@@ -35,6 +36,7 @@
 
 #include "app.h"
 #include "logging.h"
+#include "util/bus.h"
 #include "util/path.h"
 
 #include "ss4s.h"
@@ -402,7 +404,19 @@ static bool is_irap(SS4S_VideoCodec codec, const unsigned char *nal) {
     return type >= 16 && type <= 23;
 }
 
+/* The picture is composited UNDER the UI, which shows it only where the UI is transparent -- a stream's
+ * screen is, the launcher is not. So hide the launcher while the file plays, or a screen capture of the
+ * panel shows the launcher and nothing of what the decoder made. UI thread only. */
+static void selftest_hide_ui(void *data) {
+    (void) data;
+    lv_obj_t *screen = lv_scr_act();
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(screen); ++i) {
+        lv_obj_add_flag(lv_obj_get_child(screen, (int32_t) i), LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void selftest_video(void) {
+    app_bus_post_sync(global, selftest_hide_ui, NULL);
     FILE *f = fopen(selftest.video, "rb");
     if (f == NULL) {
         commons_log_error("SELFTEST", "SELFTEST video file=%s unreadable: %s result=FAIL", selftest.video,
