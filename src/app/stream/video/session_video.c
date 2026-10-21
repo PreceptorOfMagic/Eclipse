@@ -557,18 +557,22 @@ static unsigned coop_hh_converted = 0;
  * the pane goes green until the host repaints it -- ~11 s at every co-op start, measured
  * 2026-10-21 by replaying one startup through it: green as fed, clean with only this changed.
  * So when our slice points at the SPS set, the peer's converted slice does too. Anything else --
- * our slice spelling its set out, an SPS with more than one set -- keeps the keepref form. */
-static unsigned coop_hh_rps_sps = 0;
-static size_t coop_hh_peer_idr_to_trail_sps(const unsigned char *mine, size_t mine_len,
-                                            const unsigned char *peer, size_t peer_len) {
+ * our slice spelling its set out, an SPS with more than one set -- keeps the keepref form.
+ * Both layouts: the vertical one starts its peer column from the same conversion (its first peer
+ * picture, measured 2026-10-21, after which that column was damaged for 30-60 s). */
+static unsigned coop_rps_sps = 0;
+static size_t coop_peer_idr_to_trail_sps(const coop_poc_params_t *our_params,
+                                         const unsigned char *mine, size_t mine_len,
+                                         const coop_poc_params_t *peer_params,
+                                         const unsigned char *peer, size_t peer_len) {
     coop_slice_info_t ours;
-    if (coop_conv_buf == NULL || coop_hh_src.num_short_term_ref_pic_sets != 1 ||
-        !coop_slice_refcheck(&coop_hh_src, mine, mine_len, &ours) || !ours.rps_from_sps) {
+    if (coop_conv_buf == NULL || mine == NULL || our_params->num_short_term_ref_pic_sets != 1 ||
+        !coop_slice_refcheck(our_params, mine, mine_len, &ours) || !ours.rps_from_sps) {
         return 0;
     }
-    const size_t cn = coop_slice_idr_to_trail_sps(&coop_hh_peer_params, peer, peer_len, 0,
+    const size_t cn = coop_slice_idr_to_trail_sps(peer_params, peer, peer_len, 0,
                                                   coop_conv_buf, coop_conv_cap);
-    if (cn > 0 && coop_hh_rps_sps++ == 0 && diag_log != NULL) {
+    if (cn > 0 && coop_rps_sps++ == 0 && diag_log != NULL) {
         fprintf(diag_log, "[COOP] converted peer IDR points at the SPS reference set, as our slice does "
                           "(the decoder mis-decodes a slice whose RPS is stated differently)\n");
         fflush(diag_log);
@@ -3633,7 +3637,7 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
     coop_hh_tiles = access("/tmp/coop-hh-tiles", F_OK) == 0;
 #if TARGET_ANDROID
     coop_zw_aus = coop_zw_words = 0;
-    coop_hh_rps_sps = 0;
+    coop_rps_sps = 0;
 #endif
     coop_hh_tiled_ok = false;
     coop_hh_untiled_blocked = 0;
@@ -3824,9 +3828,9 @@ void vdec_delegate_cleanup() {
             fprintf(diag_log, "[COOP] cabac_zero_words removed before a slice: %u pictures, %u words\n",
                     coop_zw_aus, coop_zw_words);
         }
-        if (coop_hh_rps_sps > 0) {
+        if (coop_rps_sps > 0) {
             fprintf(diag_log, "[COOP] peer IDRs converted to point at the SPS reference set: %u\n",
-                    coop_hh_rps_sps);
+                    coop_rps_sps);
         }
 #endif
 
@@ -4655,8 +4659,15 @@ int vdec_delegate_submit(PDECODE_UNIT decodeUnit) {
                                  * our one-entry RPS is silently DROPPED WHOLE by D3D11VA and NVDEC
                                  * (frame 2 == frame 1 in both tiles); with this RPS it decodes as
                                  * software does. It did NOT fix the peer pane on its own. */
-                                size_t cn = coop_slice_idr_to_trail_keepref(walkp, nal, nlen, 0,
-                                                                    coop_conv_buf, coop_conv_cap);
+                                size_t cn = 0;
+#if TARGET_ANDROID
+                                cn = coop_peer_idr_to_trail_sps(&coop_vt_src, vt_mine, vt_mine_len,
+                                                                walkp, nal, nlen);
+#endif
+                                if (cn == 0) {
+                                    cn = coop_slice_idr_to_trail_keepref(walkp, nal, nlen, 0,
+                                                                         coop_conv_buf, coop_conv_cap);
+                                }
 #else
                                 size_t cn = coop_slice_idr_to_trail(walkp, nal, nlen, 0,
                                                                     coop_conv_buf, coop_conv_cap);
@@ -5561,8 +5572,8 @@ int vdec_delegate_submit(PDECODE_UNIT decodeUnit) {
                      * measured when its keepref swap turned the TV BLACK on 2026-08-16. */
                     size_t cn = 0;
 #if TARGET_ANDROID
-                    cn = coop_hh_peer_idr_to_trail_sps(mine.slice[0], mine.slice_len[0],
-                                                       peer.slice[0], peer.slice_len[0]);
+                    cn = coop_peer_idr_to_trail_sps(&coop_hh_src, mine.slice[0], mine.slice_len[0],
+                                                    &coop_hh_peer_params, peer.slice[0], peer.slice_len[0]);
 #endif
                     if (cn == 0 && coop_conv_buf != NULL) {
                         cn = coop_slice_idr_to_trail_keepref(&coop_hh_peer_params, peer.slice[0],
