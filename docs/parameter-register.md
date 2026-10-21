@@ -1447,6 +1447,7 @@ measured runtime results**. Resolve implementation changes against these observa
 | `COOP_AUDIO_MAX_FRAMES` | `960` | 7 | SRC | `src/app/stream/audio/coop_audio.c:42` |
 | `COOP_AUDIO_RING_FRAMES` | `24000` | 7 | SRC | `src/app/stream/audio/coop_audio.c:47` |
 | `COOP_AUDIO_DEFAULT_DEPTH_MS` | `40` | 2 | SRC | `src/app/stream/audio/coop_audio.c:64` |
+| `COOP_AUDIO_PULL_AHEAD_BLOCKS` | `3` | 2 | SRC | `src/app/stream/audio/coop_audio.c:coop_audio_output_open_pull` -- Android only: 5 ms blocks the produced-ahead worker keeps mixed for the device (coop_audio_pull_set_ahead), with the source trim at ring_max_frames -> ring_prime_frames (COOP_AUDIO_DEFAULT_DEPTH_MS + 80 -> its value). PROOF it applied: `[COOP-AUD.pull] worker-rendered ... ahead_frames=720` at stream start; `device_short` / `self_trimmed` / `peer_trimmed` on every `[COOP-AUD.pull]` line count what it did. |
 | `COOP_AUDIO_DEDUPE_MAX_LAG_MS` | `400` | 1 | SRC | `src/app/stream/audio/coop_audio.c:95` |
 | `COOP_AUDIO_GATE_MAX_LAG_MS` | `1000` | 1 | SRC | `src/app/stream/audio/coop_audio.c:102` |
 | `COOP_GATE_MAX_LAGS` | `10` | 1 | SRC | `src/app/stream/audio/coop_audio_gate.h:35` |

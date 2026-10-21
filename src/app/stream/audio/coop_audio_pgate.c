@@ -14,6 +14,21 @@ static double pg_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, 
 
 #define PG_PI 3.14159265358979323846
 #define NB COOP_PGATE_BANDS
+
+/* lrintf without its cost on 32-bit ARM Android: bionic saves and restores the floating-point environment around every
+ * call there, and the gate rounds every sample it hands back -- 16% of its cycles on the SHIELD TV (simpleperf,
+ * 2026-10-22). Adding and removing 1.5 * 2^23 rounds exactly as lrintf does in the default rounding mode for
+ * |v| < 2^22 (checked against lrintf: every float within +-40000 on x86, 42 M sampled on the SHIELD); the callers clamp
+ * to int16, so the wider range only needs to stay out of it. Android only, like every SHIELD fix. */
+static inline long pg_lrintf(float v) {
+#if TARGET_ANDROID && defined(__arm__)
+    if (v > 4194303.0f) return 4194303;
+    if (v < -4194303.0f) return -4194303;
+    return (long) ((v + 12582912.0f) - 12582912.0f);
+#else
+    return lrintf(v);
+#endif
+}
 #define PG_BLOCK_MS 5
 static const double PG_XOVER_HZ[COOP_PGATE_XOVERS] = {250.0, 600.0, 1500.0, 3500.0, 8000.0};
 /* window (ms) and stride (samples) per band. A narrow band holds few independent samples in a short window (about
@@ -1751,7 +1766,7 @@ void coop_pgate_process(coop_pgate_t *g, int16_t *self, int16_t *peer, int frame
                 if (t >= lat) {
                     v = g->out[s][((t - lat) & g->omask) * (unsigned) ch + (unsigned) c];
                 }
-                const long r = lrintf(v);
+                const long r = pg_lrintf(v);
                 io[s][i * ch + c] = (int16_t) (r > 32767 ? 32767 : (r < -32768 ? -32768 : r));
             }
         }
@@ -1779,7 +1794,7 @@ bool coop_pgate_process_ready_block_valid(coop_pgate_t *g, int16_t *self, int16_
         for (int stream = 0; stream < 2; ++stream) {
             for (int c = 0; c < g->ch; ++c) {
                 const float v = g->out[stream][((start + (unsigned) i) & g->omask) * (unsigned) g->ch + (unsigned) c];
-                const long value = lrintf(v);
+                const long value = pg_lrintf(v);
                 io[stream][i * g->ch + c] = (int16_t) (value > 32767 ? 32767 : (value < -32768 ? -32768 : value));
             }
         }

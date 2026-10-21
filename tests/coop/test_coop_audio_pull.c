@@ -184,12 +184,64 @@ static void post_dsp_clock(void) {
     finish(&p,&c);
 }
 
+/* Produced ahead (Android): the worker mixes blocks into the ready ring, the callback only copies them out. */
+static void produced_ahead(void) {
+    context c={0}; coop_audio_pull_t p; int16_t out[480*CHANNELS];
+    assert(coop_audio_pull_init(&p,CHANNELS,BLOCK,TOTAL,mix,observe,&c));
+    assert(coop_audio_pull_set_ahead(&p,3*BLOCK,TOTAL,BLOCK));
+    assert(!coop_audio_pull_set_ahead(&p,3*BLOCK,TOTAL,BLOCK)); /* once */
+    push(&p,0,0,3*BLOCK,1000,1,0); push(&p,1,0,3*BLOCK,1000,1,0);
+    for(unsigned i=0;i<3;++i)expect(&c,3,0);
+    assert(coop_audio_pull_produce(&p,2000)==3);
+    assert(coop_audio_spsc_count(&p.ready)==3*BLOCK && c.mixed==3);
+    assert(coop_audio_pull_produce(&p,2100)==0);            /* full: nothing more */
+    assert(p.stats.consumed[0]==3*BLOCK && p.stats.age_max_us[0]==1000);
+    /* The callback copies, mixes nothing, and is never short while the ring holds enough. */
+    assert(coop_audio_pull_render(&p,out,256,3000)==256 && c.mixed==3);
+    for(unsigned i=0;i<256;++i)for(unsigned ch=0;ch<CHANNELS;++ch)
+        assert(out[i*CHANNELS+ch]==signal(0,i,ch)+signal(1,i,ch));
+    assert(atomic_load(&p.device_frames)==256 && !atomic_load(&p.device_short));
+    /* Topped up as the device drains it; with the sources empty the new block is missing, so invalid. */
+    expect(&c,0,0);
+    assert(coop_audio_pull_produce(&p,4000)==1 && coop_audio_spsc_count(&p.ready)==3*BLOCK-256+BLOCK);
+    assert(p.stats.missing[0]==BLOCK && p.stats.output_frames==256);
+    /* Drained past what is ready: the rest is silence, counted short. */
+    const unsigned ready=coop_audio_spsc_count(&p.ready);
+    assert(coop_audio_pull_render(&p,out,480,5000)==480);
+    assert(coop_audio_pull_render(&p,out,480,5100)==480);
+    assert(atomic_load(&p.device_short)==960-ready);
+    for(unsigned i=ready>480?ready-480:0;i<480;++i)for(unsigned ch=0;ch<CHANNELS;++ch)assert(out[i*CHANNELS+ch]==0);
+    finish(&p,&c);
+}
+
+/* A queue grown past trim_above loses its oldest frames down to trim_to before the next block is mixed. */
+static void trims_backlog(void) {
+    context c={0}; coop_audio_pull_t p;
+    assert(coop_audio_pull_init(&p,CHANNELS,BLOCK,TOTAL,mix,observe,&c));
+    assert(coop_audio_pull_set_ahead(&p,BLOCK,600,BLOCK));
+    push(&p,0,0,1000,1000,1,0); push(&p,1,0,BLOCK,1000,1,0);
+    expect(&c,3,0);
+    assert(coop_audio_pull_produce(&p,2000)==1);
+    assert(p.stats.trimmed[0]==1000-BLOCK && !p.stats.trimmed[1]);
+    for(unsigned i=0;i<BLOCK;++i)for(unsigned ch=0;ch<CHANNELS;++ch)   /* the newest frames played */
+        assert(c.output[i*CHANNELS+ch]==signal(0,1000-BLOCK+i,ch)+signal(1,i,ch));
+    /* Within the limit nothing is cut; the later gap in the indices reads as a discontinuity. */
+    push(&p,0,2000,BLOCK,1000,1,0); push(&p,1,BLOCK,BLOCK,1000,1,0);
+    int16_t out[BLOCK*CHANNELS];
+    assert(coop_audio_pull_render(&p,out,BLOCK,3000)==BLOCK);
+    expect(&c,2,0);
+    assert(coop_audio_pull_produce(&p,3000)==1);
+    assert(p.stats.trimmed[0]==1000-BLOCK && p.stats.discontinuities[0]==1);
+    finish(&p,&c);
+}
+
 int main(void) {
+    produced_ahead(); trims_backlog();
     callback_quantum(127); callback_quantum(240); callback_quantum(480);
     for(unsigned role=0;role<2;++role) {
         independent_arrival(role); epoch_and_cached_age(role);
     }
     post_dsp_clock();
-    puts("pull: callback quanta, independent arrival, cached-tail age, PLC/index validity and epoch conservation PASS");
+    puts("pull: produced-ahead ring + backlog trim, callback quanta, independent arrival, cached-tail age, PLC/index validity and epoch conservation PASS");
     return 0;
 }

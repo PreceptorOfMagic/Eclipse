@@ -72,6 +72,11 @@ typedef struct {
  * in milliseconds in /tmp/coop-audio-depth and reconnect. */
 #define COOP_AUDIO_DEFAULT_DEPTH_MS 40
 
+/* Produced-ahead pull (Android): 5 ms blocks the worker keeps mixed for the device. 15 ms covers the worker's 1 ms poll,
+ * the scheduler, and a gate block's worst case (~3 ms at the SHIELD TV's full clock: 1.2 M cycles average, spikes to
+ * ~2.5x), and is the whole of the latency this mode adds. */
+#define COOP_AUDIO_PULL_AHEAD_BLOCKS 3
+
 /* Per-source gain in MIX mode. Two independent game mixes are each mastered to
  * use the whole scale, so summing them at unity would sit on the limiter and
  * pump. -2.5 dB each keeps the sum near full scale on real material and leaves
@@ -1298,22 +1303,33 @@ static void pull_mix(void *ctx,int16_t *self,int16_t *peer,int16_t *out,
     const int policy=SDL_AtomicGet(&pull_policy);
     listen_mode=policy&3; dedupe_on=(policy&4)!=0; gate_on=(policy&8)!=0;
     if(new_epoch && gate)coop_pgate_reset(gate);
-    mix_blocks(self,peer,(int)frames,true,valid);
+    /* Rendered on the device thread, a block must come back at once, so the gate runs its ready-block API, which is
+     * Fast whatever was asked. Produced ahead (Android) the worker may hold audio back, so it runs the push path's
+     * streaming gate instead: the quality the user chose -- Accurate, 40 ms look-ahead by default -- exactly as the TV
+     * hears it, both sources delayed alike. */
+    mix_blocks(self,peer,(int)frames,!pull_owner.ahead,valid);
     memcpy(out,self,(size_t)frames*coord_channels*sizeof(int16_t));
 }
 
-static unsigned pull_render(void *ctx,int16_t *pcm,unsigned frames,uint64_t begin_us) {
-    (void)ctx;
-    unsigned done=coop_audio_pull_render(&pull_owner,pcm,frames,begin_us);
+/* The stats record for the service thread. Published by whichever thread renders: the device callback, or in
+ * produced-ahead mode the worker (the record ring has one producer). */
+static void pull_publish(void) {
     unsigned next; pull_record_t *r=pull_record_begin(&next);
     if(r) {
         r->frames=0; r->stats=pull_owner.stats; r->dropped=pull_dropped;
         for(unsigned s=0;s<2;++s) {
             r->depth[s]=coop_audio_spsc_count(&pull_owner.source[s]);
-            if(pull_owner.real[s]>pull_owner.offset)r->depth[s]+=pull_owner.real[s]-pull_owner.offset;
+            if(!pull_owner.ahead && pull_owner.real[s]>pull_owner.offset)
+                r->depth[s]+=pull_owner.real[s]-pull_owner.offset;
         }
         atomic_store_explicit(&pull_write,next,memory_order_release);
     }
+}
+
+static unsigned pull_render(void *ctx,int16_t *pcm,unsigned frames,uint64_t begin_us) {
+    (void)ctx;
+    unsigned done=coop_audio_pull_render(&pull_owner,pcm,frames,begin_us);
+    if(!pull_owner.ahead)pull_publish();
     return done;
 }
 
@@ -1344,7 +1360,8 @@ static void pull_log(const coop_audio_pull_stats_t *st,const unsigned depth[2],u
     coop_audio_log("[COOP-AUD.pull] final=%d output_frames=%llu self_accepted=%llu self_consumed=%llu self_queued=%u self_rejected=%llu "
         "peer_accepted=%llu peer_consumed=%llu peer_queued=%u self_missing=%llu peer_missing=%llu "
         "self_timed=%llu peer_timed=%llu self_untimed=%llu peer_untimed=%llu self_age_max_us=%llu peer_age_max_us=%llu "
-        "self_plc=%llu peer_plc=%llu self_gaps=%llu peer_gaps=%llu diagnostic_dropped=%llu",
+        "self_plc=%llu peer_plc=%llu self_gaps=%llu peer_gaps=%llu diagnostic_dropped=%llu "
+        "self_trimmed=%llu peer_trimmed=%llu device_short=%llu",
         final, (unsigned long long)st->output_frames,
         atomic_load_explicit(&pull_self_accepted,memory_order_relaxed),
         (unsigned long long)st->consumed[0],depth[0],
@@ -1356,7 +1373,8 @@ static void pull_log(const coop_audio_pull_stats_t *st,const unsigned depth[2],u
         (unsigned long long)st->age_max_us[0],(unsigned long long)st->age_max_us[1],
         (unsigned long long)st->concealed[0],(unsigned long long)st->concealed[1],
         (unsigned long long)st->discontinuities[0],(unsigned long long)st->discontinuities[1],
-        (unsigned long long)dropped);
+        (unsigned long long)dropped,
+        (unsigned long long)st->trimmed[0],(unsigned long long)st->trimmed[1],(unsigned long long)st->device_short);
 }
 
 static void pull_drain_records(void) {
@@ -1416,6 +1434,17 @@ bool coop_audio_output_open_pull(SS4S_Player *player,const SS4S_AudioInfo *info)
     if(!coop_audio_pull_init(&pull_owner,(unsigned)coord_channels,output_block_frames,
         COOP_AUDIO_RING_FRAMES,pull_mix,pull_observe,NULL))return false;
     pull_owner.now_us=pull_time;
+#if TARGET_ANDROID
+    /* THE SHIELD TV MIXES AHEAD OF ITS DEVICE (coop_audio_pull_set_ahead). Mixed and gated inside the AAudio callback,
+     * 9% of callbacks overran their own 5.3 ms (render up to 27 ms) and each overrun's silence stayed behind as
+     * backlog: both queues grew ~5 ms/s to their 500 ms cap, then the primary's audio was thrown away in 5 ms pieces
+     * (live, 2026-10-21). A worker now renders COOP_AUDIO_PULL_AHEAD_BLOCKS ahead and the callback only copies; a source
+     * queue past ring_max_frames is cut back to ring_prime_frames, the push path's depth policy. Android only. */
+    if(!coop_audio_pull_set_ahead(&pull_owner,COOP_AUDIO_PULL_AHEAD_BLOCKS*output_block_frames,
+                                  ring_max_frames,ring_prime_frames)) {
+        coop_audio_pull_destroy(&pull_owner); return false;
+    }
+#endif
     pull_records=calloc(PULL_RECORDS,sizeof(*pull_records));
     if(!pull_records) { coop_audio_pull_destroy(&pull_owner); return false; }
     pull_capture=dump_self!=NULL; pull_capture_next=pull_dropped=0;
@@ -1424,6 +1453,7 @@ bool coop_audio_output_open_pull(SS4S_Player *player,const SS4S_AudioInfo *info)
     output_player=player; output_pull=output_clocked=true; pull_device_opened=false;
     coop_audio_refresh_mode(); /* control I/O completes before device starts */
     SDL_AtomicSet(&output_run,1);
+    coop_audio_pull_produce(&pull_owner,audio_time_us());   /* produced-ahead: the device starts on a full ring */
     if(SS4S_PlayerAudioOpenPull(player,info,pull_render,NULL)!=SS4S_AUDIO_OPEN_OK) {
         coop_audio_output_stop(); return false;
     }
@@ -1432,7 +1462,13 @@ bool coop_audio_output_open_pull(SS4S_Player *player,const SS4S_AudioInfo *info)
     if(!output_thread) { coop_audio_output_stop(); return false; }
     pull_service_thread=SDL_CreateThread(pull_service_main,"coop-audio-service",NULL);
     if(!pull_service_thread) { coop_audio_output_stop(); return false; }
-    coop_audio_log("[COOP-AUD.pull] callback-owned block_frames=%u rate=%d channels=%d",output_block_frames,coord_rate,coord_channels);
+    if(pull_owner.ahead)
+        coop_audio_log("[COOP-AUD.pull] worker-rendered block_frames=%u ahead_frames=%u trim_above=%u trim_to=%u rate=%d channels=%d "
+                       "gate=%s look-ahead=%d ms (streaming, as the push path)",
+                       output_block_frames,pull_owner.ahead,pull_owner.trim_above,pull_owner.trim_to,coord_rate,coord_channels,
+                       gate_accurate ? "accurate" : "fast",gate_accurate ? gate_ahead_ms : 0);
+    else
+        coop_audio_log("[COOP-AUD.pull] callback-owned block_frames=%u rate=%d channels=%d",output_block_frames,coord_rate,coord_channels);
     return true;
 }
 
@@ -1440,10 +1476,13 @@ bool coop_audio_output_open_pull(SS4S_Player *player,const SS4S_AudioInfo *info)
 static int output_main(void *unused) {
     (void)unused;
     uint64_t next_report = (unsigned)coord_rate * 5u;
+    /* Produced-ahead, this thread carries the mix and the gate the device is waiting for. */
+    if(output_pull && pull_owner.ahead) SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
     while (SDL_AtomicGet(&output_run)) {
         coop_audio_accept();
         coop_audio_drain();
         if(output_pull) {
+            if(pull_owner.ahead && coop_audio_pull_produce(&pull_owner,audio_time_us())) pull_publish();
             SDL_Delay(1);
             continue;
         }
@@ -1534,7 +1573,11 @@ void coop_audio_output_stop(void) {
         unsigned depth[2];
         for(unsigned s=0;s<2;++s) {
             depth[s]=coop_audio_spsc_count(&pull_owner.source[s]);
-            if(pull_owner.real[s]>pull_owner.offset)depth[s]+=pull_owner.real[s]-pull_owner.offset;
+            if(!pull_owner.ahead && pull_owner.real[s]>pull_owner.offset)depth[s]+=pull_owner.real[s]-pull_owner.offset;
+        }
+        if(pull_owner.ahead) {   /* the device's own counters, as of its last callback */
+            pull_owner.stats.output_frames=atomic_load(&pull_owner.device_frames);
+            pull_owner.stats.device_short=atomic_load(&pull_owner.device_short);
         }
         pull_log(&pull_owner.stats,depth,pull_dropped,true);
         timing_consumed_frames=pull_owner.stats.consumed[1];
