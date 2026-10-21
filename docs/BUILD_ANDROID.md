@@ -105,8 +105,9 @@ Android: **View + Start shows the TV's home screen**, acted on when both are let
 
 **Hold Start for the shortcut wheel**, on every platform and any controller (the combinations above need buttons
 some controllers lack). After 0.75 s a wheel shows; push either stick or the d-pad towards **Menu** (up), **Mouse**
-(right), **Keyboard** (down) or **Performance** (left). With a stick, letting go of Start chooses; with the d-pad,
-letting go of the d-pad does; the choice happens once the controller is let go. A short press of Start is Start, and
+(right), **Keyboard** (down) or **Performance** (left). With a stick, letting go of Start chooses -- the stick can go back
+to the middle first, the highlighted option stays until it is pushed towards another; with the d-pad, letting go of the
+d-pad does; the choice happens once the controller is let go. A short press of Start is Start, and
 the controller keeps playing while the wheel only shows: the PC stops seeing it from the first push towards a choice
 until it is let go. Letting go of Start without pushing anything closes the wheel. This is the Start gesture of
 Moonlight V+. **Settings > Input > Controller shortcuts** turns the combinations, the wheel, or both off.

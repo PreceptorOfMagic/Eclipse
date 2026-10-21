@@ -203,6 +203,13 @@ static void choose(start_wheel_t *wheel, const start_wheel_pad_t *pad, start_whe
         return;
     }
     wheel->source = resolve_source(wheel, lx, ly, rx, ry, dx, dy);
+    if (wheel->source == SOURCE_NONE) {
+        /* A stick let back to the middle keeps its choice while Start is held (user, 2026-10-22: "the option selected
+         * stay highlighted until the user moves the stick again"); V+ went back to Continue here. */
+        wheel->candidate = START_WHEEL_CONTINUE;
+        wheel->candidate_events = 0;
+        return;
+    }
     float x = 0.0f, y = 0.0f;
     switch (wheel->source) {
         case SOURCE_DPAD:

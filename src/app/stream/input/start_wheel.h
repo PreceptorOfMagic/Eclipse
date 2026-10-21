@@ -15,9 +15,10 @@
  * at rest, once) and it stays taken until everything is let go. Letting go of Start without pushing anything just
  * closes the wheel.
  *
- * ONE CHANGE FROM V+: the chosen action runs once the controller is let go, not at the moment of choosing. The menu
+ * TWO CHANGES FROM V+: the chosen action runs once the controller is let go, not at the moment of choosing -- the menu
  * and the keyboard take the controller's buttons the moment they open, so a Start or d-pad still held would land in
- * them; Eclipse's button combos act on release for the same reason.
+ * them; Eclipse's button combos act on release for the same reason. And a stick let back to the middle keeps the option
+ * it chose highlighted until it is pushed towards another (user, 2026-10-22); in V+ the middle meant Continue.
  */
 
 #include <stdbool.h>
