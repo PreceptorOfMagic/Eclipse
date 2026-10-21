@@ -34,6 +34,17 @@ public final class TvKeysTest {
         expect(TvKeys.KEYCODE_INFO, 165, "KEYCODE_INFO");
         expect(TvKeys.KEYCODE_GUIDE, 172, "KEYCODE_GUIDE");
         expect(TvKeys.KEYCODE_MENU, 82, "KEYCODE_MENU");
+        /* The SHIELD TV turns a Switch Pro Controller's + into Play/Pause: from a controller it is that controller's
+         * Start, unless a real Start came first (then it is the copy); a remote's Play/Pause stays a media key. */
+        final int pp = TvKeys.KEYCODE_MEDIA_PLAY_PAUSE;
+        expect(TvKeys.controllerKey(pp, true, true, 10_000), TvKeys.CONTROLLER_KEY_AS_START, "controller Play/Pause = Start");
+        expect(TvKeys.controllerKey(pp, true, true, 5), TvKeys.CONTROLLER_KEY_DROP, "Play/Pause right after a real Start");
+        expect(TvKeys.controllerKey(pp, false, true, 10_000), TvKeys.CONTROLLER_KEY_KEEP, "a remote's Play/Pause");
+        expect(TvKeys.controllerKey(pp, true, false, 10_000), TvKeys.CONTROLLER_KEY_KEEP, "a controller with no Start");
+        expect(TvKeys.controllerKey(TvKeys.KEYCODE_BUTTON_START, true, true, 0), TvKeys.CONTROLLER_KEY_KEEP,
+               "a real Start passes");
+        expect(TvKeys.KEYCODE_MEDIA_PLAY_PAUSE, 85, "KEYCODE_MEDIA_PLAY_PAUSE");
+        expect(TvKeys.KEYCODE_BUTTON_START, 108, "KEYCODE_BUTTON_START");
         if (failures == 0) {
             System.out.println("TvKeys: OK");
         }

@@ -27,6 +27,22 @@ final class TvKeys {
     static final int KEYCODE_PROG_GREEN = 184;
     static final int KEYCODE_PROG_YELLOW = 185;
     static final int KEYCODE_PROG_BLUE = 186;
+    static final int KEYCODE_MEDIA_PLAY_PAUSE = 85;
+    static final int KEYCODE_BUTTON_START = 108;
+
+    /* THE SHIELD TV TURNS A SWITCH PRO CONTROLLER'S + INTO PLAY/PAUSE (EclipseActivity.controllerStart): what a
+     * controller's key becomes. A real Start this recently from the same controller makes the Play/Pause its copy. */
+    static final long START_TWIN_MS = 100;
+    static final int CONTROLLER_KEY_KEEP = 0;
+    static final int CONTROLLER_KEY_DROP = 1;
+    static final int CONTROLLER_KEY_AS_START = 2;
+
+    static int controllerKey(int keyCode, boolean fromController, boolean hasStart, long msSinceRealStart) {
+        if (!fromController || keyCode != KEYCODE_MEDIA_PLAY_PAUSE || !hasStart) {
+            return CONTROLLER_KEY_KEEP;
+        }
+        return msSinceRealStart < START_TWIN_MS ? CONTROLLER_KEY_DROP : CONTROLLER_KEY_AS_START;
+    }
 
     private TvKeys() {
     }

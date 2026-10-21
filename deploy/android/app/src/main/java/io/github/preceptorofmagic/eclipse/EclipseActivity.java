@@ -14,7 +14,9 @@ import android.media.MediaCodecList;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.Log;
+import android.util.SparseLongArray;
 import android.view.Display;
 import android.view.InputDevice;
 import android.view.KeyEvent;
@@ -292,8 +294,56 @@ public class EclipseActivity extends SDLActivity {
 
     /* --- remote keys ------------------------------------------------------------------------------------ */
 
+    /* THE SHIELD TV TURNS A SWITCH PRO CONTROLLER'S + INTO PLAY/PAUSE. Its window manager (handleComboKeys) logs
+     * BUTTON_START and then MEDIA_PLAY_PAUSE 5 ms later for every press, held or not; no kernel device sends a Play/Pause
+     * (getevent on all inputs), and an Xbox controller's Start is left alone (2026-10-22). So + never reached the stream
+     * or the Start wheel. A Play/Pause from a controller with a Start button is taken as that controller's Start; one
+     * that follows a real Start from the same controller within TvKeys.START_TWIN_MS is the copy and is dropped. */
+    private final SparseLongArray lastRealStart = new SparseLongArray();
+    private int keyLogLines;
+
+    /** @return the event to dispatch, or null to drop it. */
+    private KeyEvent controllerStart(KeyEvent event) {
+        final int code = event.getKeyCode();
+        final boolean controller = isControllerEvent(event);
+        if (keyLogLines < 60 && (controller || code == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)) {
+            keyLogLines++;
+            InputDevice device = event.getDevice();
+            Log.i(TAG, "controller key " + code + " action " + event.getAction() + " repeat " + event.getRepeatCount() +
+                    " device " + event.getDeviceId() + " (" + (device != null ? device.getName() : "none") + ") source 0x" +
+                    Integer.toHexString(event.getSource()));
+        }
+        final long now = SystemClock.uptimeMillis();
+        if (controller && code == KeyEvent.KEYCODE_BUTTON_START) {
+            lastRealStart.put(event.getDeviceId(), now);
+        }
+        InputDevice device = event.getDevice();
+        final boolean hasStart = device != null && device.hasKeys(KeyEvent.KEYCODE_BUTTON_START)[0];
+        switch (TvKeys.controllerKey(code, controller, hasStart,
+                now - lastRealStart.get(event.getDeviceId(), Long.MIN_VALUE / 2))) {
+            case TvKeys.CONTROLLER_KEY_DROP:
+                return null;
+            case TvKeys.CONTROLLER_KEY_AS_START:   /* the same event, Start's key code (changeKeyCode is not public API) */
+                return new KeyEvent(event.getDownTime(), event.getEventTime(), event.getAction(),
+                        KeyEvent.KEYCODE_BUTTON_START, event.getRepeatCount(), event.getMetaState(), event.getDeviceId(),
+                        event.getScanCode(), event.getFlags(), event.getSource());
+            default:
+                return event;
+        }
+    }
+
+    private static boolean isControllerEvent(KeyEvent event) {
+        int source = event.getSource();
+        return (source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                (source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
+    }
+
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        event = controllerStart(event);
+        if (event == null) {
+            return true;
+        }
         int tvKey = tvKeyFor(event);
         if (tvKey != 0) {
             int action = event.getAction();
