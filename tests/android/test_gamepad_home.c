@@ -10,6 +10,9 @@
  * does it: after GUIDE_HOLD_MS the host sees View let go, then Guide pressed and let go GUIDE_TAP_MS later, and View
  * stays let go until it is. The stream menu's Guide button taps Guide on the first controller. The LVGL timers are
  * fired by hand here, which is what LVGL does when their time is up.
+ *
+ * And the virtual mouse is told when its stick is let go and its trigger comes up, however fast -- from the controller
+ * that was driving it only (recorded by fake vmouse_set_vector / vmouse_set_trigger).
  */
 #include SESSION_GAMEPAD_SOURCE
 
@@ -44,9 +47,9 @@ int LiSendControllerTouchEvent(uint8_t n, uint8_t t, uint32_t p, float x, float 
     (void) n; (void) t; (void) p; (void) x; (void) y; (void) pr; return 0;
 }
 
-static app_gamepad_state_t pad;
+static app_gamepad_state_t pad, pad2;   /* pad2: a second controller, instance 2 */
 app_gamepad_state_t *app_input_gamepad_state_by_instance_id(app_input_t *input, SDL_JoystickID id) {
-    (void) input; (void) id; return &pad;
+    (void) input; return id == 2 ? &pad2 : &pad;
 }
 app_gamepad_state_t *app_input_gamepad_state_by_index(app_input_t *input, int index) {
     (void) input; (void) index; return &pad;
@@ -79,11 +82,20 @@ void coop_input_send_sensor(int gs_id, uint16_t mask, uint8_t type, uint32_t ts,
 void coop_input_send_touchpad(int gs_id, uint16_t mask, uint8_t type, uint32_t id, float x, float y, float p) {
     (void) gs_id; (void) mask; (void) type; (void) id; (void) x; (void) y; (void) p;
 }
-bool session_input_is_vmouse_active(session_input_vmouse_t *vmouse) { (void) vmouse; return false; }
+/* The virtual mouse as the stick and triggers drive it: what it was last told, and how often. */
+static bool vmouse_active;
+static short vm_x, vm_y;
+static int vm_vec_calls, vm_trig_calls;
+static char vm_l, vm_r;
+bool session_input_is_vmouse_active(session_input_vmouse_t *vmouse) { (void) vmouse; return vmouse_active; }
 void session_toggle_vmouse(session_t *session) { (void) session; }
 void vmouse_set_modifier(session_input_vmouse_t *vmouse, bool pressed) { (void) vmouse; (void) pressed; }
-void vmouse_set_trigger(session_input_vmouse_t *vmouse, char l, char r) { (void) vmouse; (void) l; (void) r; }
-void vmouse_set_vector(session_input_vmouse_t *vmouse, short x, short y) { (void) vmouse; (void) x; (void) y; }
+void vmouse_set_trigger(session_input_vmouse_t *vmouse, char l, char r) {
+    (void) vmouse; vm_l = l; vm_r = r; vm_trig_calls++;
+}
+void vmouse_set_vector(session_input_vmouse_t *vmouse, short x, short y) {
+    (void) vmouse; vm_x = x; vm_y = y; vm_vec_calls++;
+}
 
 static stream_input_t input;
 static app_input_t app_input;
@@ -102,6 +114,17 @@ static void stick(short value) {
     memset(&e, 0, sizeof(e));
     e.type = SDL_CONTROLLERAXISMOTION;
     e.axis = SDL_CONTROLLER_AXIS_LEFTX;
+    e.value = value;
+    stream_input_handle_caxis(&input, &e);
+}
+
+/** An axis of the controller with instance @p which: the right stick across, or a trigger. */
+static void axis(SDL_JoystickID which, SDL_GameControllerAxis a, short value) {
+    SDL_ControllerAxisEvent e;
+    memset(&e, 0, sizeof(e));
+    e.type = SDL_CONTROLLERAXISMOTION;
+    e.which = which;
+    e.axis = (Uint8) a;
     e.value = value;
     stream_input_handle_caxis(&input, &e);
 }
@@ -275,6 +298,39 @@ int main(void) {
     app.session = &session;
     button(SDL_CONTROLLER_BUTTON_BACK, false);
     sent_n = 0;
+
+    /* THE VIRTUAL MOUSE STOPS WHEN THE STICK IS LET GO, even when the stick springs back to the middle in one event
+     * (user, SHIELD, 2026-10-21: the pointer kept moving after the stick was let go). */
+    input.stick_deadzone = 7;
+    pad2.instance_id = 2;
+    vmouse_active = true;
+    vm_vec_calls = vm_trig_calls = 0;
+    axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 20000);
+    check("a pushed stick moves the virtual mouse", vm_vec_calls == 1 && vm_x == 20000);
+    axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 0);
+    check("let go in one event, the virtual mouse is told to stop", vm_vec_calls == 2 && vm_x == 0 && vm_y == 0);
+
+    /* Another controller's idle stick (jitter inside the deadzone) does not stop the pointer the first one moves. */
+    axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 20000);
+    const int calls = vm_vec_calls;
+    axis(2, SDL_CONTROLLER_AXIS_RIGHTX, 300);
+    check("another controller's idle stick leaves it moving", vm_vec_calls == calls && vm_x == 20000);
+    axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 0);
+    check("and the first one letting go still stops it", vm_x == 0);
+
+    /* A trigger that snaps up lets the mouse button go. */
+    axis(0, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 32767);
+    const int trig_calls = vm_trig_calls;
+    check("a pulled trigger reaches the virtual mouse", vm_r != 0);
+    axis(0, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 0);
+    check("a trigger snapping up lets the button go", vm_trig_calls == trig_calls + 1 && vm_r == 0 && vm_l == 0);
+
+    /* With the virtual mouse off, nothing reaches it. */
+    vmouse_active = false;
+    vm_vec_calls = 0;
+    axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 20000);
+    axis(0, SDL_CONTROLLER_AXIS_RIGHTX, 0);
+    check("virtual mouse off: the stick is the controller's own", vm_vec_calls == 0);
 
     printf("%s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
