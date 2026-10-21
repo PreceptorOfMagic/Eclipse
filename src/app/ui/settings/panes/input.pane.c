@@ -137,9 +137,10 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
                                             sizeof(controller_shortcuts_entries[0]),
                                             &app_configuration->controller_shortcuts, NULL);
     lv_obj_set_width(shortcuts, LV_PCT(100));
-    pref_desc_label(view, locstr("Start wheel: hold Start, push a stick or the d-pad towards Menu, Mouse, Keyboard "
-                                 "or Performance, and let go. It works on any controller. Button combos: "
-                                 "LB + RB + View + Start opens the stream menu, and the combos above."), false);
+    pref_desc_label(view, locstr("Start wheel: hold Start, point a stick or the d-pad at Menu, Mouse, Keyboard or "
+                                 "Performance (B goes back to the middle), and let go of Start. It works on any "
+                                 "controller. Button combos: LB + RB + View + Start opens the stream menu, and the "
+                                 "combos above."), false);
 
 #if FEATURE_INPUT_EVMOUSE
     hwmouse_state_update(pane);

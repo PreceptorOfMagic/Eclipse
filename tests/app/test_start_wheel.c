@@ -108,8 +108,16 @@ static void testDirections(void) {
     }
 }
 
-/* The d-pad chooses at once and when IT is let go, Start still held; the action waits for Start. */
-static void testDpadChoosesOnDpadRelease(void) {
+static void dpad(int flag) {
+    pad.buttons |= flag;
+    input();
+    pad.buttons &= ~flag;
+    input();
+}
+
+/* The d-pad moves the highlight a step per press and letting it go chooses nothing (user, 2026-10-22: it was
+ * "exiting instantly after clicking any direction"); the opposite direction goes back to the centre. */
+static void testDpadSteps(void) {
     hold_start();
     pad.buttons |= RIGHT_FLAG;
     start_wheel_update_t update = input();
@@ -118,13 +126,59 @@ static void testDpadChoosesOnDpadRelease(void) {
     TEST_ASSERT_EQUAL(START_WHEEL_MOUSE, wheel.selected);
     pad.buttons &= ~RIGHT_FLAG;
     update = input();
-    TEST_ASSERT_TRUE(update.hide);
+    TEST_ASSERT_FALSE(update.hide);
     TEST_ASSERT_TRUE(update.consume);
-    TEST_ASSERT_EQUAL(START_WHEEL_WAIT_RELEASE, wheel.state);
+    TEST_ASSERT_EQUAL(START_WHEEL_VISIBLE, wheel.state);
+    TEST_ASSERT_EQUAL(START_WHEEL_MOUSE, wheel.selected);
+    dpad(LEFT_FLAG);
+    TEST_ASSERT_EQUAL(START_WHEEL_CONTINUE, wheel.selected);
+    dpad(LEFT_FLAG);
+    TEST_ASSERT_EQUAL(START_WHEEL_PERFORMANCE, wheel.selected);
+    dpad(UP_FLAG);                          /* not the opposite: straight to that option */
+    TEST_ASSERT_EQUAL(START_WHEEL_MENU, wheel.selected);
+    pad.buttons = 0;                        /* Start let go: chooses */
+    update = input();
+    TEST_ASSERT_TRUE(update.hide);
+    TEST_ASSERT_EQUAL(START_WHEEL_MENU, update.run);
+}
+
+/* B takes the highlight back to Continue -- a way out of a wheel opened by accident -- and is not the game's. */
+static void testBackGoesToContinue(void) {
+    hold_start();
+    pad.rx = FULL;
+    input();
+    input();
+    TEST_ASSERT_EQUAL(START_WHEEL_MOUSE, wheel.selected);
+    pad.rx = 0;
+    input();
+    pad.buttons |= B_FLAG;
+    start_wheel_update_t update = input();
+    TEST_ASSERT_TRUE(update.consume);
+    TEST_ASSERT_EQUAL(START_WHEEL_CONTINUE, wheel.selected);
     pad.buttons = 0;
     update = input();
     TEST_ASSERT_TRUE(update.consume);
-    TEST_ASSERT_EQUAL(START_WHEEL_MOUSE, update.run);
+    TEST_ASSERT_EQUAL(START_WHEEL_CONTINUE, update.run);
+    TEST_ASSERT_EQUAL(START_WHEEL_IDLE, wheel.state);
+    /* B on a wheel nothing was pushed on yet: also the wheel's, not the game's. */
+    setUp();
+    hold_start();
+    pad.buttons |= B_FLAG;
+    update = input();
+    TEST_ASSERT_TRUE(update.neutral);
+    TEST_ASSERT_TRUE(update.consume);
+}
+
+/* What is held before the wheel shows is not a press on it. */
+static void testHeldBeforeShowIsNotAPress(void) {
+    pad.buttons = PLAY_FLAG;
+    start_wheel_start_down(&wheel, 1000);
+    pad.buttons |= RIGHT_FLAG;
+    input();                                /* the game's d-pad, while Start is only held */
+    start_wheel_hold_elapsed(&wheel, 1000 + START_WHEEL_HOLD_MS);
+    const start_wheel_update_t update = input();
+    TEST_ASSERT_FALSE(update.consume);
+    TEST_ASSERT_EQUAL(START_WHEEL_CONTINUE, wheel.selected);
 }
 
 /* Pushed, then back to the centre before letting go: the choice stays (user, 2026-10-22), and runs on release. */
@@ -199,7 +253,9 @@ int main(void) {
     RUN_TEST(testLookingOnly);
     RUN_TEST(testStickChoosesOnStartRelease);
     RUN_TEST(testDirections);
-    RUN_TEST(testDpadChoosesOnDpadRelease);
+    RUN_TEST(testDpadSteps);
+    RUN_TEST(testBackGoesToContinue);
+    RUN_TEST(testHeldBeforeShowIsNotAPress);
     RUN_TEST(testCentreKeepsChoice);
     RUN_TEST(testOtherDirectionChanges);
     RUN_TEST(testDirectionHolds);

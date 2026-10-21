@@ -7,10 +7,10 @@
  * flickering at its edge. */
 #define WHEEL_ENTER 0.65f
 #define WHEEL_EXIT 0.35f
+#define DPAD_FLAGS (UP_FLAG | DOWN_FLAG | LEFT_FLAG | RIGHT_FLAG)
 
 enum {
     SOURCE_NONE = 0,
-    SOURCE_DPAD,
     SOURCE_LEFT_STICK,
     SOURCE_RIGHT_STICK,
 };
@@ -50,6 +50,7 @@ void start_wheel_reset(start_wheel_t *wheel) {
     clear_gesture(wheel);
     wheel->state = START_WHEEL_IDLE;
     wheel->pending = START_WHEEL_CONTINUE;
+    wheel->held = 0;
 }
 
 bool start_wheel_consuming(const start_wheel_t *wheel) {
@@ -101,17 +102,8 @@ static void commit(start_wheel_t *wheel, const start_wheel_pad_t *pad, start_whe
     }
 }
 
-static void dpad_axis(int buttons, float *x, float *y) {
-    *x = (buttons & LEFT_FLAG) ? -1.0f : (buttons & RIGHT_FLAG) ? 1.0f : 0.0f;
-    *y = (buttons & UP_FLAG) ? -1.0f : (buttons & DOWN_FLAG) ? 1.0f : 0.0f;
-}
-
-/** Which control chooses: the d-pad when pressed, else the stick already choosing while it stays out, else the
- *  stick pushed further. */
-static int resolve_source(const start_wheel_t *wheel, float lx, float ly, float rx, float ry, float dx, float dy) {
-    if (dx != 0.0f || dy != 0.0f) {
-        return SOURCE_DPAD;
-    }
+/** Which stick chooses: the one already choosing while it stays out, else the one pushed further. */
+static int resolve_source(const start_wheel_t *wheel, float lx, float ly, float rx, float ry) {
     switch (wheel->source) {
         case SOURCE_RIGHT_STICK:
             if (active(rx, ry, WHEEL_EXIT)) {
@@ -121,11 +113,6 @@ static int resolve_source(const start_wheel_t *wheel, float lx, float ly, float 
         case SOURCE_LEFT_STICK:
             if (active(lx, ly, WHEEL_EXIT)) {
                 return SOURCE_LEFT_STICK;
-            }
-            break;
-        case SOURCE_DPAD:
-            if (!active(rx, ry, WHEEL_ENTER) && !active(lx, ly, WHEEL_ENTER)) {
-                return SOURCE_DPAD;
             }
             break;
         default:
@@ -167,9 +154,9 @@ static start_wheel_action_t action_for_axis(const start_wheel_t *wheel, float x,
     return y <= -WHEEL_ENTER ? START_WHEEL_MENU : y >= WHEEL_ENTER ? START_WHEEL_KEYBOARD : START_WHEEL_CONTINUE;
 }
 
-/** A stick's new direction counts once it has held for two events (V+: two frames); the d-pad's at once. */
-static start_wheel_action_t stabilize(start_wheel_t *wheel, start_wheel_action_t candidate, bool immediate) {
-    if (candidate == wheel->selected || immediate) {
+/** A stick's new direction counts once it has held for two events (V+: two frames). */
+static start_wheel_action_t stabilize(start_wheel_t *wheel, start_wheel_action_t candidate) {
+    if (candidate == wheel->selected) {
         wheel->candidate = START_WHEEL_CONTINUE;
         wheel->candidate_events = 0;
         return candidate;
@@ -187,44 +174,62 @@ static start_wheel_action_t stabilize(start_wheel_t *wheel, start_wheel_action_t
     return wheel->selected;
 }
 
+static start_wheel_action_t opposite(start_wheel_action_t action) {
+    switch (action) {
+        case START_WHEEL_MENU:
+            return START_WHEEL_KEYBOARD;
+        case START_WHEEL_KEYBOARD:
+            return START_WHEEL_MENU;
+        case START_WHEEL_MOUSE:
+            return START_WHEEL_PERFORMANCE;
+        case START_WHEEL_PERFORMANCE:
+            return START_WHEEL_MOUSE;
+        default:
+            return START_WHEEL_CONTINUE;
+    }
+}
+
+/** One d-pad press moves the highlight a step: from the centre to that option, from an option back to the centre
+ *  when it points the other way, else to the option it points at. */
+static start_wheel_action_t dpad_step(start_wheel_action_t from, int press) {
+    const start_wheel_action_t to = (press & UP_FLAG) ? START_WHEEL_MENU
+                                    : (press & RIGHT_FLAG) ? START_WHEEL_MOUSE
+                                    : (press & DOWN_FLAG) ? START_WHEEL_KEYBOARD
+                                    : START_WHEEL_PERFORMANCE;
+    return from != START_WHEEL_CONTINUE && to == opposite(from) ? START_WHEEL_CONTINUE : to;
+}
+
 static void choose(start_wheel_t *wheel, const start_wheel_pad_t *pad, start_wheel_update_t *update) {
     /* Wheel axes are y DOWN, as on screen; the host's sticks are y UP. */
     const float lx = axis(pad->lx), ly = -axis(pad->ly), rx = axis(pad->rx), ry = -axis(pad->ry);
-    float dx, dy;
-    dpad_axis(pad->buttons, &dx, &dy);
-    if (!wheel->captured &&
-        (dx != 0.0f || dy != 0.0f || active(lx, ly, WHEEL_ENTER) || active(rx, ry, WHEEL_ENTER))) {
+    const int presses = pad->buttons & ~wheel->held;
+    wheel->held = pad->buttons;
+    const int dpad = presses & DPAD_FLAGS;
+    const bool back = (presses & B_FLAG) != 0;
+    if (!wheel->captured && (dpad || back || active(lx, ly, WHEEL_ENTER) || active(rx, ry, WHEEL_ENTER))) {
         wheel->captured = true;
         update->neutral = true;
     }
-    /* The d-pad chooses when it is let go. */
-    if (wheel->source == SOURCE_DPAD && dx == 0.0f && dy == 0.0f && wheel->selected != START_WHEEL_CONTINUE) {
-        commit(wheel, pad, update);
-        return;
+    start_wheel_action_t next = wheel->selected;
+    if (back) {
+        next = START_WHEEL_CONTINUE;
+    } else if (dpad) {
+        next = dpad_step(wheel->selected, dpad);
+    } else {
+        wheel->source = resolve_source(wheel, lx, ly, rx, ry);
+        if (wheel->source == SOURCE_NONE) {
+            /* A stick let back to the middle keeps its choice while Start is held (user, 2026-10-22). */
+            wheel->candidate = START_WHEEL_CONTINUE;
+            wheel->candidate_events = 0;
+            return;
+        }
+        const bool right = wheel->source == SOURCE_RIGHT_STICK;
+        next = stabilize(wheel, action_for_axis(wheel, right ? rx : lx, right ? ry : ly));
     }
-    wheel->source = resolve_source(wheel, lx, ly, rx, ry, dx, dy);
-    if (wheel->source == SOURCE_NONE) {
-        /* A stick let back to the middle keeps its choice while Start is held (user, 2026-10-22: "the option selected
-         * stay highlighted until the user moves the stick again"); V+ went back to Continue here. */
+    if (back || dpad) {
         wheel->candidate = START_WHEEL_CONTINUE;
         wheel->candidate_events = 0;
-        return;
     }
-    float x = 0.0f, y = 0.0f;
-    switch (wheel->source) {
-        case SOURCE_DPAD:
-            x = dx, y = dy;
-            break;
-        case SOURCE_LEFT_STICK:
-            x = lx, y = ly;
-            break;
-        case SOURCE_RIGHT_STICK:
-            x = rx, y = ry;
-            break;
-        default:
-            break;
-    }
-    const start_wheel_action_t next = stabilize(wheel, action_for_axis(wheel, x, y), wheel->source == SOURCE_DPAD);
     if (next != wheel->selected) {
         wheel->selected = next;
         update->changed = true;
@@ -240,6 +245,8 @@ start_wheel_update_t start_wheel_input(start_wheel_t *wheel, const start_wheel_p
             if (!start) {
                 /* A tap: Start was the host's, as any button. */
                 start_wheel_reset(wheel);
+            } else {
+                wheel->held = pad->buttons;   /* what is down before the wheel shows is not a press on it */
             }
             break;
         case START_WHEEL_VISIBLE:
