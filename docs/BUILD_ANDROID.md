@@ -104,13 +104,14 @@ LB + right stick click for the virtual mouse, RB + right stick click for the on-
 Android: **View + Start shows the TV's home screen**, acted on when both are let go; the PC sees neither button.
 
 **Hold Start for the shortcut wheel**, on every platform and any controller (the combinations above need buttons
-some controllers lack). After 0.75 s a wheel shows; push either stick or the d-pad towards **Menu** (up), **Mouse**
-(right), **Keyboard** (down) or **Performance** (left). With a stick, letting go of Start chooses -- the stick can go back
-to the middle first, the highlighted option stays until it is pushed towards another; with the d-pad, letting go of the
-d-pad does; the choice happens once the controller is let go. A short press of Start is Start, and
-the controller keeps playing while the wheel only shows: the PC stops seeing it from the first push towards a choice
-until it is let go. Letting go of Start without pushing anything closes the wheel. This is the Start gesture of
-Moonlight V+. **Settings > Input > Controller shortcuts** turns the combinations, the wheel, or both off.
+some controllers lack). After 0.75 s a wheel shows; point either stick or the d-pad at **Menu** (up), **Mouse** (right),
+**Keyboard** (down) or **Performance** (left), and let go of Start to choose what is highlighted. A stick can go back to
+the middle -- the highlight stays until it points at another option; each d-pad press moves the highlight one step,
+and the opposite direction goes back to the middle (**Continue**, which does nothing); **B** goes back to the middle
+too. The choice happens once the controller is let go. A short press of Start is Start, and the controller keeps
+playing while the wheel only shows: the PC stops seeing it from the first push towards a choice until it is let go.
+Letting go of Start without pushing anything closes the wheel. This is the Start gesture of Moonlight V+.
+**Settings > Input > Controller shortcuts** turns the combinations, the wheel, or both off.
 
 A controller's Guide (Xbox) button goes to the PC, as on a PC, wherever Android delivers it. The SHIELD TV does
 not: its system package `com.nvidia.shieldtech.hooks` turns the Guide button into Home before any app sees it, and

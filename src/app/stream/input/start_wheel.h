@@ -7,18 +7,21 @@
  * WHY: the button combos need buttons not every controller has (View, stick clicks), and they failed on a Switch Pro
  * Controller on the SHIELD (user, 2026-10-21: "this needs to work with any controller a user connects"). Every
  * controller has Start. Hold it START_WHEEL_HOLD_MS and a wheel appears: push a stick or the d-pad towards Menu (up),
- * Mouse (right), Keyboard (down) or Performance (left). With a stick, letting go of Start chooses; with the d-pad,
- * letting go of the d-pad does.
+ * Mouse (right), Keyboard (down) or Performance (left), and let go of Start to choose what is highlighted.
  *
  * WHAT THE HOST SEES, as in V+: Start is passed on at once, so a short press is an ordinary Start. Until a direction is
- * pushed the wheel only shows and the controller still plays; the first push takes the controller (the host is sent it
- * at rest, once) and it stays taken until everything is let go. Letting go of Start without pushing anything just
- * closes the wheel.
+ * pushed (or B) the wheel only shows and the controller still plays; the first push takes the controller (the host is
+ * sent it at rest, once) and it stays taken until everything is let go. Letting go of Start without pushing anything
+ * just closes the wheel.
  *
- * TWO CHANGES FROM V+: the chosen action runs once the controller is let go, not at the moment of choosing -- the menu
- * and the keyboard take the controller's buttons the moment they open, so a Start or d-pad still held would land in
- * them; Eclipse's button combos act on release for the same reason. And a stick let back to the middle keeps the option
- * it chose highlighted until it is pushed towards another (user, 2026-10-22); in V+ the middle meant Continue.
+ * CHANGES FROM V+ (user, 2026-10-22, after trying it). The chosen action runs once the controller is let go, not at the
+ * moment of choosing -- the menu and the keyboard take the controller's buttons the moment they open, so a Start or
+ * d-pad still held would land in them; Eclipse's button combos act on release for the same reason. A stick let back to
+ * the middle keeps the option it chose highlighted until it is pushed towards another (in V+ the middle meant
+ * Continue). The d-pad moves the highlight a step per press instead of choosing when let go ("exiting instantly after
+ * clicking any direction"): from the centre to that option, from an option back to the centre with the opposite
+ * direction. B takes the highlight back to Continue, so a wheel opened by accident can be left. Only Start's release
+ * chooses.
  */
 
 #include <stdbool.h>
@@ -51,6 +54,7 @@ typedef struct start_wheel_t {
     int candidate_events;
     bool captured;                  /* a direction was pushed: the controller is the wheel's */
     start_wheel_action_t pending;   /* chosen, to run once the controller is let go */
+    int held;                       /* buttons down at the last input: a d-pad or B press is a new one */
 } start_wheel_t;
 
 /** The controller as the wheel reads it: Limelight's *_FLAG buttons, and the sticks as sent to the host
