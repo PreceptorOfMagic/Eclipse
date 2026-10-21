@@ -311,7 +311,8 @@ public class EclipseActivity extends SDLActivity {
             InputDevice device = event.getDevice();
             Log.i(TAG, "controller key " + code + " action " + event.getAction() + " repeat " + event.getRepeatCount() +
                     " device " + event.getDeviceId() + " (" + (device != null ? device.getName() : "none") + ") source 0x" +
-                    Integer.toHexString(event.getSource()));
+                    Integer.toHexString(event.getSource()) + " sdl_joystick " +
+                    SDLControllerManager.isDeviceSDLJoystick(event.getDeviceId()));
         }
         final long now = SystemClock.uptimeMillis();
         if (controller && code == KeyEvent.KEYCODE_BUTTON_START) {

@@ -102,6 +102,19 @@ static bool stream_input_moonlight_gamepad_enabled(const stream_input_t *input) 
 
 void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButtonEvent *event) {
     app_gamepad_state_t *gamepad = app_input_gamepad_state_by_instance_id(input->input, event->which);
+#if TARGET_ANDROID
+    /* START, VIEW AND GUIDE AS THE STREAM SEES THEM, per controller. A Switch Pro Controller's + reached the app as
+     * BUTTON_START on the SHIELD TV and still opened no Start wheel (2026-10-22); these lines say whether it ever
+     * arrived here as a controller button, and from a controller Eclipse knows. Rare buttons, so always on. */
+    if (event->button == SDL_CONTROLLER_BUTTON_START || event->button == SDL_CONTROLLER_BUTTON_BACK ||
+        event->button == SDL_CONTROLLER_BUTTON_GUIDE || gamepad == NULL) {
+        commons_log_info("Input", "Controller %s%d%s: %s %s", gamepad != NULL ? "#" : "instance ",
+                         gamepad != NULL ? gamepad->gs_id : (int) event->which,
+                         gamepad != NULL ? "" : " (no state for it)",
+                         SDL_GameControllerGetStringForButton((SDL_GameControllerButton) event->button),
+                         event->type == SDL_CONTROLLERBUTTONDOWN ? "down" : "up");
+    }
+#endif
     if (gamepad == NULL) {
         return;
     }
