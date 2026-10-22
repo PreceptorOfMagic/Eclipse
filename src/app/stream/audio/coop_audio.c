@@ -77,6 +77,20 @@ typedef struct {
  * ~2.5x), and is the whole of the latency this mode adds. */
 #define COOP_AUDIO_PULL_AHEAD_BLOCKS 3
 
+#if TARGET_ANDROID
+#include <sys/resource.h>
+#include <sys/syscall.h>
+/* Android: the nice value of the threads co-op audio waits on -- the primary's ingress worker (it takes the peer's
+ * audio, acknowledges it, and mixes and gates both for the device) and the secondary's sender: Android's value for an
+ * audio thread (THREAD_PRIORITY_AUDIO, which SDLAudioManager gives its own). SDL_SetThreadPriority cannot raise them:
+ * SDL 2.32.10 leaves __LINUX__ undefined on Android, so it only re-sets SCHED_OTHER at priority 0. Measured on a
+ * SHIELD TV co-op mission (2026-10-22): for 4.5 minutes the worker fell behind -- the device played silence for what
+ * it had not mixed, the peer's audio waited 140-220 ms for its acknowledgement instead of ~25, and a burst of
+ * background app starts cost 0.94 s of it -- while the video and the peer's network ran steady. Whether this value
+ * cures that is for the next run to show: [COOP-AUD.priority] logs the value each thread got. */
+#define COOP_AUDIO_ANDROID_NICE (-16)
+#endif
+
 /* Per-source gain in MIX mode. Two independent game mixes are each mastered to
  * use the whole scale, so summing them at unity would sit on the limiter and
  * pump. -2.5 dB each keeps the sum near full scale on real material and leaves
@@ -212,6 +226,19 @@ static void coop_audio_log(const char *fmt, ...) {
     fputc('\n', f);
     fclose(f);
 }
+
+#if TARGET_ANDROID
+static void android_audio_priority(const char *thread) {
+    const pid_t tid = (pid_t) syscall(SYS_gettid);
+    errno = 0;
+    const int before = getpriority(PRIO_PROCESS, (id_t) tid);
+    const int rc = setpriority(PRIO_PROCESS, (id_t) tid, COOP_AUDIO_ANDROID_NICE);
+    const int err = rc != 0 ? errno : 0;
+    const int after = getpriority(PRIO_PROCESS, (id_t) tid);
+    coop_audio_log("[COOP-AUD.priority] thread=%s tid=%d nice %d -> %d (asked %d)%s%s", thread, (int) tid, before,
+                   after, COOP_AUDIO_ANDROID_NICE, err ? ": " : "", err ? strerror(err) : "");
+}
+#endif
 
 /* Wall-clock stamp for the periodic diagnostic lines, so a user's notes or a recording ("it crackled at 12:41")
  * can be lined up with the counters. Local time plus epoch ms; never used for any audio decision. */
@@ -1477,7 +1504,11 @@ static int output_main(void *unused) {
     (void)unused;
     uint64_t next_report = (unsigned)coord_rate * 5u;
     /* Produced-ahead, this thread carries the mix and the gate the device is waiting for. */
+#if TARGET_ANDROID
+    if(output_pull && pull_owner.ahead) android_audio_priority("coop-audio-ingress");
+#else
     if(output_pull && pull_owner.ahead) SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
+#endif
     while (SDL_AtomicGet(&output_run)) {
         coop_audio_accept();
         coop_audio_drain();
@@ -1699,6 +1730,9 @@ static void secondary_disconnect(void) {
 
 static int secondary_send_main(void *unused) {
     (void)unused;
+#if TARGET_ANDROID
+    android_audio_priority("coop-audio-send");
+#endif
     bool awaiting_ack = false;
     uint64_t pending_end = 0, sent_us = 0;
     unsigned pending_frames = 0;
