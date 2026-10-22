@@ -1,4 +1,6 @@
 #include "coop_audio_pull.h"
+
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -130,6 +132,10 @@ bool coop_audio_pull_set_ahead(coop_audio_pull_t *p,unsigned ahead_frames,unsign
 }
 
 unsigned coop_audio_pull_produce(coop_audio_pull_t *p,uint64_t now) {
+    return coop_audio_pull_produce_max(p,now,UINT_MAX);
+}
+
+unsigned coop_audio_pull_produce_max(coop_audio_pull_t *p,uint64_t now,unsigned max_blocks) {
     if(!p || !p->ahead || !p->mixed)return 0;
     /* Bound the backlog: a queue that has grown past trim_above loses its oldest frames down to trim_to. */
     for(unsigned s=0;s<2;++s) {
@@ -143,7 +149,7 @@ unsigned coop_audio_pull_produce(coop_audio_pull_t *p,uint64_t now) {
         }
     }
     unsigned blocks=0;
-    while(coop_audio_spsc_count(&p->ready)+p->block<=p->ahead) {
+    while(blocks<max_blocks && coop_audio_spsc_count(&p->ready)+p->block<=p->ahead) {
         render_block(p);
         account(p,0,p->block,p->now_us ? p->now_us(p->ctx) : now);
         if(!coop_audio_spsc_push(&p->ready,p->mixed,p->block,p->channels,p->produced-p->block,0,1,0))break;

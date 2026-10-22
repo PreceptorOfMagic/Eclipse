@@ -192,7 +192,9 @@ static void produced_ahead(void) {
     assert(!coop_audio_pull_set_ahead(&p,3*BLOCK,TOTAL,BLOCK)); /* once */
     push(&p,0,0,3*BLOCK,1000,1,0); push(&p,1,0,3*BLOCK,1000,1,0);
     for(unsigned i=0;i<3;++i)expect(&c,3,0);
-    assert(coop_audio_pull_produce(&p,2000)==3);
+    assert(coop_audio_pull_produce_max(&p,2000,1)==1);      /* capped: one block, the rest on the next call */
+    assert(coop_audio_spsc_count(&p.ready)==BLOCK && c.mixed==1);
+    assert(coop_audio_pull_produce(&p,2000)==2);
     assert(coop_audio_spsc_count(&p.ready)==3*BLOCK && c.mixed==3);
     assert(coop_audio_pull_produce(&p,2100)==0);            /* full: nothing more */
     assert(p.stats.consumed[0]==3*BLOCK && p.stats.age_max_us[0]==1000);

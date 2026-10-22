@@ -70,3 +70,6 @@ bool coop_audio_pull_set_ahead(coop_audio_pull_t *p, unsigned ahead_frames, unsi
 /* Produced-ahead worker only: trim deep sources, then render blocks until `ahead` frames wait for the device. The mix
  * and observe callbacks run here, not on the device thread. Timestamp as for render. Returns blocks rendered. */
 unsigned coop_audio_pull_produce(coop_audio_pull_t *p, uint64_t now_us);
+
+/* As coop_audio_pull_produce, rendering at most `max_blocks`: lets the worker take in other work between blocks. */
+unsigned coop_audio_pull_produce_max(coop_audio_pull_t *p, uint64_t now_us, unsigned max_blocks);

@@ -1516,7 +1516,20 @@ static int output_main(void *unused) {
         coop_audio_accept();
         coop_audio_drain();
         if(output_pull) {
-            if(pull_owner.ahead && coop_audio_pull_produce(&pull_owner,audio_time_us())) pull_publish();
+            /* One block at a time, taking in the peer's audio and acknowledging it between blocks. The secondary sends
+             * nothing more until its last message is acknowledged, and the gate can hold this thread for tens of ms
+             * when it renders a run of blocks: on a SHIELD TV co-op mission acknowledgements waited up to 168 ms
+             * behind 50 ms runs, so the peer's audio went missing, then arrived in a burst and was trimmed, while it
+             * reached the secondary steadily (live, 2026-10-22). */
+            if(pull_owner.ahead) {
+                unsigned rendered=0;
+                while(SDL_AtomicGet(&output_run) && coop_audio_pull_produce_max(&pull_owner,audio_time_us(),1)) {
+                    ++rendered;
+                    coop_audio_accept();
+                    coop_audio_drain();
+                }
+                if(rendered) pull_publish();
+            }
             SDL_Delay(1);
             continue;
         }
