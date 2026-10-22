@@ -14,7 +14,10 @@ void app_input_copy_initial_gamepad_mapping(const app_settings_t *settings);
 void app_input_reload_gamepad_mapping(app_input_t *input);
 
 #if TARGET_ANDROID
-/** Android: apply the controller database, except over a mapping SDL chose by Android version (see the .c).
- *  @return mappings added */
-int app_input_add_missing_gamepad_mappings(const char *path);
+/** Android: keep the controller database to choose from per controller (see the .c).
+ *  @return its Android lines */
+int app_input_load_gamepad_db(const char *path);
+
+/** Android: choose the mapping for the controller at @p device_index by how it fits (see the .c). */
+void app_input_fit_gamepad_mapping(int device_index);
 #endif

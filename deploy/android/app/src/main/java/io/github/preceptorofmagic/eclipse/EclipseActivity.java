@@ -383,6 +383,25 @@ public class EclipseActivity extends SDLActivity {
         return out.toString();
     }
 
+    /** Which of keyCodes a controller can produce on this Android version -- its key layout, through
+     *  InputDevice.hasKeys, where SDL's own button mask comes from -- for input_gamepad_mapping.c to judge a
+     *  mapping by (controller_mapping_android.h). The controller is the SDL joystick with this vendor and product,
+     *  or with this name when it reports neither; null when none is connected. */
+    static boolean[] controllerKeys(int vendorId, int productId, String name, int[] keyCodes) {
+        boolean byName = vendorId == 0 && productId == 0;
+        for (int id : InputDevice.getDeviceIds()) {
+            InputDevice device = InputDevice.getDevice(id);
+            if (device == null || !SDLControllerManager.isDeviceSDLJoystick(id)) {
+                continue;
+            }
+            if (byName ? name != null && name.equals(device.getName())
+                    : device.getVendorId() == vendorId && device.getProductId() == productId) {
+                return device.hasKeys(keyCodes);
+            }
+        }
+        return null;
+    }
+
     /* --- audio outputs ---------------------------------------------------------------------------------- */
 
     private static final class Outputs {

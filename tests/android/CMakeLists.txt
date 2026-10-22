@@ -94,6 +94,14 @@ target_include_directories(test_android_audio_outputs_parse PRIVATE ${CMAKE_SOUR
         ${CMAKE_SOURCE_DIR}/src/app)
 target_include_directories(test_android_audio_outputs_parse SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
 add_test(NAME test_android_audio_outputs_parse COMMAND test_android_audio_outputs_parse)
+
+# Which mapping a controller gets on Android, judged by the buttons it can produce (input_gamepad_mapping.c).
+add_executable(test_android_controller_mapping test_controller_mapping.c
+        ${CMAKE_SOURCE_DIR}/src/app/platform/android/controller_mapping_android.c)
+target_include_directories(test_android_controller_mapping PRIVATE ${CMAKE_SOURCE_DIR}/src/app/platform/android)
+target_include_directories(test_android_controller_mapping SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
+target_link_libraries(test_android_controller_mapping PRIVATE ${SDL2_LIBRARIES})
+add_test(NAME test_android_controller_mapping COMMAND test_android_controller_mapping)
 if (Java_FOUND)
     add_test(NAME test_android_display_modes COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_java_test.sh
             ${Java_JAVAC_EXECUTABLE} ${Java_JAVA_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/java-display-modes

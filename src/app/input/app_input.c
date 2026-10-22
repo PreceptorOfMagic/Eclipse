@@ -20,8 +20,8 @@ void app_input_init(app_input_t *input, app_t *app) {
 #endif
     SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
 #if TARGET_ANDROID
-    /* The database after SDL's own table, and only where SDL has nothing (input_gamepad_mapping.c). */
-    app_input_add_missing_gamepad_mappings(app->settings.condb_path);
+    /* The database is kept to choose from as each controller connects (input_gamepad_mapping.c). */
+    app_input_load_gamepad_db(app->settings.condb_path);
 #endif
     input->max_num_gamepads = 4;
     input->gamepads_count = 0;

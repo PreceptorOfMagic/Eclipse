@@ -8,6 +8,13 @@
 #include "util/path.h"
 #include "logging.h"
 
+#if TARGET_ANDROID
+#include <android/keycodes.h>
+#include "platform/android/android_platform.h"
+#include "platform/android/controller_mapping_android.h"
+
+static void free_gamepad_db(void);
+#endif
 
 static void gcdb_updated(commons_gcdb_status_t result, void *context);
 
@@ -48,6 +55,9 @@ void app_input_init_gamepad_mapping(app_input_t *input, executor_t *executor, co
 
 void app_input_deinit_gamepad_mapping(app_input_t *input) {
     commons_gcdb_updater_deinit(&input->gcdb_updater);
+#if TARGET_ANDROID
+    free_gamepad_db();
+#endif
     free(input->gcdb_ca_path);
     input->gcdb_ca_path = NULL;
 }
@@ -69,7 +79,10 @@ void app_input_copy_initial_gamepad_mapping(const app_settings_t *settings) {
 
 void app_input_reload_gamepad_mapping(app_input_t *input) {
 #if TARGET_ANDROID
-    app_input_add_missing_gamepad_mappings(input->gcdb_updater.path);
+    app_input_load_gamepad_db(input->gcdb_updater.path);
+    for (int i = 0; i < SDL_NumJoysticks(); i++) {
+        app_input_fit_gamepad_mapping(i);
+    }
 #else
     int num_mapping = SDL_GameControllerAddMappingsFromRW(SDL_RWFromFile(input->gcdb_updater.path, "r"),
                                                           SDL_TRUE);
@@ -79,33 +92,79 @@ void app_input_reload_gamepad_mapping(app_input_t *input) {
 
 #if TARGET_ANDROID
 /*
- * ON ANDROID THE DOWNLOADED DATABASE ONLY FILLS GAPS. SDL's own table keys some Android mappings by Android version
- * (`sdk>=:29` / `sdk<=:28`: the key layouts changed with Android 10 and 11) and keeps the one for this device. The
- * community gamecontrollerdb.txt carries the old one with no version, and loaded over SDL's (as the config-file hint
- * does) it won: a Nintendo Switch Pro Controller on the SHIELD TV (Android 11) got Android 9's layout -- + as the
- * right stick, ZR as Start, L and R as the triggers, ZL as View -- so no button shortcut and no Start wheel worked on
- * it (logged mapping and raw buttons, 2026-10-22). A controller whose mapping SDL chose by Android version keeps it;
- * the database still adds every controller SDL does not know and replaces SDL's other mappings, as it always did.
- * Lines are filtered by platform exactly as SDL_GameControllerAddMappingsFromRW does.
+ * ON ANDROID THE MAPPING IS CHOSEN PER CONTROLLER, by how it fits the buttons Android says that controller can
+ * produce on this Android version (platform/android/controller_mapping_android.h says why the GUID cannot tell).
+ * The database is kept here rather than loaded into SDL, where any line for the controller's model replaced SDL's
+ * own whichever Android version it was written on. When a controller connects, SDL's own mapping (built in, or
+ * made from the key codes), every database line for it and the key-code mapping are judged against the keys
+ * EclipseActivity.controllerKeys reports, and the best is the one SDL uses, for that exact button set only.
  */
-int app_input_add_missing_gamepad_mappings(const char *path) {
+
+/* SDL 2.32.10 keycode_to_SDL (src/joystick/android/SDL_sysjoystick.c): the joystick button each key arrives as.
+ * AKEYCODE_BUTTON_1..16 follow as b20..b35. */
+static const struct {
+    int keycode;
+    int button;
+} pad_keys[] = {
+        {AKEYCODE_BUTTON_A,      0}, {AKEYCODE_DPAD_CENTER,   0}, {AKEYCODE_BUTTON_B,     1},
+        {AKEYCODE_BUTTON_X,      2}, {AKEYCODE_BUTTON_Y,      3}, {AKEYCODE_BACK,         4},
+        {AKEYCODE_BUTTON_SELECT, 4}, {AKEYCODE_BUTTON_MODE,   5}, {AKEYCODE_MENU,         6},
+        {AKEYCODE_BUTTON_START,  6}, {AKEYCODE_BUTTON_THUMBL, 7}, {AKEYCODE_BUTTON_THUMBR, 8},
+        {AKEYCODE_BUTTON_L1,     9}, {AKEYCODE_BUTTON_R1,     10}, {AKEYCODE_DPAD_UP,     11},
+        {AKEYCODE_DPAD_DOWN,     12}, {AKEYCODE_DPAD_LEFT,    13}, {AKEYCODE_DPAD_RIGHT,  14},
+        {AKEYCODE_BUTTON_L2,     15}, {AKEYCODE_BUTTON_R2,    16}, {AKEYCODE_BUTTON_C,    17},
+        {AKEYCODE_BUTTON_Z,      18},
+};
+#define PAD_KEYS_COUNT ((int) (sizeof(pad_keys) / sizeof(pad_keys[0])))
+#define PAD_NUMBERED_KEYS 16
+
+/* The database's Android lines (pointers into db_text). */
+static char *db_text;
+static const char **db_lines;
+static int db_count;
+
+/* Per button set (GUID without its CRC): SDL's own mapping as it was before any of ours, and what we put in its
+ * place (NULL while SDL's own is in force). */
+#define FITTED_MAX 16
+static struct {
+    char guid[33];
+    char *sdl_own;
+    char *applied;
+} fitted[FITTED_MAX];
+static int fitted_count;
+
+int app_input_load_gamepad_db(const char *path) {
+    SDL_free(db_lines);
+    SDL_free(db_text);
+    db_lines = NULL;
+    db_text = NULL;
+    db_count = 0;
     SDL_RWops *rw = path != NULL ? SDL_RWFromFile(path, "r") : NULL;
     if (rw == NULL) {
         return 0;
     }
     const Sint64 size = SDL_RWsize(rw);
-    char *buf = size > 0 ? SDL_malloc((size_t) size + 1) : NULL;
-    if (buf == NULL || SDL_RWread(rw, buf, (size_t) size, 1) != 1) {
-        SDL_free(buf);
+    db_text = size > 0 ? SDL_malloc((size_t) size + 1) : NULL;
+    if (db_text == NULL || SDL_RWread(rw, db_text, (size_t) size, 1) != 1) {
+        SDL_free(db_text);
+        db_text = NULL;
         SDL_RWclose(rw);
         return 0;
     }
     SDL_RWclose(rw);
-    buf[size] = '\0';
+    db_text[size] = '\0';
+    int lines = 1;
+    for (const char *c = db_text; *c != '\0'; c++) {
+        lines += *c == '\n';
+    }
+    db_lines = SDL_malloc(sizeof(*db_lines) * (size_t) lines);
+    if (db_lines == NULL) {
+        return 0;
+    }
+    /* Kept by platform exactly as SDL_GameControllerAddMappingsFromRW keeps them. */
     char platform_field[64];
     SDL_snprintf(platform_field, sizeof(platform_field), "platform:%s,", SDL_GetPlatform());
-    int added = 0, kept = 0;
-    for (char *line = buf, *next; line != NULL && *line != '\0'; line = next) {
+    for (char *line = db_text, *next; line != NULL && *line != '\0'; line = next) {
         next = SDL_strchr(line, '\n');
         if (next != NULL) {
             *next++ = '\0';
@@ -114,30 +173,155 @@ int app_input_add_missing_gamepad_mappings(const char *path) {
         if (len > 0 && line[len - 1] == '\r') {
             line[len - 1] = '\0';
         }
-        const char *comma = SDL_strchr(line, ',');
-        if (line[0] == '#' || comma == NULL || comma - line >= 64 || SDL_strstr(line, platform_field) == NULL) {
-            continue;
-        }
-        char guid_text[64];
-        SDL_strlcpy(guid_text, line, (size_t) (comma - line) + 1);
-        /* Only a mapping SDL chose by Android version keeps out the database's: the others the database still
-         * replaces as before (the Xbox Series controller's Share button, misc1, is in the database's and not SDL's). */
-        char *existing = SDL_GameControllerMappingForGUID(SDL_JoystickGetGUIDFromString(guid_text));
-        const bool by_version = existing != NULL &&
-                                (SDL_strstr(existing, "sdk>=:") != NULL || SDL_strstr(existing, "sdk<=:") != NULL);
-        SDL_free(existing);
-        if (by_version) {
-            kept++;
-            continue;
-        }
-        if (SDL_GameControllerAddMapping(line) > 0) {
-            added++;
+        if (line[0] != '#' && SDL_strcasestr(line, platform_field) != NULL) {
+            db_lines[db_count++] = line;
         }
     }
-    SDL_free(buf);
-    commons_log_info("Input", "Controller database: %d mappings applied, %d controllers kept SDL's Android-version "
-                              "mapping", added, kept);
-    return added;
+    commons_log_info("Input", "Controller database: %d %s mappings, chosen per controller as it connects", db_count,
+                     SDL_GetPlatform());
+    return db_count;
+}
+
+static bool sdl_own_by_version(const char *mapping) {
+    return SDL_strstr(mapping, "sdk>=:") != NULL || SDL_strstr(mapping, "sdk<=:") != NULL;
+}
+
+static const char *source_name(controller_mapping_source_t source) {
+    switch (source) {
+        case CONTROLLER_MAPPING_SDL_BY_VERSION:
+            return "SDL's for this Android version";
+        case CONTROLLER_MAPPING_DATABASE:
+            return "the database";
+        case CONTROLLER_MAPPING_SDL:
+            return "SDL's";
+        default:
+            return "the key codes";
+    }
+}
+
+void app_input_fit_gamepad_mapping(int device_index) {
+    SDL_JoystickGUID guid = SDL_JoystickGetDeviceGUID(device_index);
+    /* The CRC names the physical controller; a mapping is for every controller with these buttons. */
+    guid.data[2] = guid.data[3] = 0;
+    char guid_text[33];
+    SDL_JoystickGetGUIDString(guid, guid_text, sizeof(guid_text));
+    int slot = 0;
+    while (slot < fitted_count && SDL_strcmp(fitted[slot].guid, guid_text) != 0) {
+        slot++;
+    }
+    if (slot == fitted_count) {
+        if (fitted_count == FITTED_MAX) {
+            return;
+        }
+        fitted_count++;
+        SDL_strlcpy(fitted[slot].guid, guid_text, sizeof(fitted[slot].guid));
+        /* Before anything of ours: SDL's built-in mapping, or the one it makes from the key codes. */
+        fitted[slot].sdl_own = SDL_GameControllerMappingForGUID(guid);
+        fitted[slot].applied = NULL;
+    }
+    const int sdk = android_sdk_int();
+    const char *name = SDL_JoystickNameForIndex(device_index);
+
+    /* What this controller can press here: its key layout, or failing that the low 16 buttons in its GUID. */
+    controller_buttons_t buttons = controller_mapping_guid_buttons(guid_text), known = 0xFFFF;
+    int keycodes[PAD_KEYS_COUNT + PAD_NUMBERED_KEYS];
+    bool has[PAD_KEYS_COUNT + PAD_NUMBERED_KEYS];
+    for (int i = 0; i < PAD_KEYS_COUNT; i++) {
+        keycodes[i] = pad_keys[i].keycode;
+    }
+    for (int i = 0; i < PAD_NUMBERED_KEYS; i++) {
+        keycodes[PAD_KEYS_COUNT + i] = AKEYCODE_BUTTON_1 + i;
+    }
+    const bool from_layout = android_controller_keys(SDL_JoystickGetDeviceVendor(device_index),
+                                                     SDL_JoystickGetDeviceProduct(device_index), name, keycodes,
+                                                     PAD_KEYS_COUNT + PAD_NUMBERED_KEYS, has);
+    if (from_layout) {
+        known = ~(controller_buttons_t) 0;
+        for (int i = 0; i < PAD_KEYS_COUNT + PAD_NUMBERED_KEYS; i++) {
+            if (has[i]) {
+                buttons |= (controller_buttons_t) 1 << (i < PAD_KEYS_COUNT ? pad_keys[i].button
+                                                                           : 20 + (i - PAD_KEYS_COUNT));
+            }
+        }
+    }
+
+#define CANDIDATES_MAX 10
+    controller_mapping_candidate_t candidates[CANDIDATES_MAX];
+    char *owned[CANDIDATES_MAX] = {NULL};
+    int count = 0;
+    const char *sdl_own = fitted[slot].sdl_own;
+    /* SDL names the mapping it makes from the key codes "*" (SDL_CreateMappingForAndroidController). */
+    const bool sdl_own_generated = sdl_own != NULL && SDL_strncmp(sdl_own + 32, ",*,", 3) == 0;
+    if (sdl_own != NULL) {
+        candidates[count++] = (controller_mapping_candidate_t) {
+                sdl_own, sdl_own_generated ? CONTROLLER_MAPPING_KEY_CODES
+                                           : sdl_own_by_version(sdl_own) ? CONTROLLER_MAPPING_SDL_BY_VERSION
+                                                                         : CONTROLLER_MAPPING_SDL};
+    }
+    /* Exact matches first, then those SDL would take with the button mask ignored; each is applied for this
+     * controller's own GUID. */
+    for (int exact = 2; exact >= 1; exact--) {
+        for (int i = 0; i < db_count && count < CANDIDATES_MAX - 1; i++) {
+            if (controller_mapping_guid_match(db_lines[i], guid_text) != exact ||
+                !controller_mapping_conditions_hold(db_lines[i], sdk)) {
+                continue;
+            }
+            char *line = SDL_strdup(db_lines[i]);
+            if (line == NULL) {
+                continue;
+            }
+            SDL_memcpy(line, guid_text, 32);
+            owned[count] = line;
+            candidates[count++] = (controller_mapping_candidate_t) {line, CONTROLLER_MAPPING_DATABASE};
+        }
+    }
+    char generated[1024];
+    if (!sdl_own_generated && controller_mapping_from_key_codes(generated, sizeof(generated), guid_text, sdk)) {
+        candidates[count++] = (controller_mapping_candidate_t) {generated, CONTROLLER_MAPPING_KEY_CODES};
+    }
+
+    controller_mapping_fit_t fits[CANDIDATES_MAX];
+    const int best = controller_mapping_choose(candidates, count, buttons, known, fits);
+    if (best >= 0) {
+        const char *chosen = candidates[best].mapping;
+        const bool is_sdl_own = chosen == sdl_own;
+        const bool in_force = is_sdl_own ? fitted[slot].applied == NULL
+                                         : fitted[slot].applied != NULL && SDL_strcmp(fitted[slot].applied, chosen) == 0;
+        if (!in_force) {
+            if (SDL_GameControllerAddMapping(chosen) < 0) {
+                commons_log_warn("Input", "Controller mapping not applied: %s", SDL_GetError());
+            }
+            SDL_free(fitted[slot].applied);
+            fitted[slot].applied = is_sdl_own ? NULL : SDL_strdup(chosen);
+        }
+        char summary[512] = "";
+        for (int i = 0; i < count; i++) {
+            char item[64];
+            SDL_snprintf(item, sizeof(item), "%s%s %d/%d", i > 0 ? ", " : "", source_name(candidates[i].source),
+                         fits[i].dead, fits[i].unused);
+            SDL_strlcat(summary, item, sizeof(summary));
+        }
+        commons_log_info("Input", "Controller %s (%s): mapping from %s; dead/unused bindings: %s; buttons %#llx "
+                                  "from %s", name != NULL ? name : "?", guid_text,
+                         source_name(candidates[best].source), summary, (unsigned long long) buttons,
+                         from_layout ? "Android's key layout" : "the GUID only");
+    }
+    for (int i = 0; i < count; i++) {
+        SDL_free(owned[i]);
+    }
+}
+
+static void free_gamepad_db(void) {
+    SDL_free(db_lines);
+    SDL_free(db_text);
+    db_lines = NULL;
+    db_text = NULL;
+    db_count = 0;
+    for (int i = 0; i < fitted_count; i++) {
+        SDL_free(fitted[i].sdl_own);
+        SDL_free(fitted[i].applied);
+    }
+    fitted_count = 0;
 }
 #endif
 

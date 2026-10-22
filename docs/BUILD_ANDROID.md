@@ -120,6 +120,13 @@ lets no app opt out (Steam Link and Moonlight live with the same). So on a SHIEL
 let go, then Guide pressed and let go. The stream menu also has a **Guide button** that presses the first
 controller's Guide. The Xbox button itself stays the SHIELD's Home.
 
+**Which button is which** is decided for each controller when it connects, from the buttons Android says that
+controller has on the Android version the device runs. SDL's own mapping, the controller database's lines for it and
+a mapping read straight off Android's key codes are each checked against those buttons, and the best fit wins: a
+mapping written for another Android version binds buttons the controller does not have there, so it loses. (The
+database's Nintendo Switch Pro Controller line is Android 9's; on a SHIELD TV running Android 11 it made ZR Start and
++ the right stick.) The log names each choice: `Controller <name> (<GUID>): mapping from ...`.
+
 In co-op, each controller goes to the PC chosen for it on the co-op screen. The virtual mouse points like the LG
 Magic Remote: it starts in the middle of the PC it is over, and pushed past the line between the two pictures it
 becomes the other PC's pointer, arriving at the matching edge. The triggers click, and the wheel and the on-screen
@@ -305,6 +312,13 @@ follow the same checklist as for a webOS release.
   `scripts/android/patches/sdl2-2.32.10-android-tv-remote.patch`; unpatched SDL 2 takes any device with a d-pad
   for a joystick, which turned Back into Escape and OK into Enter), and, as on webOS, nothing remote-like is ever
   offered to a game as a player's controller.
+- **Controller mappings** (`src/app/platform/android/controller_mapping_android.h`): SDL numbers an Android
+  controller's buttons by the key code Android delivers, from a key layout that changes between Android versions,
+  and a mapping's GUID records too little to say which layout it was written for (SDL even matches Android mappings
+  with the button mask ignored). So the database is not loaded into SDL. Each controller's mapping is chosen as it
+  connects, by how each candidate fits the keys `InputDevice.hasKeys` reports (`EclipseActivity.controllerKeys`):
+  fewest bindings to keys it cannot produce, then fewest of its keys left unbound, then SDL's line for this Android
+  version, a database line, SDL's other lines, the mapping SDL builds from key codes.
 - **Co-op** runs its second session in a separate process, as on every platform. The peer is an executable packaged
   as `lib/<abi>/libeclipse_peer.so`, which Android installs executable beside the app's libraries. The app loads its
   libraries in its own linker namespace, which searches that directory; the peer runs in the default one, which

@@ -189,6 +189,50 @@ void android_go_home(void) {
     (*env)->DeleteLocalRef(env, cls);
 }
 
+bool android_controller_keys(int vendor, int product, const char *name, const int *keycodes, int count, bool *has) {
+    JNIEnv *env = activity_env();
+    if (env == NULL || keycodes == NULL || has == NULL || count <= 0) {
+        return false;
+    }
+    jclass cls = activity_class(env);
+    if (cls == NULL) {
+        return false;
+    }
+    bool ok = false;
+    jmethodID method = (*env)->GetStaticMethodID(env, cls, "controllerKeys", "(IILjava/lang/String;[I)[Z");
+    if (method != NULL) {
+        jintArray codes = (*env)->NewIntArray(env, count);
+        jstring jname = name != NULL ? (*env)->NewStringUTF(env, name) : NULL;
+        if (codes != NULL) {
+            (*env)->SetIntArrayRegion(env, codes, 0, count, (const jint *) keycodes);
+            jbooleanArray result = (jbooleanArray) (*env)->CallStaticObjectMethod(env, cls, method, (jint) vendor,
+                                                                                  (jint) product, jname, codes);
+            clear_exception(env, "controllerKeys");
+            if (result != NULL && (*env)->GetArrayLength(env, result) == count) {
+                jboolean *values = (*env)->GetBooleanArrayElements(env, result, NULL);
+                if (values != NULL) {
+                    for (int i = 0; i < count; i++) {
+                        has[i] = values[i] != JNI_FALSE;
+                    }
+                    (*env)->ReleaseBooleanArrayElements(env, result, values, JNI_ABORT);
+                    ok = true;
+                }
+            }
+            if (result != NULL) {
+                (*env)->DeleteLocalRef(env, result);
+            }
+            (*env)->DeleteLocalRef(env, codes);
+        }
+        if (jname != NULL) {
+            (*env)->DeleteLocalRef(env, jname);
+        }
+    } else {
+        clear_exception(env, "controllerKeys lookup");
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    return ok;
+}
+
 int android_audio_output_names(char **names, int max) {
     JNIEnv *env = activity_env();
     if (env == NULL) {

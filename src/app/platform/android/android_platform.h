@@ -85,6 +85,11 @@ void android_display_request_refresh(int refresh_x100);
 /** Show the TV's home screen, as the Home key does (the controller's View + Start, session_gamepad.c). */
 void android_go_home(void);
 
+/** Which of @p keycodes the controller with this vendor and product (or this name, when it reports neither) can
+ *  produce on this Android version, from its key layout (EclipseActivity.controllerKeys). false in the co-op peer
+ *  or when no such controller is connected. */
+bool android_controller_keys(int vendor, int product, const char *name, const int *keycodes, int count, bool *has);
+
 /**
  * The audio outputs a stream can play to, by the names the audio setting stores ("HDMI: LG TV", see
  * deploy/android/.../AudioOutputs.java): at most @p max, each malloc'd for the caller. 0 in the co-op peer.

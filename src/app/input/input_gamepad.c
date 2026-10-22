@@ -9,6 +9,7 @@
 
 #include "logging.h"
 #include "app_input.h"
+#include "input_gamepad_mapping.h"
 #include "app.h"
 #include "app_settings.h"
 
@@ -33,6 +34,10 @@ bool app_input_init_gamepad(app_input_t *input, int device_index) {
     char guidstr[33];
     SDL_JoystickGetGUIDString(guid, guidstr, 33);
     const char *name = SDL_JoystickNameForIndex(device_index);
+#if TARGET_ANDROID
+    /* Which mapping this controller gets, by the buttons Android says it has (input_gamepad_mapping.c). */
+    app_input_fit_gamepad_mapping(device_index);
+#endif
     if (SDL_IsGameController(device_index)) {
         SDL_GameController *controller = SDL_GameControllerOpen(device_index);
         if (!controller) {
