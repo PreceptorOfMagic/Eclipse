@@ -139,7 +139,8 @@ In co-op, each controller goes to the PC chosen for it on the co-op screen. The 
 Magic Remote: it starts in the middle of the PC it is over, and pushed past the line between the two pictures it
 becomes the other PC's pointer, arriving at the matching edge. The triggers click, and the wheel and the on-screen
 keyboard type, on whichever PC it is over; while a trigger is held it stays on that PC. Any controller's right stick
-moves it. (On the other platforms the virtual mouse moves the first PC's pointer.)
+moves it. (The other platforms do the same since 1.3.5, except when the Windows PC running Eclipse is itself one of
+the two co-op PCs: there the virtual mouse keeps its earlier behaviour.)
 
 A TV's own remote reaches a box plugged into the TV only as buttons, over HDMI-CEC: an LG Magic Remote's pointer
 and wheel stay with the TV (measured with the SHIELD TV on an LG G5: no input event reached the SHIELD while the
