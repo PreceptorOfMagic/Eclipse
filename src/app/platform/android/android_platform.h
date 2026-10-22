@@ -82,6 +82,9 @@ bool android_display_mode(int *width, int *height, int *refresh_x100, int *max_r
  */
 void android_display_request_refresh(int refresh_x100);
 
+/** Keep Wi-Fi out of power saving while a stream runs (EclipseActivity.setStreamWifiLock); nothing in the co-op peer. */
+void android_stream_wifi_lock(bool held);
+
 /** Show the TV's home screen, as the Home key does (the controller's View + Start, session_gamepad.c). */
 void android_go_home(void);
 

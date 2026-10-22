@@ -15,6 +15,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Wi-Fi kept out of power saving while a stream runs (EclipseActivity.setStreamWifiLock). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- SDL: controller rumble on devices that route it through the system vibrator. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 

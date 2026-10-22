@@ -172,6 +172,10 @@ void android_display_request_refresh(int refresh_x100) {
     call_static_void_int("requestRefreshRate", refresh_x100);
 }
 
+void android_stream_wifi_lock(bool held) {
+    call_static_void_int("setStreamWifiLock", held ? 1 : 0);
+}
+
 void android_go_home(void) {
     JNIEnv *env = activity_env();
     if (env == NULL) {

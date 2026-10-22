@@ -67,6 +67,7 @@ public class EclipseActivity extends SDLActivity {
     private SurfaceView mVideoView;
     private int mVideoWidth, mVideoHeight;
     private WifiManager.MulticastLock mMulticastLock;
+    private WifiManager.WifiLock mStreamWifiLock;
 
     @Override
     protected String[] getLibraries() {
@@ -191,6 +192,7 @@ public class EclipseActivity extends SDLActivity {
 
     @Override
     protected void onDestroy() {
+        streamWifiLock(false);
         super.onDestroy();
         if (sInstance == this) {
             sInstance = null;
@@ -566,6 +568,46 @@ public class EclipseActivity extends SDLActivity {
                 }
             }
         });
+    }
+
+    /**
+     * While a stream runs (app_wakelock_common.c), keep Wi-Fi out of power saving, as Moonlight for Android does:
+     * Android's low-latency lock from Android 10, its high-performance lock before. A SHIELD TV on Wi-Fi otherwise
+     * lets the radio doze between packets; on Ethernet the lock changes nothing.
+     */
+    static void setStreamWifiLock(final int held) {
+        final EclipseActivity activity = sInstance;
+        if (activity == null) {
+            return;
+        }
+        activity.runOnUiThread(() -> activity.streamWifiLock(held != 0));
+    }
+
+    @SuppressWarnings("deprecation")   /* WIFI_MODE_FULL_HIGH_PERF: the only such lock before Android 10 */
+    private void streamWifiLock(boolean held) {
+        if (held && mStreamWifiLock == null) {
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wifi == null) {
+                return;
+            }
+            mStreamWifiLock = wifi.createWifiLock(Build.VERSION.SDK_INT >= 29 ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    : WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Eclipse stream");
+            mStreamWifiLock.setReferenceCounted(false);
+        }
+        if (mStreamWifiLock == null) {
+            return;
+        }
+        try {
+            if (held && !mStreamWifiLock.isHeld()) {
+                mStreamWifiLock.acquire();
+                Log.i(TAG, "Stream Wi-Fi lock held (" + (Build.VERSION.SDK_INT >= 29 ? "low latency" : "high performance") + ")");
+            } else if (!held && mStreamWifiLock.isHeld()) {
+                mStreamWifiLock.release();
+                Log.i(TAG, "Stream Wi-Fi lock released");
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "Stream Wi-Fi lock", e);
+        }
     }
 
     /**
