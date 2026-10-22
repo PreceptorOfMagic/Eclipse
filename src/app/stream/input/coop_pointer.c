@@ -50,6 +50,8 @@ static int mouse_pin_request = -1, keys_pin_request = -1;
 static int mouse_pin = -1, keys_pin = -1;
 /** The last pane-local position: where a click hands a taken-back assigned mouse over again. */
 static int last_lx = 0, last_ly = 0, last_lw = 1, last_lh = 1;
+/** High-resolution wheel steps not yet sent to the peer as a whole notch (coop_pointer_scroll_high_res). */
+static int peer_scroll_hires = 0;
 
 static void coop_pointer_log(const char *fmt, ...) {
     FILE *f = fopen(AURORA_DIAG_LOG, "a");
@@ -139,6 +141,7 @@ void coop_pointer_start(void) {
     cur_pane = PANE_PRIMARY;
     held = 0;
     crossings = 0;
+    peer_scroll_hires = 0;
     logged_peer = logged_primary = false;
     local_pane = local_pane_request;
     mouse_pin = mouse_pin_request;
@@ -189,6 +192,27 @@ void coop_pointer_stop(void) {
 bool coop_pointer_active(void) { return split_active; }
 
 unsigned coop_pointer_crossings(void) { return crossings; }
+
+bool coop_pointer_split_vertical(void) { return split_vertical; }
+
+bool coop_pointer_has_local_pane(void) { return local_pane >= 0; }
+
+void coop_pointer_pane_centre(int ref_w, int ref_h, int *x, int *y) {
+    *x = ref_w / 2;
+    *y = ref_h / 2;
+    if (!split_active) {
+        return;
+    }
+    /* The same halves map_into_pane uses: the second one is the peer's unless peer_first. */
+    const bool second_half = peer_first ? (cur_pane == PANE_PRIMARY) : (cur_pane == PANE_PEER);
+    if (split_vertical) {
+        const int split = divider(ref_w);
+        *x = second_half ? split + (ref_w - split) / 2 : split / 2;
+    } else {
+        const int split = divider(ref_h);
+        *y = second_half ? split + (ref_h - split) / 2 : split / 2;
+    }
+}
 
 static void send_position(int pane, int x, int y, int w, int h) {
     if (pane == PANE_PEER) {
@@ -319,6 +343,22 @@ bool coop_pointer_keys_to_peer(void) {
     }
     /* An ASSIGNED keyboard goes to its pane wherever the pointer is. */
     return (keys_pin >= 0 ? keys_pin : cur_pane) == PANE_PEER;
+}
+
+void coop_pointer_scroll_high_res(int amount) {
+    if (!split_active || cur_pane != PANE_PEER || !peer_reachable()) {
+        peer_scroll_hires = 0;
+        if (amount != 0) {
+            LiSendHighResScrollEvent((short) amount);
+        }
+        return;
+    }
+    peer_scroll_hires += amount;
+    const int notches = peer_scroll_hires / 120;
+    if (notches != 0) {
+        peer_scroll_hires -= notches * 120;
+        coop_input_send_mouse_scroll(notches, 0);
+    }
 }
 
 void coop_pointer_scroll(int vertical, int horizontal) {
