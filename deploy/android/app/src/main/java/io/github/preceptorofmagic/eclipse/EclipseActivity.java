@@ -300,20 +300,11 @@ public class EclipseActivity extends SDLActivity {
      * or the Start wheel. A Play/Pause from a controller with a Start button is taken as that controller's Start; one
      * that follows a real Start from the same controller within TvKeys.START_TWIN_MS is the copy and is dropped. */
     private final SparseLongArray lastRealStart = new SparseLongArray();
-    private int keyLogLines;
 
     /** @return the event to dispatch, or null to drop it. */
     private KeyEvent controllerStart(KeyEvent event) {
         final int code = event.getKeyCode();
         final boolean controller = isControllerEvent(event);
-        if (keyLogLines < 60 && (controller || code == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)) {
-            keyLogLines++;
-            InputDevice device = event.getDevice();
-            Log.i(TAG, "controller key " + code + " action " + event.getAction() + " repeat " + event.getRepeatCount() +
-                    " device " + event.getDeviceId() + " (" + (device != null ? device.getName() : "none") + ") source 0x" +
-                    Integer.toHexString(event.getSource()) + " sdl_joystick " +
-                    SDLControllerManager.isDeviceSDLJoystick(event.getDeviceId()));
-        }
         final long now = SystemClock.uptimeMillis();
         if (controller && code == KeyEvent.KEYCODE_BUTTON_START) {
             lastRealStart.put(event.getDeviceId(), now);

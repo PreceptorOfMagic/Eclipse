@@ -382,12 +382,6 @@ void stream_input_handle_key(stream_input_t *input, const SDL_KeyboardEvent *eve
         return;
     }
 #elif TARGET_ANDROID
-    /* SDL turns a controller button into a KEY when it has no open joystick for the device (Android_OnPadDown):
-     * Start becomes Menu, which goes to the host as the Applications key. Logged, as a sign of exactly that. */
-    if (event->keysym.scancode == SDL_SCANCODE_MENU && event->state == SDL_PRESSED && !event->repeat) {
-        commons_log_info("Input", "Keyboard Menu key (a controller's Start arrives as this when SDL has no open "
-                                  "joystick for it)");
-    }
     if (stream_input_android_intercept_remote_keys(input, event, &keyCode)) {
         return;
     }

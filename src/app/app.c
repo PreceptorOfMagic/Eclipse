@@ -538,19 +538,6 @@ static int app_event_filter(void *userdata, SDL_Event *event) {
             app_input_handle_event(&app->input, event);
             return 0;
         }
-#if TARGET_ANDROID
-        case SDL_JOYBUTTONDOWN: {
-            /* The raw joystick button a press arrives as, before the controller mapping (input_gamepad.c logs that
-             * mapping): which index a Switch Pro Controller's + becomes on the SHIELD TV (2026-10-22). Capped. */
-            static unsigned joy_button_lines;
-            if (joy_button_lines < 40) {
-                joy_button_lines++;
-                commons_log_info("Input", "Joystick instance %d raw button %d down", (int) event->jbutton.which,
-                                 event->jbutton.button);
-            }
-            break;
-        }
-#endif
         case SDL_JOYDEVICEADDED:
         case SDL_CONTROLLERDEVICEADDED:
         case SDL_CONTROLLERDEVICEREMAPPED: {
