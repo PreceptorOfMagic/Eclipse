@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Eclipse
+GenericName=Game Streaming Client
+Comment=Play games streamed from your PCs
+Exec=eclipse
+Icon=io.github.PreceptorOfMagic.Eclipse
+Terminal=false
+Categories=Game;Network;RemoteAccess;
+Keywords=moonlight;sunshine;apollo;umbra;stream;gamestream;
+StartupWMClass=io.github.PreceptorOfMagic.Eclipse

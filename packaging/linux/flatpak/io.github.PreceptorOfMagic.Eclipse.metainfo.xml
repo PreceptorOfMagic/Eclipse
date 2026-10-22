@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.PreceptorOfMagic.Eclipse</id>
+  <name>Eclipse</name>
+  <summary>Play games streamed from your PCs</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.preceptorofmagic">
+    <name>PreceptorOfMagic</name>
+  </developer>
+  <description>
+    <p>Eclipse is a game-streaming client for Umbra, Apollo and Sunshine hosts, with co-op: two PCs streamed
+    side by side in one window.</p>
+  </description>
+  <launchable type="desktop-id">io.github.PreceptorOfMagic.Eclipse.desktop</launchable>
+  <url type="homepage">https://preceptorofmagic.github.io/Eclipse-Umbra-Project-Hub/</url>
+  <url type="bugtracker">https://github.com/PreceptorOfMagic/Eclipse/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.3.5" date="2026-10-22"/>
+  </releases>
+</component>

@@ -1,0 +1,304 @@
+# Eclipse for Linux as a Flatpak. Same runtime as Umbra for Linux (org.freedesktop.Platform 25.08), so a PC
+# with both downloads it once. The dependencies are the pins and options of scripts/linux/portable/build_deps.sh
+# (the Ubuntu 22.04 tarball build), built here against the runtime instead of a sysroot.
+app-id: io.github.PreceptorOfMagic.Eclipse
+runtime: org.freedesktop.Platform
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+command: eclipse
+separate-locales: false
+finish-args:
+  - --share=network          # hosts, and mDNS discovery (embedded libmicrodns, so no Avahi bus name)
+  - --share=ipc              # X11 shared memory
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio      # PulseAudio or PipeWire's Pulse server
+  - --device=all             # controllers (evdev/hidraw) and the GPU (VA-API, NVDEC)
+  # The settings and pairings of the tarball build, shared rather than copied: SDL_GetPrefPath() resolves
+  # this folder once the launcher points XDG_DATA_HOME back at the user's own data directory.
+  - --filesystem=xdg-data/com.limelight/moonlight-tv:create
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/pkgconfig
+  - /lib/cmake
+  - /lib/*.a
+  - /lib/*.la
+  - /share/aclocal
+  - /share/doc
+  - /share/man
+  - /bin/sdl2-config
+  - /bin/curl-config
+
+modules:
+  # ONE shared, thread-safe mbedTLS for curl, libgamestream and moonlight-common-c (build_deps.sh step_mbedtls:
+  # three static copies interposed inside one TLS handshake and crashed).
+  - name: mbedtls
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DENABLE_PROGRAMS=OFF
+      - -DENABLE_TESTING=OFF
+      - -DUSE_SHARED_MBEDTLS_LIBRARY=ON
+      - -DUSE_STATIC_MBEDTLS_LIBRARY=OFF
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+    sources:
+      - type: archive
+        url: https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
+        sha256: a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+      - type: shell
+        commands:
+          - python3 scripts/config.py -f include/mbedtls/mbedtls_config.h set MBEDTLS_THREADING_C
+          - python3 scripts/config.py -f include/mbedtls/mbedtls_config.h set MBEDTLS_THREADING_PTHREAD
+
+  # HTTP/HTTPS only, TLS by the mbedTLS above; the app supplies its own CA bundle (curl-ca-bundle.crt).
+  - name: curl
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_STATIC_LIBS=OFF
+      - -DBUILD_CURL_EXE=OFF
+      - -DBUILD_TESTING=OFF
+      - -DBUILD_LIBCURL_DOCS=OFF
+      - -DBUILD_MISC_DOCS=OFF
+      - -DENABLE_CURL_MANUAL=OFF
+      - -DHTTP_ONLY=ON
+      - -DCURL_USE_MBEDTLS=ON
+      - -DCURL_USE_OPENSSL=OFF
+      - -DCURL_USE_LIBPSL=OFF
+      - -DCURL_USE_LIBSSH2=OFF
+      - -DCURL_USE_LIBSSH=OFF
+      - -DUSE_NGHTTP2=OFF
+      - -DUSE_LIBIDN2=OFF
+      - -DCURL_BROTLI=OFF
+      - -DCURL_ZSTD=OFF
+      - -DCURL_ZLIB=OFF
+      - -DCURL_DISABLE_LDAP=ON
+      - -DENABLE_ARES=OFF
+      - -DCURL_CA_BUNDLE=none
+      - -DCURL_CA_PATH=none
+      - -DCURL_CA_FALLBACK=OFF
+      - -DENABLE_UNIX_SOCKETS=ON
+      - -DCURL_USE_GSSAPI=OFF
+      - -DUSE_LIBRTMP=OFF
+      - -DMBEDTLS_INCLUDE_DIR=/app/include
+      - -DMBEDTLS_LIBRARY=/app/lib/libmbedtls.so
+      - -DMBEDX509_LIBRARY=/app/lib/libmbedx509.so
+      - -DMBEDCRYPTO_LIBRARY=/app/lib/libmbedcrypto.so
+    sources:
+      - type: archive
+        url: https://curl.se/download/curl-8.22.0.tar.xz
+        sha256: f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
+      # curl 8.22's mbedTLS backend rejected every in-memory PEM client key (missing terminating NUL).
+      - type: patch
+        path: ../../../scripts/linux/portable/patches/curl-8.22.0-mbedtls-pem-key-blob.patch
+
+  # Static; its libm need moves into Libs, since consumers link Libs only.
+  - name: opus
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DBUILD_SHARED_LIBS=OFF
+      - -DOPUS_BUILD_SHARED_LIBRARY=OFF
+      - -DOPUS_BUILD_TESTING=OFF
+      - -DOPUS_BUILD_PROGRAMS=OFF
+    post-install:
+      - >-
+        sed -i 's|^Libs: \(.*-lopus\)$|Libs: \1 -lm|' /app/lib/pkgconfig/opus.pc
+      - >-
+        grep -q '^Libs: .*-lopus -lm$' /app/lib/pkgconfig/opus.pc
+    sources:
+      - type: archive
+        url: https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+        sha256: 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+
+  # The pin cmake/ExternalINIH.cmake uses, built here so the client never falls back to an ExternalProject.
+  - name: inih
+    buildsystem: simple
+    build-commands:
+      - cc -std=gnu17 -O2 -fPIC -c ini.c -o ini.o
+      - ar rcs libinih.a ini.o
+      - install -Dm644 libinih.a /app/lib/libinih.a
+      - install -Dm644 ini.h /app/include/ini.h
+      - mkdir -p /app/lib/pkgconfig
+      - >-
+        printf 'prefix=/app\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\n\nName: inih\nDescription: simple .INI file parser\nVersion: 58\nLibs: -L${libdir} -linih\nCflags: -I${includedir}\n'
+        > /app/lib/pkgconfig/inih.pc
+    sources:
+      - type: archive
+        url: https://github.com/benhoyt/inih/archive/refs/tags/r58.tar.gz
+        sha256: e79216260d5dffe809bda840be48ab0eec7737b2bb9f02d2275c1b46344ea7b7
+
+  # Header-only; FFmpeg's NVDEC dlopens libcuda/libnvcuvid at run time (from the GL.nvidia extension).
+  - name: nv-codec-headers
+    buildsystem: simple
+    build-commands:
+      - make PREFIX=/app install
+    sources:
+      - type: archive
+        url: https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n13.0.19.1.tar.gz
+        sha256: c293161bd92dac53f2f8fab08abcd4f96773c3644a57b23c2260b4be2311ab2f
+
+  # Bundled, not the runtime's: 25.08's libSDL2-2.0.so.0 is sdl2-compat over SDL3, a different implementation
+  # from every tested Eclipse build. Every desktop backend is loaded at run time.
+  - name: sdl2
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DSDL_SHARED=ON
+      - -DSDL_STATIC=OFF
+      - -DSDL_TEST=OFF
+      - -DSDL_TESTS=OFF
+      - -DSDL_RPATH=OFF
+      - -DSDL_X11=ON
+      - -DSDL_X11_SHARED=ON
+      - -DSDL_WAYLAND=ON
+      - -DSDL_WAYLAND_SHARED=ON
+      - -DSDL_WAYLAND_LIBDECOR=ON
+      - -DSDL_WAYLAND_LIBDECOR_SHARED=ON
+      - -DSDL_WAYLAND_QT_TOUCH=OFF
+      - -DSDL_KMSDRM=ON
+      - -DSDL_KMSDRM_SHARED=ON
+      - -DSDL_OPENGL=ON
+      - -DSDL_OPENGLES=ON
+      - -DSDL_VULKAN=ON
+      - -DSDL_PULSEAUDIO=ON
+      - -DSDL_PULSEAUDIO_SHARED=ON
+      - -DSDL_PIPEWIRE=ON
+      - -DSDL_PIPEWIRE_SHARED=ON
+      - -DSDL_ALSA=ON
+      - -DSDL_ALSA_SHARED=ON
+      - -DSDL_JACK=OFF
+      - -DSDL_SNDIO=OFF
+      - -DSDL_ESD=OFF
+      - -DSDL_ARTS=OFF
+      - -DSDL_NAS=OFF
+      - -DSDL_OSS=OFF
+      - -DSDL_LIBUDEV=ON
+      - -DSDL_DBUS=ON
+      - -DSDL_IBUS=OFF
+      - -DSDL_HIDAPI=ON
+      - -DSDL_HIDAPI_LIBUSB=OFF
+      - -DSDL_LIBSAMPLERATE=OFF
+      - -DSDL_CCACHE=OFF
+    sources:
+      - type: archive
+        url: https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
+        sha256: 5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165
+
+  # PNG/JPEG via the built-in stb decoder.
+  - name: sdl2-image
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DSDL2IMAGE_VENDORED=OFF
+      - -DSDL2IMAGE_DEPS_SHARED=OFF
+      - -DSDL2IMAGE_BACKEND_STB=ON
+      - -DSDL2IMAGE_PNG=ON
+      - -DSDL2IMAGE_JPG=ON
+      - -DSDL2IMAGE_AVIF=OFF
+      - -DSDL2IMAGE_JXL=OFF
+      - -DSDL2IMAGE_TIF=OFF
+      - -DSDL2IMAGE_WEBP=OFF
+      - -DSDL2IMAGE_SAMPLES=OFF
+      - -DSDL2IMAGE_TESTS=OFF
+    sources:
+      - type: archive
+        url: https://github.com/libsdl-org/SDL_image/releases/download/release-2.8.12/SDL2_image-2.8.12.tar.gz
+        sha256: 393f5efb50536ec13ca4f4affb69cc9966d3c3f969e6c5e701faddf9f9785381
+
+  # Decode-only, the codecs Windows advertises (H.264 + HEVC); VA-API (Intel/AMD) and NVDEC (NVIDIA).
+  # Nothing auto-detected, so no stray dependencies.
+  - name: ffmpeg
+    config-opts:
+      - --enable-shared
+      - --disable-static
+      - --enable-pic
+      - --disable-programs
+      - --disable-doc
+      - --disable-debug
+      - --disable-autodetect
+      - --disable-everything
+      - --disable-network
+      - --disable-avformat
+      - --disable-avdevice
+      - --disable-avfilter
+      - --disable-swresample
+      - --enable-avcodec
+      - --enable-avutil
+      - --enable-swscale
+      - --enable-decoder=h264,hevc
+      - --enable-parser=h264,hevc
+      - --enable-vaapi
+      - --enable-libdrm
+      - --enable-hwaccel=h264_vaapi,hevc_vaapi
+      - --enable-ffnvcodec
+      - --enable-nvdec
+      - --enable-hwaccel=h264_nvdec,hevc_nvdec
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
+        sha256: cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
+
+  - name: eclipse
+    buildsystem: simple
+    build-commands:
+      # scripts/bootstrap_client_deps.sh, without git: the three dependency patches on their pinned bases.
+      - patch -d core/moonlight-common-c -p1 --forward < patches/client-deps/moonlight-common-c.patch
+      - patch -d third_party/ss4s -p1 --forward < patches/client-deps/ss4s.patch
+      - patch -d third_party/commons -p1 --forward < patches/client-deps/commons.patch
+      - >-
+        cmake -S . -B _build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_LIBDIR=/app/lib -DCMAKE_PREFIX_PATH=/app
+        -DCMAKE_C_FLAGS="-ffile-prefix-map=$PWD=/src" -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$PWD=/src"
+      - cmake --build _build
+      - install -Dm755 packaging/linux/flatpak/eclipse.sh /app/bin/eclipse
+      - install -Dm755 "$(find _build -name moonlight-tv -type f -not -path '*/CMakeFiles/*' -print -quit)" /app/bin/moonlight-tv
+      # The client's libraries and the SS4S modules in the private folder the Linux build's rpath names
+      # (CMakeLists.txt: <libdir>/moonlight-tv, i.e. /app/lib/moonlight-tv). The modules are not named lib*, so
+      # ldconfig never caches them; NEEDED and dlopen() by bare name find them through that rpath, as the
+      # tarball's patchelf'd $ORIGIN/../lib. ss4s_modules.ini is read beside ss4s_modules.so (dladdr).
+      - >-
+        for f in libgamestream.so libmoonlight-common-c.so libmicrodns.so.1; do
+        install -Dm644 "$(find _build -name "$f" -not -path '*/CMakeFiles/*' -print -quit)" "/app/lib/moonlight-tv/$f"; done
+      - >-
+        m="$(dirname "$(find _build -name ss4s_modules.so -not -path '*/CMakeFiles/*' -print -quit)")";
+        for f in "$m"/*.so; do install -m644 "$f" /app/lib/moonlight-tv/; done;
+        install -m644 "$m/ss4s_modules.ini" /app/lib/moonlight-tv/ss4s_modules.ini
+      # Assets the client reads beside its executable (path_assets() = the executable's directory).
+      - install -m644 gamecontrollerdb.txt /app/bin/gamecontrollerdb.txt
+      - install -m644 deploy/webos/assets/gamecontrollerdb_extra.txt /app/bin/gamecontrollerdb_extra.txt
+      - install -m644 cacert.pem /app/bin/curl-ca-bundle.crt
+      - >-
+        n=0; for mo in _build/mo/*/LC_MESSAGES/moonlight-tv.mo; do
+        lang="$(basename "$(dirname "$(dirname "$mo")")")";
+        install -Dm644 "$mo" "/app/share/locale/$lang/LC_MESSAGES/moonlight-tv.mo"; n=$((n+1)); done; test "$n" -gt 0
+      - python3 packaging/linux/flatpak/install-icons.py res/eclipse.ico /app/share/icons/hicolor
+      - install -Dm644 packaging/linux/flatpak/io.github.PreceptorOfMagic.Eclipse.desktop /app/share/applications/io.github.PreceptorOfMagic.Eclipse.desktop
+      - install -Dm644 packaging/linux/flatpak/io.github.PreceptorOfMagic.Eclipse.metainfo.xml /app/share/metainfo/io.github.PreceptorOfMagic.Eclipse.metainfo.xml
+      - install -Dm644 LICENSE.txt /app/share/licenses/io.github.PreceptorOfMagic.Eclipse/LICENSE.txt
+      - install -m644 COPYRIGHT ACKNOWLEDGEMENTS.md /app/share/licenses/io.github.PreceptorOfMagic.Eclipse/
+    sources:
+      # The Eclipse 1.3.5 code (tag eclipse-v1.3.5); flatpak-builder fetches its pinned submodules.
+      - type: git
+        url: https://github.com/PreceptorOfMagic/Eclipse.git
+        commit: 21718d0d1c6ab96207b968fecbbd0f4ee91e0b55
+      # The packaging files of this branch, which the 1.3.5 tag predates.
+      - type: dir
+        path: .
+        dest: packaging/linux/flatpak
+      - type: file
+        url: https://raw.githubusercontent.com/gabomdq/SDL_GameControllerDB/5a12daa568d19344f9b6e9286ef5929833b25c7c/gamecontrollerdb.txt
+        sha256: 07ec5b753e685c4829987919b27905cc3c45c8e18c11b3046e275fcf38b0f3cb
+      - type: file
+        url: https://curl.se/ca/cacert-2026-09-25.pem
+        sha256: a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
+        dest-filename: cacert.pem
