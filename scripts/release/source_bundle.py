@@ -24,7 +24,7 @@ ROOT_PATHS = ('CMakeLists.txt', 'LICENSE.txt', 'LICENSES.md', 'COPYRIGHT',
               'ACKNOWLEDGEMENTS.md', 'README.md', 'SUPPORT.md', '.gitmodules',
               'cmake', 'core', 'src', 'third_party', 'res', 'patches', 'deploy',
               'experimental/gpu-hevc', 'tests', 'scripts/bootstrap_client_deps.sh',
-              'scripts/windows', 'scripts/linux', 'scripts/webos', 'scripts/release',
+              'scripts/windows', 'scripts/linux', 'scripts/webos', 'scripts/android', 'scripts/release',
               'scripts/lib', 'scripts/tv/sync_ares_device.sh',
               'docs/licenses')
 

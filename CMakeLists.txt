@@ -4,7 +4,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 # Keep configuration deterministic and offline. The previous tag/API lookup was
 # discarded immediately by this same version, but still made an untagged source
 # checkout depend on git, curl and GitHub being available.
-project(moonlight VERSION 1.3.5 LANGUAGES C CXX)
+project(moonlight VERSION 1.4.0 LANGUAGES C CXX)
 
 # To suppress warnings for MbedTLS
 if (POLICY CMP0048)
