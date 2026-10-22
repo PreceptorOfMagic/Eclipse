@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Eclipse desktop icon</title>
+  <desc id="desc">The webOS tile E1 (webos-icon.svg: two violet panels full-bleed + white seam) with rounded corners, because a desktop does not clip icons the way the webOS launcher clips tiles. Chosen by the user 2026-10-22 for Windows and Linux (res/eclipse.ico).</desc>
+  <defs>
+    <linearGradient id="l" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8b47f5"/><stop offset="1" stop-color="#6d28d9"/></linearGradient>
+    <linearGradient id="r" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d09dfd"/><stop offset="1" stop-color="#b57bf8"/></linearGradient>
+  </defs>
+  <clipPath id="c"><rect width="64" height="64" rx="14"/></clipPath>
+  <g clip-path="url(#c)">
+  <rect width="32" height="64" fill="url(#l)"/>
+  <rect x="32" width="32" height="64" fill="url(#r)"/>
+  <path d="M32 9v46" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>
+  </g>
+</svg>
