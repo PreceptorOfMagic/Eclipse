@@ -51,6 +51,7 @@ moonlight-common-c's Reed–Solomon forward-error-correction implementation cred
 ### Companion projects
 
 - [SudoVDA](https://github.com/SudoMaker/SudoVDA), by **SudoMaker** and contributors, supplies virtual-display functionality while carrying inherited Microsoft/VirtualDrivers lineage that must remain credited in its distributions.
+- [Moonlight V+](https://github.com/qiin2333/moonlight-vplus), by **qiin2333** and contributors (GPL-3.0): Eclipse's hold-Start shortcut wheel (`src/app/stream/input/start_wheel.c`, since 1.3.5) is a port of its `StartGestureReducer.kt` (commit `393643a4`), adapted for Eclipse.
 - Current fork integration and testing are maintained by **[@PreceptorOfMagic](https://github.com/PreceptorOfMagic)** with the people who report, test, review and contribute changes.
 
 ## Client source and runtime dependencies
