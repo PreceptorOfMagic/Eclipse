@@ -5,6 +5,9 @@
 #include "util/path.h"
 
 #if defined(TARGET_ANDROID)
+#include <dirent.h>
+#include <string.h>
+#include <stdio.h>
 #include <unistd.h>
 #else
 #include <fontconfig/fontconfig.h>
@@ -14,6 +17,8 @@
 
 #if !defined(TARGET_ANDROID)
 static bool fontset_load_fc(app_fontset_t *set, FcPattern *font);
+#else
+static bool fontset_load_any_system(app_fontset_t *set);
 #endif
 
 static bool fontset_load_path(app_fontset_t *set, const char *file);
@@ -80,6 +85,9 @@ int app_font_init(app_fonts_t *fonts, int dpi) {
     bool loaded = false;
     for (int i = 0; primary[i] != NULL && !loaded; i++) {
         loaded = access(primary[i], R_OK) == 0 && fontset_load_path(&fontset, primary[i]);
+    }
+    if (!loaded) {
+        loaded = fontset_load_any_system(&fontset);
     }
     if (!loaded) {
         fontset_destroy_fonts(&iconfonts);
@@ -213,6 +221,38 @@ static bool fontset_load_fc(app_fontset_t *set, FcPattern *font) {
 #endif
 
 /* The three sizes from one font file; all or nothing. */
+#if defined(TARGET_ANDROID)
+/* NONE OF THE KNOWN NAMES: any regular face in /system/fonts, Roboto's and then Noto Sans's first. Every Android a
+ * SHIELD TV runs has Roboto-Regular.ttf, but a font is all the UI needs to start, and a system whose files are named
+ * otherwise should not stop it. */
+static bool fontset_load_any_system(app_fontset_t *set) {
+    static const char *const prefer[] = {"Roboto", "NotoSans-", ""};
+    for (size_t pass = 0; pass < sizeof(prefer) / sizeof(prefer[0]); pass++) {
+        DIR *dir = opendir("/system/fonts");
+        if (dir == NULL) {
+            return false;
+        }
+        bool loaded = false;
+        for (struct dirent *entry; !loaded && (entry = readdir(dir)) != NULL;) {
+            const char *name = entry->d_name;
+            const size_t len = strlen(name);
+            if (strstr(name, "Regular") == NULL || strncmp(name, prefer[pass], strlen(prefer[pass])) != 0 || len < 5 ||
+                (strcmp(name + len - 4, ".ttf") != 0 && strcmp(name + len - 4, ".otf") != 0)) {
+                continue;
+            }
+            char path[320];
+            snprintf(path, sizeof(path), "/system/fonts/%s", name);
+            loaded = fontset_load_path(set, path);
+        }
+        closedir(dir);
+        if (loaded) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 static bool fontset_load_path(app_fontset_t *set, const char *file) {
     lv_ft_info_t ft_info = {.name=(char *) file, .style = FT_FONT_STYLE_NORMAL, .weight = set->normal_size};
     if (lv_ft_font_init(&ft_info)) {
