@@ -72,10 +72,13 @@ typedef struct {
  * in milliseconds in /tmp/coop-audio-depth and reconnect. */
 #define COOP_AUDIO_DEFAULT_DEPTH_MS 40
 
-/* Produced-ahead pull (Android): 5 ms blocks the worker keeps mixed for the device. 15 ms covers the worker's 1 ms poll,
- * the scheduler, and a gate block's worst case (~3 ms at the SHIELD TV's full clock: 1.2 M cycles average, spikes to
- * ~2.5x), and is the whole of the latency this mode adds. */
-#define COOP_AUDIO_PULL_AHEAD_BLOCKS 3
+/* Produced-ahead pull (Android): 5 ms blocks the worker keeps mixed for the device, the whole of the latency this mode
+ * adds. 15 ms (3) assumed a gate block costs ~3 ms at the SHIELD TV's full clock (1.2 M cycles on the bench, spikes
+ * ~2.5x); on a live co-op mission it cost ~7 M (the worker held 70% of a 2.0 GHz core: the gate's offset-search FFT,
+ * ingest and band matching), its spikes outran 15 ms and the device played holes of silence, the likely source of the
+ * crackle the user heard (2026-10-22). 50 ms is a STOPGAP that lets the spikes average out while the gate is made
+ * cheaper; whether it is acceptable is the user's call by ear. */
+#define COOP_AUDIO_PULL_AHEAD_BLOCKS 10
 
 #if TARGET_ANDROID
 #include <sys/resource.h>
