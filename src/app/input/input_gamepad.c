@@ -12,6 +12,9 @@
 #include "input_gamepad_mapping.h"
 #include "app.h"
 #include "app_settings.h"
+#if defined(TARGET_ANDROID)
+#include "platform/android/android_platform.h"
+#endif
 
 static int new_gamepad_state_index(app_input_t *input, SDL_GameController *controller);
 
@@ -413,6 +416,23 @@ static bool tv_should_ignore_controller_like_device(const char *name, const char
                          guidstr);
         return true;
     }
+#if defined(TARGET_ANDROID)
+    /* ANDROID SAYS WHICH DEVICES ARE GAMEPADS. SDL turns a hat into d-pad buttons here, so a d-pad-only pad (an 8BitDo
+     * SN30 or Zero 2, a Sega-style M30, an iBuffalo SNES pad -- all in SDL's own Android table) has no SDL axes and the
+     * shape test below threw it out, and the SHIELD TV's virtual-search device -- gamepad keys and no joystick at all
+     * -- was kept out only by that same axis count. A device that reports a joystick (sticks, triggers or a hat) is a
+     * gamepad; one that reports only keys is not. The shape test stays for when the activity cannot say. */
+    const int has_joystick = android_controller_has_joystick(SDL_JoystickGetVendor(joystick),
+                                                             SDL_JoystickGetProduct(joystick), name);
+    if (has_joystick == 1) {
+        return false;
+    }
+    if (has_joystick == 0) {
+        commons_log_info("Input", "Ignoring controller-like device with no joystick (keys only): %s. GUID: %s",
+                         display_name, guidstr);
+        return true;
+    }
+#endif
     if (axes < 4 || buttons < 8) {
         commons_log_info("Input",
                          "Ignoring controller-like device with weak gamepad shape: %s. GUID: %s, axes: %d, buttons: %d, hats: %d",

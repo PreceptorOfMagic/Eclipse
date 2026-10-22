@@ -374,23 +374,45 @@ public class EclipseActivity extends SDLActivity {
         return out.toString();
     }
 
-    /** Which of keyCodes a controller can produce on this Android version -- its key layout, through
-     *  InputDevice.hasKeys, where SDL's own button mask comes from -- for input_gamepad_mapping.c to judge a
-     *  mapping by (controller_mapping_android.h). The controller is the SDL joystick with this vendor and product,
-     *  or with this name when it reports neither; null when none is connected. */
-    static boolean[] controllerKeys(int vendorId, int productId, String name, int[] keyCodes) {
+    /** The SDL joystick with this vendor and product -- by name among them when several share them (the SHIELD TV's
+     *  virtual-search and shield-ask-remote both say Google 0100) -- or with this name when it reports neither. */
+    private static InputDevice findController(int vendorId, int productId, String name) {
         boolean byName = vendorId == 0 && productId == 0;
+        InputDevice first = null;
         for (int id : InputDevice.getDeviceIds()) {
             InputDevice device = InputDevice.getDevice(id);
             if (device == null || !SDLControllerManager.isDeviceSDLJoystick(id)) {
                 continue;
             }
-            if (byName ? name != null && name.equals(device.getName())
-                    : device.getVendorId() == vendorId && device.getProductId() == productId) {
-                return device.hasKeys(keyCodes);
+            boolean named = name != null && name.equals(device.getName());
+            if (byName ? named : device.getVendorId() == vendorId && device.getProductId() == productId) {
+                if (named || byName) {
+                    return device;
+                }
+                if (first == null) {
+                    first = device;
+                }
             }
         }
-        return null;
+        return first;
+    }
+
+    /** Which of keyCodes a controller can produce on this Android version -- its key layout, through
+     *  InputDevice.hasKeys, where SDL's own button mask comes from -- for input_gamepad_mapping.c to judge a
+     *  mapping by (controller_mapping_android.h). Null when the controller is not connected. */
+    static boolean[] controllerKeys(int vendorId, int productId, String name, int[] keyCodes) {
+        InputDevice device = findController(vendorId, productId, name);
+        return device != null ? device.hasKeys(keyCodes) : null;
+    }
+
+    /** Whether a controller reports a joystick -- sticks, triggers or a hat, the d-pad of a d-pad-only pad -- and not
+     *  only keys: 1 yes, 0 no, -1 not connected (input_gamepad.c). */
+    static int controllerHasJoystick(int vendorId, int productId, String name) {
+        InputDevice device = findController(vendorId, productId, name);
+        if (device == null) {
+            return -1;
+        }
+        return (device.getSources() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ? 1 : 0;
     }
 
     /* --- audio outputs ---------------------------------------------------------------------------------- */

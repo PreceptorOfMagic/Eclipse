@@ -90,6 +90,11 @@ void android_go_home(void);
  *  or when no such controller is connected. */
 bool android_controller_keys(int vendor, int product, const char *name, const int *keycodes, int count, bool *has);
 
+/** Whether the controller with this vendor and product (or this name) reports a joystick -- sticks, triggers or a
+ *  hat -- rather than only keys (EclipseActivity.controllerHasJoystick): 1 yes, 0 no, -1 unknown (the co-op peer, or
+ *  no such controller). */
+int android_controller_has_joystick(int vendor, int product, const char *name);
+
 /**
  * The audio outputs a stream can play to, by the names the audio setting stores ("HDMI: LG TV", see
  * deploy/android/.../AudioOutputs.java): at most @p max, each malloc'd for the caller. 0 in the co-op peer.

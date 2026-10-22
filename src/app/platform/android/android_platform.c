@@ -233,6 +233,31 @@ bool android_controller_keys(int vendor, int product, const char *name, const in
     return ok;
 }
 
+int android_controller_has_joystick(int vendor, int product, const char *name) {
+    JNIEnv *env = activity_env();
+    if (env == NULL) {
+        return -1;
+    }
+    jclass cls = activity_class(env);
+    if (cls == NULL) {
+        return -1;
+    }
+    int result = -1;
+    jmethodID method = (*env)->GetStaticMethodID(env, cls, "controllerHasJoystick", "(IILjava/lang/String;)I");
+    if (method != NULL) {
+        jstring jname = name != NULL ? (*env)->NewStringUTF(env, name) : NULL;
+        result = (int) (*env)->CallStaticIntMethod(env, cls, method, (jint) vendor, (jint) product, jname);
+        clear_exception(env, "controllerHasJoystick");
+        if (jname != NULL) {
+            (*env)->DeleteLocalRef(env, jname);
+        }
+    } else {
+        clear_exception(env, "controllerHasJoystick lookup");
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    return result;
+}
+
 int android_audio_output_names(char **names, int max) {
     JNIEnv *env = activity_env();
     if (env == NULL) {
