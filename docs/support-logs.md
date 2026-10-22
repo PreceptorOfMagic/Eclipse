@@ -10,6 +10,7 @@ is working and is tested across all versions". Assume ONE file is all you will e
 | Windows | Settings → About → tick **Keep diagnostic logs**, restart, reproduce, then **Share logs…**: send the one file it names (`…\logs\eclipse-logs.txt`; **Open folder** shows it). | Start it twice more, then send `%APPDATA%\com.limelight\moonlight-tv\logs\eclipse-logs.txt`. |
 | Linux | Same; **Share logs…** writes the same file and also serves the network page. | Same file: `~/.local/share/com.limelight/moonlight-tv/logs/eclipse-logs.txt` (`$XDG_DATA_HOME` if set). |
 | webOS | Same setting; **Share logs…** shows an address (`http://<TV>:47900/<token>/`): open it on a phone or PC on the same network and download **everything as one file** (`all.txt`). | Not retrievable while it never starts (the page needs the app running). The kept logs survive and come out with the next start that works (e.g. after an update). |
+| Android TV | Same as webOS: **Share logs…** serves the same page. | With ADB, `adb logcat -s Eclipse` shows the live log ([Android guide](BUILD_ANDROID.md)). |
 
 "Start it twice more" works because of the **run marker** (`logs/running.txt`): a run that does not end cleanly
 (crash, frozen and closed by force, failed start, power loss) makes the NEXT start keep its log even with the setting

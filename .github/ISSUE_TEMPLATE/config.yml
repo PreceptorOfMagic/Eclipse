@@ -1,10 +1,10 @@
 blank_issues_enabled: false
 contact_links:
   - name: Project setup and current status
-    url: https://github.com/PreceptorOfMagic/PreceptorOfMagic.github.io
+    url: https://preceptorofmagic.github.io/Eclipse-Umbra-Project-Hub/
     about: Read the shared project hub, quick start, tested-status matrix, known limits, and launch warnings before opening an issue.
   - name: Umbra host issues
-    url: https://github.com/PreceptorOfMagic/umbra/issues
+    url: https://github.com/PreceptorOfMagic/Umbra/issues
     about: Report host capture, encoder, pairing, virtual-display, service, installer, or host web-interface problems in the Umbra repository.
   - name: Upstream Moonlight community
     url: https://moonlight-stream.org/discord
