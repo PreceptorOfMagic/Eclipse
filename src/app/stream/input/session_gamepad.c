@@ -280,10 +280,8 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
                                gamepad->rightStickX, gamepad->rightStickY);
 }
 
-#if TARGET_ANDROID
 /* The controller whose stick or triggers last moved the virtual mouse, so that ITS release is the one passed on. */
 static SDL_JoystickID vmouse_driver = -1;
-#endif
 
 void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEvent *event) {
     app_gamepad_state_t *gamepad = app_input_gamepad_state_by_instance_id(input->input, event->which);
@@ -333,23 +331,18 @@ void stream_input_handle_caxis(stream_input_t *input, const SDL_ControllerAxisEv
     if (vmouse_intercepted(input, gamepad)) {
         vmouse_set_vector(&input->vmouse, gamepad->rightStickX, gamepad->rightStickY);
         vmouse_set_trigger(&input->vmouse, gamepad->leftTrigger, gamepad->rightTrigger);
-#if TARGET_ANDROID
         vmouse_driver = gamepad->instance_id;
-#endif
-    }
-#if TARGET_ANDROID
-    else if (session_input_is_vmouse_active(&input->vmouse) && gamepad->instance_id == vmouse_driver) {
+    } else if (session_input_is_vmouse_active(&input->vmouse) && gamepad->instance_id == vmouse_driver) {
         /* THE RELEASE MUST REACH THE VIRTUAL MOUSE TOO. vmouse_intercepted() is false once the stick is back inside
          * the deadzone (so exactly 0) and both triggers are up -- which is the release itself. A stick that springs
          * back from beyond the virtual mouse's threshold in one event left its last speed set, and the pointer kept
-         * moving until the stick was touched again (user, SHIELD, 2026-10-21); a trigger that snaps up the same way
+         * moving until the stick was touched again (user, SHIELD TV, 2026-10-21); a trigger that snaps up the same way
          * left the button held. Both calls act only on a change. Only the controller that was driving it: another
          * controller's idle stick must not stop the pointer under someone else's thumb. */
         vmouse_set_vector(&input->vmouse, 0, 0);
         vmouse_set_trigger(&input->vmouse, 0, 0);
         vmouse_driver = -1;
     }
-#endif
 
     if (input->view_only || !stream_input_moonlight_gamepad_enabled(input)) {
         return;

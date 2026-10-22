@@ -1,3 +1,8 @@
+/*
+ * The Start wheel is a port of Moonlight V+'s StartGestureReducer (https://github.com/qiin2333/moonlight-vplus,
+ * app/src/main/java/com/limelight/binding/input/StartGestureReducer.kt at commit 393643a4), by qiin2333 and
+ * contributors, GPL-3.0; adapted for Eclipse. Credited in ACKNOWLEDGEMENTS.md.
+ */
 #include "start_wheel.h"
 
 #include <Limelight.h>

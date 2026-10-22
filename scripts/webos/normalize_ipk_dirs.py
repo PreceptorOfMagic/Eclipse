@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize only tar directory mode/checksum fields; leave payload bytes intact."""
+"""Normalize only tar directory mode, zero mtime and checksum fields; leave payload bytes intact."""
 import gzip
 import io
 import json
@@ -10,9 +10,41 @@ import stat
 import sys
 import tarfile
 import tempfile
+import time
 
 
-def normalize(blob, app_id):
+def fix_zero_mtimes(raw, mtime, allowed):
+    """Give every tar header whose mtime is 0 (1970-01-01) the build time instead.
+
+    The SDK's ares-package copies each file's stat with Object.keys(); since Node 22 fs.Stats
+    keeps mtime as a prototype getter, so every header was written with mtime 0. webOS 5's
+    package verifier rejects that ("tar: implausibly old time stamp", install error -5).
+    Only the mtime and checksum fields of those headers change; the offsets are recorded in
+    allowed for the caller's mutation check.
+    """
+    fixed = 0
+    pos = 0
+    while pos + 512 <= len(raw):
+        block = raw[pos:pos + 512]
+        if not any(block):
+            break
+        if bytes(block[257:263]) not in (b'ustar\0', b'ustar '):
+            raise ValueError('Unsupported tar header')
+        if block[156:157] in (b'x', b'g', b'L', b'K'):
+            raise ValueError('Unsupported extended tar header')
+        size = int(bytes(block[124:136]).split(b'\0', 1)[0].strip() or b'0', 8)
+        if int(bytes(block[136:148]).split(b'\0', 1)[0].strip() or b'0', 8) == 0:
+            block[136:148] = f'{mtime:011o}\0'.encode('ascii')
+            block[148:156] = b'        '
+            block[148:156] = f'{sum(block):06o}\0 '.encode('ascii')
+            raw[pos:pos + 512] = block
+            allowed.update(range(pos + 136, pos + 156))
+            fixed += 1
+        pos += 512 + (size + 511) // 512 * 512
+    return fixed
+
+
+def normalize(blob, app_id, mtime):
     if not re.fullmatch(r'[a-z0-9]+(?:[.+-][a-z0-9]+)*', app_id):
         raise ValueError('Unsafe application ID')
     if not blob.startswith(b'!<arch>\n'):
@@ -32,6 +64,21 @@ def normalize(blob, app_id):
         name = header[:16].decode('ascii').strip().rstrip('/')
         contents = blob[offset + 60:end]
         padding = blob[end:end + size % 2]
+        if name == 'control.tar.gz':
+            if contents[:4] != b'\x1f\x8b\x08\x00':
+                raise ValueError('Unsupported gzip header')
+            before = gzip.decompress(contents)
+            after = bytearray(before)
+            allowed = set()
+            fixed = fix_zero_mtimes(after, mtime, allowed)
+            if any(a != b and i not in allowed for i, (a, b) in enumerate(zip(before, after))):
+                raise ValueError('Unexpected tar mutation')
+            if fixed:
+                changes.append({'member': name, 'mtime_fixed': fixed})
+            packed = gzip.compress(bytes(after), compresslevel=6, mtime=0)
+            contents = contents[:10] + packed[10:]
+            header = header[:48] + f'{len(contents):<10}'.encode('ascii') + header[58:]
+            padding = b'\n' if len(contents) % 2 else b''
         if name == 'data.tar.gz':
             found += 1
             if contents[:4] != b'\x1f\x8b\x08\x00':
@@ -39,6 +86,9 @@ def normalize(blob, app_id):
             before = gzip.decompress(contents)
             after = bytearray(before)
             allowed = set()
+            fixed = fix_zero_mtimes(after, mtime, allowed)
+            if fixed:
+                changes.append({'member': name, 'mtime_fixed': fixed})
             app_root = 'usr/palm/applications/' + app_id
             userdata = app_root + '/userdata'
             seen_userdata = 0
@@ -102,9 +152,10 @@ def main():
     path = Path(sys.argv[1])
     if path.is_symlink() or not path.is_file():
         raise SystemExit('Expected regular package file')
-    payload, changes = normalize(path.read_bytes(), sys.argv[2])
-    # A second pass verifies all directory headers and produces no more changes.
-    verified, further = normalize(payload, sys.argv[2])
+    mtime = int(time.time())
+    payload, changes = normalize(path.read_bytes(), sys.argv[2], mtime)
+    # A second pass verifies all directory headers and mtimes and produces no more changes.
+    verified, further = normalize(payload, sys.argv[2], mtime)
     if verified != payload or further:
         raise SystemExit('Directory normalization is not idempotent')
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + '.', delete=False) as output:

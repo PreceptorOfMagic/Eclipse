@@ -4,9 +4,7 @@
 #include <Limelight.h>
 #include <SDL_events.h>
 #include <SDL_timer.h>
-#if TARGET_ANDROID
 #include <SDL_atomic.h>
-#endif
 
 #include "config.h"
 #include "input/input_gamepad.h"
@@ -29,7 +27,6 @@ typedef struct session_input_vmouse_t {
         bool modifier;
     } state;
     SDL_TimerID timer_id;
-#if TARGET_ANDROID
     /* IN CO-OP THE STICK POINTS LIKE THE MAGIC REMOTE (session_virt_mouse.c). The timer thread adds
      * its deltas to pending_*; the UI thread, which owns the co-op pointer, applies them to x/y. */
     struct stream_input_t *input;
@@ -37,7 +34,6 @@ typedef struct session_input_vmouse_t {
     /** UI thread only: the pointer's place in the composite, in host pixels, once it has one. */
     int x, y;
     bool placed;
-#endif
 } session_input_vmouse_t;
 
 typedef struct stream_input_t {

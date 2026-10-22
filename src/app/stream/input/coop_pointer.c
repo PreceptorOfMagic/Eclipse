@@ -195,6 +195,8 @@ unsigned coop_pointer_crossings(void) { return crossings; }
 
 bool coop_pointer_split_vertical(void) { return split_vertical; }
 
+bool coop_pointer_has_local_pane(void) { return local_pane >= 0; }
+
 void coop_pointer_pane_centre(int ref_w, int ref_h, int *x, int *y) {
     *x = ref_w / 2;
     *y = ref_h / 2;

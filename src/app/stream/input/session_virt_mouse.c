@@ -3,24 +3,21 @@
 
 #include <SDL_stdinc.h>
 
-#if TARGET_ANDROID
 #include "app.h"
 #include "coop_input.h"
 #include "coop_pointer.h"
 #include "stream/session_priv.h"
 #include "util/bus.h"
-#endif
 
 static short calc_mouse_movement(short axis);
 
 static Uint32 vmouse_timer_callback(Uint32 interval, void *param);
 
-#if TARGET_ANDROID
 /*
- * IN CO-OP THE VIRTUAL MOUSE POINTS LIKE THE MAGIC REMOTE (Android only).
+ * IN CO-OP THE VIRTUAL MOUSE POINTS LIKE THE MAGIC REMOTE.
  *
- * Elsewhere the stick sends deltas, and a delta carries no position, so it always moved the first
- * PC's pointer (coop_pointer.h). Here, while the co-op split is up, the stick keeps a position of
+ * Outside co-op the stick sends deltas, and a delta carries no position, so in co-op it always moved
+ * the first PC's pointer (coop_pointer.h). While the co-op split is up, the stick keeps a position of
  * its own across the whole TV and sends it through coop_pointer_position, the magic remote's path:
  * past the divider it is the other PC's pointer, landing at the matching edge, and clicks, the wheel
  * and the keys go to whichever PC it is over. The position is in host pixels of the composite (two
@@ -30,8 +27,17 @@ static Uint32 vmouse_timer_callback(Uint32 interval, void *param);
  *
  * The co-op pointer's state belongs to the UI thread (coop_input_coord_pump) and this timer runs on
  * SDL's, so the timer only adds its deltas up and posts one apply to the UI thread at a time.
+ *
+ * Not when THIS PC is one of the co-op hosts (Windows, coop_pointer_set_local_pane): a position in
+ * its pane hands the real cursor over to its virtual display, after which coop_pointer_position
+ * drops every further one, so there the stick keeps sending deltas to the first PC as before.
  */
 static void vmouse_coop_apply(void *data);
+
+/** UI thread: whether the stick's steps go through the co-op pointer (see above). */
+static bool vmouse_coop_wanted(const session_input_vmouse_t *vmouse) {
+    return vmouse->state.active && coop_pointer_active() && !coop_pointer_has_local_pane();
+}
 
 /** Timer thread: true when the step was queued for the co-op pointer instead of sent. */
 static bool vmouse_coop_queue(session_input_vmouse_t *vmouse, short dx, short dy, short scroll) {
@@ -110,14 +116,11 @@ static void vmouse_coop_apply(void *data) {
         vmouse_coop_flush(&app->session->input.vmouse);
     }
 }
-#endif
 
 void session_input_set_vmouse_active(session_input_vmouse_t *vmouse, bool active) {
     vmouse->state.active = active;
-#if TARGET_ANDROID
     /* Latched here, on the UI thread that owns the co-op pointer, for the timer thread to read. */
-    SDL_AtomicSet(&vmouse->coop, active && coop_pointer_active());
-#endif
+    SDL_AtomicSet(&vmouse->coop, vmouse_coop_wanted(vmouse));
     if (!active) {
         vmouse_set_vector(vmouse, 0, 0);
         vmouse_set_trigger(vmouse, 0, 0);
@@ -129,11 +132,9 @@ bool session_input_is_vmouse_active(session_input_vmouse_t *vmouse) {
 }
 
 void vmouse_set_vector(session_input_vmouse_t *vmouse, short x, short y) {
-#if TARGET_ANDROID
     /* Again on every stick move (UI thread too), so a split that comes up, or goes, after the virtual
      * mouse was turned on is followed without turning it off and on. */
-    SDL_AtomicSet(&vmouse->coop, vmouse->state.active && coop_pointer_active());
-#endif
+    SDL_AtomicSet(&vmouse->coop, vmouse_coop_wanted(vmouse));
     vmouse->state.x = calc_mouse_movement(x);
     vmouse->state.y = calc_mouse_movement((short) -SDL_max(y, -32767));
     if (vmouse->state.x || vmouse->state.y) {
@@ -146,28 +147,30 @@ void vmouse_set_vector(session_input_vmouse_t *vmouse, short x, short y) {
     }
 }
 
+static void vmouse_send_button(bool down, int button) {
+    const int action = down ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE;
+    if (coop_pointer_has_local_pane()) {
+        LiSendMouseButtonEvent((char) action, button);
+    } else {
+        coop_pointer_button(action, button);
+    }
+}
+
 void vmouse_set_trigger(session_input_vmouse_t *vmouse, char l, char r) {
-    const char trigger_threshold = 64;
-    bool ldown = l > trigger_threshold, rdown = r > trigger_threshold;
-#if TARGET_ANDROID
-    if (vmouse->state.l != ldown || vmouse->state.r != rdown) {
+    /* As unsigned: a full pull is 255, and where char is signed (x86: Windows, Linux) that read as -1,
+     * i.e. not pressed, so a trigger pulled all the way let go of the button. */
+    const unsigned char trigger_threshold = 64;
+    bool ldown = (unsigned char) l > trigger_threshold, rdown = (unsigned char) r > trigger_threshold;
+    if (!coop_pointer_has_local_pane() && (vmouse->state.l != ldown || vmouse->state.r != rdown)) {
         /* Click where the pointer is now, on the PC it is over (coop_pointer_button routes it). */
         vmouse_coop_flush(vmouse);
     }
     if (vmouse->state.l != ldown) {
-        coop_pointer_button(ldown ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_LEFT);
+        vmouse_send_button(ldown, BUTTON_LEFT);
     }
     if (vmouse->state.r != rdown) {
-        coop_pointer_button(rdown ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
+        vmouse_send_button(rdown, BUTTON_RIGHT);
     }
-#else
-    if (vmouse->state.l != ldown) {
-        LiSendMouseButtonEvent(ldown ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_LEFT);
-    }
-    if (vmouse->state.r != rdown) {
-        LiSendMouseButtonEvent(rdown ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
-    }
-#endif
     vmouse->state.l = ldown;
     vmouse->state.r = rdown;
 }
@@ -190,18 +193,12 @@ static Uint32 vmouse_timer_callback(Uint32 interval, void *param) {
     if (vmouse->state.modifier) {
         abs_y /= 20.0;
         const short amount = (short) (abs_y > 1 ? -y : -y / abs_y);
-#if TARGET_ANDROID
-        if (!vmouse_coop_queue(vmouse, 0, 0, amount))
-#endif
-        {
+        if (!vmouse_coop_queue(vmouse, 0, 0, amount)) {
             LiSendHighResScrollEvent(amount);
         }
     } else {
         const short dx = (short) (abs_x > 1 ? x : x / abs_x), dy = (short) (abs_y > 1 ? y : y / abs_y);
-#if TARGET_ANDROID
-        if (!vmouse_coop_queue(vmouse, dx, dy, 0))
-#endif
-        {
+        if (!vmouse_coop_queue(vmouse, dx, dy, 0)) {
             LiSendMouseMoveEvent(dx, dy);
         }
     }
