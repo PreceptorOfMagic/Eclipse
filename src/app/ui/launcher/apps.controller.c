@@ -649,8 +649,21 @@ static void appload_loaded(apploader_list_t *apps, void *userdata) {
         lv_gridview_focus(fragment->applist, 0);
     }
     const int focused = lv_gridview_get_focused_index(fragment->applist);
-    lv_gridview_set_data_advanced(fragment->applist, apps, changes, num_changes);
-    if (num_changes == 0 && focused >= 0) {
+    const lv_gridview_data_change_t *apply = changes;
+#if TARGET_ANDROID
+    /* THE SAME APPS ARE REBOUND IN PLACE (Android). changes == NULL makes the grid scrap every tile and take them back
+     * from its free pool, which is a stack, so they come back in reverse order: the focused tile's object lands on
+     * another tile and plays its unfocus transition there while the right one focuses -- the highlight flicked to
+     * another tile and back on each reload of an unchanged list (every 20 s, and after a stream ends), with no input
+     * event at those moments (SHIELD TV, 2026-10-22). An empty change list keeps every tile's object where it is and
+     * only rebinds it to the new data; its focus stays with it. */
+    static const lv_gridview_data_change_t same_apps[1];
+    if (num_changes == 0 && apply == NULL) {
+        apply = same_apps;
+    }
+#endif
+    lv_gridview_set_data_advanced(fragment->applist, apps, apply, num_changes);
+    if (num_changes == 0 && focused >= 0 && apply == NULL) {
         /* The same apps: the grid still rebuilt every tile (changes == NULL scraps them all) and the focused one came
          * back without its ring, so the user could not see what OK would start. Draw it on the same tile again. */
         lv_gridview_focus(fragment->applist, focused);
