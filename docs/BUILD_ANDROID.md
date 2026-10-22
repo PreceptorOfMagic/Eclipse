@@ -127,6 +127,11 @@ mapping written for another Android version binds buttons the controller does no
 database's Nintendo Switch Pro Controller line is Android 9's; on a SHIELD TV running Android 11 it made ZR Start and
 + the right stick.) The log names each choice: `Controller <name> (<GUID>): mapping from ...`.
 
+**A Nintendo Switch Pro Controller follows its letters in Eclipse and its positions everywhere else on the SHIELD.**
+Eclipse sends the button labelled A as A (**Settings > Input > Nintendo controllers**, "Buttons as printed", the
+default); the SHIELD's own menus and other apps treat the controller like an Xbox controller, by position, so there
+the bottom button (labelled B) confirms. Choosing "Xbox positions" makes Eclipse go by position too.
+
 In co-op, each controller goes to the PC chosen for it on the co-op screen. The virtual mouse points like the LG
 Magic Remote: it starts in the middle of the PC it is over, and pushed past the line between the two pictures it
 becomes the other PC's pointer, arriving at the matching edge. The triggers click, and the wheel and the on-screen
