@@ -9,9 +9,11 @@ It is distributed by **sideloading** only, like the rest of the project: there i
 developer account and no fee. Google's developer-verification requirement for sideloaded apps does not apply to
 Android TV devices, and installs over ADB are exempt everywhere.
 
-> **Status.** The port is new. Its host tests pass; the APK builds for all three ABIs, and the emulator smoke tests
-> pass on Android 11 (API 30, as CI runs them: `.github/workflows/build-android.yml`) and on the Android TV 16
-> (API 36) image. It has **not yet been tested on SHIELD hardware**: please report results
+> **Status.** Tested on a 2019 SHIELD TV (SHIELD Experience 9, Android 11): streaming, two-PC co-op with its audio
+> filter, the SHIELD remote, and Xbox and Nintendo Switch Pro controllers. Its host tests pass, the APK builds for
+> all three ABIs, and the emulator smoke tests pass on Android 11 (API 30, as CI runs them:
+> `.github/workflows/build-android.yml`) and on the Android TV 16 (API 36) image. The other SHIELD models and other
+> Android TV devices run the same software but have not been tested: please report results
 > (see [Reporting](#reporting)).
 
 ---
@@ -33,7 +35,8 @@ Android TV devices, and installs over ADB are exempt everywhere.
 
 - **Android 9 (API 28) or newer**, Android TV or Google TV. It also runs on phones and tablets with a game
   controller, keyboard or mouse, but it is designed for TVs.
-- **NVIDIA SHIELD TV** (2015, 2017, 2019 and Pro) on SHIELD Experience 9 (Android 11) is the primary target.
+- **NVIDIA SHIELD TV** (2015, 2017, 2019 and Pro) on SHIELD Experience 9 (Android 11) is the primary target;
+  SHIELD Experience 8 (Android 9) is the oldest it installs on.
 - One APK holds `arm64-v8a`, `armeabi-v7a` (many TV devices run 32-bit Android on a 64-bit CPU: the 2019 SHIELD TV
   does) and `x86_64`.
 - Video: H.264 and HEVC through the device's hardware decoder. HDR10 is available when the decoder supports Main 10

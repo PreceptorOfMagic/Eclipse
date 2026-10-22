@@ -53,7 +53,7 @@ Requires glibc 2.35+ (Ubuntu 22.04 baseline), a graphical desktop and working GP
 2. Sideload it: with the **Downloader** app on the TV (allow it under **Unknown sources**), or from a computer with `adb connect <TV address>:5555` then `adb install eclipse-android.apk`.
 3. Launch Eclipse from the TV's apps row. Install updates the same way; your hosts and settings are kept.
 
-Requires Android 9 or newer. The SHIELD TV (Android 11) is the primary target. The Android port is new and has not yet been tested on SHIELD hardware; reports are welcome. There is no Play Store listing.
+Requires Android 9 or newer (on a SHIELD TV, SHIELD Experience 8 or later). The SHIELD TV is the primary target: tested on a 2019 SHIELD TV running SHIELD Experience 9 (Android 11) with streaming, two-PC co-op, the SHIELD remote and Xbox and Nintendo Switch Pro controllers. The other SHIELD models run the same software; reports are welcome. There is no Play Store listing.
 
 [Android TV installation, remote keys and building](docs/BUILD_ANDROID.md).
 
