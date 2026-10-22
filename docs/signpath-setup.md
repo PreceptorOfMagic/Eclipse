@@ -62,7 +62,7 @@ Eclipse and Umbra Windows releases are to be signed through SignPath Foundation'
 - **Repositories:** https://github.com/PreceptorOfMagic/Eclipse and https://github.com/PreceptorOfMagic/Umbra
 - **Homepage:** https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub
 - **Licence:** GPL-3.0 for both. Eclipse is a fork of moonlight-tv; Umbra is a fork of Apollo, itself a fork of Sunshine.
-- **Description:** Eclipse streams games and desktops from your own PCs to LG webOS TVs, Android TV (including the NVIDIA SHIELD), Windows and Linux, including two-PC split-screen co-op on one TV. Umbra is the host that runs on those PCs, on Windows or Linux.
+- **Description:** Eclipse streams games and desktops from your own PCs to LG webOS TVs, the NVIDIA SHIELD TV, Windows and Linux, including two-PC split-screen co-op on one TV. Umbra is the host that runs on those PCs, on Windows or Linux.
 - **Released already:** yes. Eclipse 1.3.5, Umbra 0.5.0 for Windows and Umbra 0.5.2 for Linux are published as GitHub releases. The Windows packages are unsigned; the Android APK is signed with the project's own key, as Android requires.
 - **What would be signed:**
   - Eclipse: `moonlight-tv.exe` and the NSIS installer.

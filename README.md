@@ -1,6 +1,6 @@
 # Eclipse
 
-**The screen-side app: everyday game streaming and two-host couch co-op on LG webOS, Android TV (NVIDIA SHIELD), Windows and Linux.**
+**The screen-side app: everyday game streaming and two-host couch co-op on LG webOS, NVIDIA SHIELD, Windows and Linux.**
 
 [Project Hub](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub) · [Installation Guide](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md) · [Eclipse](https://github.com/PreceptorOfMagic/Eclipse) · [Umbra](https://github.com/PreceptorOfMagic/Umbra) · [Development](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/development.md) · [Acknowledgements](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/ACKNOWLEDGEMENTS.md)
 
@@ -15,7 +15,7 @@ Open [Eclipse releases](https://github.com/PreceptorOfMagic/Eclipse/releases), c
 | LG webOS TV | Standard `com.aurora.gamestream_<version>_arm.ipk` (not beta) | [LG TV steps](#lg-webos) |
 | Windows x64 | Installer `eclipse-windows-x64-setup-unsigned.exe` (or portable `eclipse-windows-x64-unsigned.zip`) + checksum | [Windows steps](#windows-x64) |
 | Linux x86_64 | `eclipse-linux-x86_64.tar.gz` + checksum | [Linux steps](#linux-x86_64) |
-| Android TV / NVIDIA SHIELD | `eclipse-android.apk` + checksum | [Android TV steps](#android-tv-and-nvidia-shield) |
+| NVIDIA SHIELD TV | `eclipse-android.apk` + checksum | [SHIELD steps](#nvidia-shield-tv) |
 
 ### LG webOS
 
@@ -47,15 +47,17 @@ Requires glibc 2.35+ (Ubuntu 22.04 baseline), a graphical desktop and working GP
 
 [Full Linux installation](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md#eclipse-linux).
 
-### Android TV and NVIDIA SHIELD
+### NVIDIA SHIELD TV
 
 1. Download the APK and its matching SHA-256 file from the same release.
-2. Sideload it: with the **Downloader** app on the TV (allow it under **Unknown sources**), or from a computer with `adb connect <TV address>:5555` then `adb install eclipse-android.apk`.
-3. Launch Eclipse from the TV's apps row. Install updates the same way; your hosts and settings are kept.
+2. Sideload it: with the **Downloader** app on the SHIELD (allow it under **Settings → Device Preferences → Security & restrictions → Unknown sources**), or from a computer with `adb connect <SHIELD address>:5555` then `adb install eclipse-android.apk`.
+3. Launch Eclipse from the SHIELD's apps row. Install updates the same way; your hosts and settings are kept.
 
-Requires Android 9 or newer (on a SHIELD TV, SHIELD Experience 8 or later). The SHIELD TV is the primary target: tested on a 2019 SHIELD TV running SHIELD Experience 9 (Android 11) with streaming, two-PC co-op, the SHIELD remote and Xbox and Nintendo Switch Pro controllers. The other SHIELD models run the same software; reports are welcome. There is no Play Store listing.
+Requires SHIELD Experience 8 or later. Tested on a 2019 SHIELD TV running SHIELD Experience 9 (Android 11) with streaming, two-PC co-op, the SHIELD remote and Xbox and Nintendo Switch Pro controllers. The other SHIELD models run the same software; reports are welcome. There is no Play Store listing.
 
-[Android TV installation, remote keys and building](docs/BUILD_ANDROID.md).
+Other Android TV and Google TV devices (Android 9 or newer) may run the same APK, but none has been tested and they are not supported: decoders, refresh-rate switching and remote input differ between devices. See the [installation guide's risks](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md#eclipse-android) before trying one.
+
+[SHIELD installation, remote keys and building](docs/BUILD_ANDROID.md).
 
 ## What Eclipse provides
 
@@ -63,7 +65,7 @@ Requires Android 9 or newer (on a SHIELD TV, SHIELD Experience 8 or later). The 
 - Choose decoder-aware 720p, 1080p, 1440p, 3584×2016 “3.6K”, 4K, native or custom resolutions.
 - Select frame rates from 30 to 240 fps where the active decoder permits them.
 - Use automatic bitrate or a manual 5–400 Mbps selector; the negotiated protocol path may impose a lower effective limit.
-- Use H.264 or HEVC on desktop targets, with capability-gated AV1 and HDR10 paths on compatible webOS hardware and HDR10 on Android TV devices whose decoder and TV support it.
+- Use H.264 or HEVC on desktop targets, with capability-gated AV1 and HDR10 paths on compatible webOS hardware and HDR10 on the NVIDIA SHIELD where the TV supports it.
 - Send gamepad, keyboard and mouse input, including supported rumble, trigger rumble, touchpad, gyro, accelerometer and RGB capabilities.
 - Open the on-screen keyboard, use the gamepad virtual mouse and inspect live codec, size, frame rate, latency, drop and bitrate statistics.
 - Hold Start on any controller for the shortcut wheel (stream menu, virtual mouse, keyboard, performance); the button combinations still work, and either can be turned off in Settings > Input.

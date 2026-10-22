@@ -18,7 +18,7 @@ env:
 
 jobs:
   build:
-    name: Package (Android TV, unsigned key)
+    name: Package (NVIDIA SHIELD APK, unsigned key)
     runs-on: ubuntu-24.04
 
     steps:

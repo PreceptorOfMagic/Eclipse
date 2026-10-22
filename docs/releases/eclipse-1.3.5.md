@@ -1,6 +1,6 @@
 Eclipse 1.3.5 fixes installing on older LG TVs, brings the SHIELD's controller-mouse fixes to every platform, adds a hold-Start shortcut wheel and gives the Windows and Linux app a new icon. Pair it with **Umbra 0.5.0** on the host PCs.
 
-**New: Eclipse for Android TV and the NVIDIA SHIELD** (added to this release on 22 October). See [Android TV and NVIDIA SHIELD](#android-tv-and-nvidia-shield) below.
+**New: Eclipse for the NVIDIA SHIELD TV** (added to this release on 22 October). See [NVIDIA SHIELD TV](#nvidia-shield-tv) below.
 
 The webOS, Windows and Linux packages are built from `21718d0d` (tag `eclipse-v1.3.5`) and report version 1.3.5 and that commit. The Android APK is built from `433a50d4` (tag `eclipse-android-v1.3.5`); see below.
 
@@ -12,7 +12,7 @@ The webOS, Windows and Linux packages are built from `21718d0d` (tag `eclipse-v1
 | Windows x64 (installer) | `eclipse-windows-x64-setup-unsigned.exe` | Per-user install, no administrator rights, no background service. Upgrades an existing install in place. |
 | Windows x64 (portable) | `eclipse-windows-x64-unsigned.zip` | Extract everything and run `moonlight-tv.exe` (inherited executable name). |
 | Linux x86_64 | `eclipse-linux-x86_64.tar.gz` | Extract, then `./install.sh` (per-user) or run `./eclipse` in place. Needs glibc 2.35+ (Ubuntu 22.04 baseline). |
-| Android TV / NVIDIA SHIELD | `eclipse-android.apk` | Sideload with the Downloader app or `adb install`. Android 9 or newer; one APK for arm64-v8a, armeabi-v7a and x86_64. |
+| NVIDIA SHIELD TV | `eclipse-android.apk` | Sideload on the SHIELD with the Downloader app or `adb install`. Other Android TV devices are untested. |
 
 Each asset has a matching `.sha256` file, and `SHA256SUMS` covers everything. Source archives are attached for the exact build (see **Source** below).
 
@@ -37,29 +37,31 @@ Each asset has a matching `.sha256` file, and `SHA256SUMS` covers everything. So
 - **Not yet tried with a real controller on webOS, Windows or Linux:** the controller-mouse changes and the shortcut wheel. On the SHIELD the maintainer tried the wheel and the co-op pointer by hand; the stick-release fix has not been tried with a real controller anywhere.
 - **Older LG TVs:** this release's date fix matches the published cause of the webOS 5 "-5" install failure. It has not been tried on a webOS 5 TV here.
 
-## Android TV and NVIDIA SHIELD
+## NVIDIA SHIELD TV
 
-The first release of Eclipse for Android TV. The NVIDIA SHIELD TV is the main target. It has ordinary streaming, two-PC co-op, the controller mouse and the hold-Start wheel, like the other platforms.
+The first release of Eclipse for the NVIDIA SHIELD TV. It has ordinary streaming, two-PC co-op, the controller mouse and the hold-Start wheel, like the other platforms.
 
 The APK is built from its own tag, `eclipse-android-v1.3.5` (`433a50d4`). That is the 1.3.5 code plus the Android port, and the port also changes code shared with the other platforms, including co-op video splicing and audio, controller mapping and fonts. The webOS, Windows and Linux 1.3.5 packages do not have those shared changes yet; they come to every platform in the next release.
 
 **Install:**
 1. Download `eclipse-android.apk` and its `.sha256`.
-2. Sideload it, either with the **Downloader** app on the TV (allow it under **Unknown sources**) or from a computer with `adb connect <TV address>:5555`, then `adb install eclipse-android.apk`.
-3. Launch Eclipse from the TV's apps row.
+2. Sideload it, either with the **Downloader** app on the SHIELD (allow it under **Settings → Device Preferences → Security & restrictions → Unknown sources**) or from a computer with `adb connect <SHIELD address>:5555`, then `adb install eclipse-android.apk`.
+3. Launch Eclipse from the SHIELD's apps row.
 
-Full steps, remote keys and controller notes: [Android TV guide](https://github.com/PreceptorOfMagic/Eclipse/blob/main/docs/BUILD_ANDROID.md).
+Full steps: [installing on the SHIELD](https://preceptorofmagic.github.io/Eclipse-Umbra-Project-Hub/setup.html#eclipse-shield). Remote keys and controller notes: [Android guide](https://github.com/PreceptorOfMagic/Eclipse/blob/main/docs/BUILD_ANDROID.md).
 
-**Requirements:** Android 9 (API 28) or newer. On a SHIELD TV that means SHIELD Experience 8 or later. There is no Play Store listing.
+**Requirements:** an NVIDIA SHIELD TV on SHIELD Experience 8 or later. There is no Play Store listing.
+
+**Other Android TV and Google TV devices:** the APK is an ordinary Android app (Android 9 or newer), so it may run on them, but none has been tested and they are not supported. Decoders, refresh-rate switching and remote input differ between devices; the Hub's [installation guide](https://preceptorofmagic.github.io/Eclipse-Umbra-Project-Hub/setup.html#eclipse-android) lists the risks.
 
 **Signed:** unlike the other packages, the APK is signed, because Android installs only signed apps. It uses the project's own release key, and every future update is signed with the same key. The certificate's SHA-256 is `8C:31:18:05:69:36:39:EF:2A:F8:28:63:9A:31:DE:9B:F4:DB:CC:28:AA:2A:5B:98:89:F3:E6:04:75:26:EF:AC`. Check it with `apksigner verify --print-certs eclipse-android.apk`. An APK you built yourself is signed with a different key, so it cannot update this one, or the other way round, without uninstalling, which removes paired hosts and settings.
 
 **Tested:**
 - A 2019 SHIELD TV running SHIELD Experience 9 (Android 11), with live streams from the project's Umbra PCs. The tests covered single-PC streaming, two-PC co-op, the SHIELD remote, and Xbox and Nintendo Switch Pro controllers.
-- The other SHIELD models and other Android TV devices run the same APK but have not been tried. Reports are welcome.
+- The other SHIELD models run the same APK but have not been tried. Reports are welcome.
 - Automated: the APK's host tests and device self-tests are described in the [guide](https://github.com/PreceptorOfMagic/Eclipse/blob/main/docs/BUILD_ANDROID.md#6-testing).
 
-**Known issues (Android):**
+**Known issues (SHIELD):**
 - **The SHIELD keeps the Xbox button for itself.** Its system turns the Guide button into Home before any app sees it. Hold **View** for 2 seconds to send Guide to the PC, or use **Guide button** in the stream menu.
 - **Nintendo Switch Pro Controller:** Eclipse follows the letters printed on the buttons, while the SHIELD's own menus go by position, so the two disagree on A/B and X/Y. **Settings → Input → Nintendo controllers** switches Eclipse to positions.
 - **Co-op sound runs about 35 ms later than on the other platforms.** It is a temporary measure that stops crackling on the SHIELD while the audio filter is made cheaper to run.

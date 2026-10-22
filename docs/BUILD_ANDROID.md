@@ -1,6 +1,6 @@
-# Eclipse for Android TV and NVIDIA SHIELD
+# Eclipse for the NVIDIA SHIELD TV (Android)
 
-Eclipse for Android TV is the same program as on webOS, Windows and Linux: the C client, its LVGL interface,
+Eclipse for the NVIDIA SHIELD is the same program as on webOS, Windows and Linux: the C client, its LVGL interface,
 co-op and every setting are built from this repository with the Android NDK. The only Android-specific parts are
 platform glue (`src/app/platform/android`), a small activity (`deploy/android`) and a video module that drives
 Android's MediaCodec (`third_party/ss4s/modules/android`, carried in `patches/client-deps/ss4s.patch`).
@@ -12,9 +12,9 @@ Android TV devices, and installs over ADB are exempt everywhere.
 > **Status.** Tested on a 2019 SHIELD TV (SHIELD Experience 9, Android 11): streaming, two-PC co-op with its audio
 > filter, the SHIELD remote, and Xbox and Nintendo Switch Pro controllers. Its host tests pass, the APK builds for
 > all three ABIs, and the emulator smoke tests pass on Android 11 (API 30, as CI runs them:
-> `.github/workflows/build-android.yml`) and on the Android TV 16 (API 36) image. The other SHIELD models and other
-> Android TV devices run the same software but have not been tested: please report results
-> (see [Reporting](#reporting)).
+> `.github/workflows/build-android.yml`) and on the Android TV 16 (API 36) image. The other SHIELD models run the
+> same software but have not been tested: please report results (see [Reporting](#reporting)). Other Android TV
+> and Google TV devices are not supported ([Devices](#1-devices)).
 
 ---
 
@@ -33,10 +33,12 @@ Android TV devices, and installs over ADB are exempt everywhere.
 
 ## 1. Devices
 
-- **Android 9 (API 28) or newer**, Android TV or Google TV. It also runs on phones and tablets with a game
-  controller, keyboard or mouse, but it is designed for TVs.
-- **NVIDIA SHIELD TV** (2015, 2017, 2019 and Pro) on SHIELD Experience 9 (Android 11) is the primary target;
-  SHIELD Experience 8 (Android 9) is the oldest it installs on.
+- **NVIDIA SHIELD TV** (2015, 2017, 2019 and Pro) on SHIELD Experience 9 (Android 11) is the target; SHIELD
+  Experience 8 (Android 9) is the oldest it installs on. Only the 2019 SHIELD TV has been tested.
+- **Other devices, unsupported:** any Android TV or Google TV device on Android 9 (API 28) or newer may install and
+  run it, and so may phones and tablets with a game controller, keyboard or mouse, but none has been tested. Video
+  decoders (resolution, frame rate, 10-bit HEVC, co-op's double-size picture), refresh-rate switching, remote and
+  controller input, and the processing power co-op audio needs all differ between devices.
 - One APK holds `arm64-v8a`, `armeabi-v7a` (many TV devices run 32-bit Android on a 64-bit CPU: the 2019 SHIELD TV
   does) and `x86_64`.
 - Video: H.264 and HEVC through the device's hardware decoder. HDR10 is available when the decoder supports Main 10

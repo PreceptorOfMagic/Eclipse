@@ -41,7 +41,8 @@ body:
       label: Client platform
       options:
         - LG webOS TV
-        - Android TV / NVIDIA SHIELD
+        - NVIDIA SHIELD TV
+        - Other Android TV device (untested)
         - Windows x64
         - Linux desktop
         - Other source build

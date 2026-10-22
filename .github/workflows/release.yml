@@ -70,7 +70,7 @@ jobs:
     # PUBLIC-LAUNCH GATE: remove only after the APK's licence, notice and corresponding-source material has
     # been reviewed and the project's Android signing key exists (docs/BUILD_ANDROID.md, "Signing").
     if: ${{ false }}
-    name: Release (Android TV)
+    name: Release (NVIDIA SHIELD APK)
     runs-on: ubuntu-24.04
     permissions:
       contents: write
