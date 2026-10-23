@@ -275,6 +275,21 @@ int app_init(app_t *app, app_settings_loader *settings_loader, int argc, char *a
             }
             SDL_DisplayMode mode;
             if (SDL_GetDesktopDisplayMode(display, &mode) == 0 && mode.w > 0 && mode.h > 0) {
+#if defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK)
+                /* On a SCALED Wayland desktop the desktop mode is the logical size: a 4K TV at 200%
+                 * reports 1920x1080, and the stream defaulted to 1080p (Plasma, 2026-10-23). SDL 2.32
+                 * lists the panel's native mode there too, the only mode larger than the desktop
+                 * (SDL_waylandvideo.c display_handle_done); the stream matches the panel, as on X11. */
+                SDL_DisplayMode native;
+                const char *driver = SDL_GetCurrentVideoDriver();
+                if (driver != NULL && strcmp(driver, "wayland") == 0 && SDL_GetDisplayMode(display, 0, &native) == 0 &&
+                        native.w > mode.w && native.h > mode.h) {
+                    commons_log_info("APP", "Display %d is scaled: desktop %dx%d, panel %dx%d", display,
+                                     mode.w, mode.h, native.w, native.h);
+                    mode.w = native.w;
+                    mode.h = native.h;
+                }
+#endif
                 app->settings.stream.width = mode.w;
                 app->settings.stream.height = mode.h;
                 settings_refresh_auto_bitrate(&app->settings, &app->ss4s.video_cap);
