@@ -225,6 +225,14 @@ int app_init(app_t *app, app_settings_loader *settings_loader, int argc, char *a
         SDL_SetHint(SDL_HINT_GRAB_KEYBOARD, "1");
     }
 #endif
+#if defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_STEAMLINK)
+    /* EGL, not GLX, on X11 -- as on Wayland, where SDL uses EGL anyway. The FFmpeg module shows
+     * VA-API frames by importing them into SDL's texture as EGLImages (ss4s.patch,
+     * host_import_dmabuf); under GLX it must read every frame back instead, and at 4K that lost 31%
+     * of video packets on an RX Vega (Plasma X11, 2026-10-23, docs L13). SDL lets a
+     * SDL_VIDEO_X11_FORCE_EGL in the environment override this. */
+    SDL_SetHint(SDL_HINT_VIDEO_X11_FORCE_EGL, "1");
+#endif
     /* A co-op helper is a network/decode worker, not a second desktop app.
      * CREATE_NO_WINDOW suppresses only a console on Windows; SDL_CreateWindow
      * would still make a visible Eclipse window and could contaminate capture.
