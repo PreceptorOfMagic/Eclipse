@@ -3194,8 +3194,24 @@ index 49be525fc3058e8196d42cae0c2c5cc72cf7f1bc..96cec6948160a3ba75e990d7937352b0
 -}
 \ No newline at end of file
 +}
+diff --git a/modules/pulse/CMakeLists.txt b/modules/pulse/CMakeLists.txt
+index cdc8b87c664ca1259dbc7fc5f99f846a78b10619..65ec37139f3a6ed9088ad119d9a597e303cf8732 100644
+--- a/modules/pulse/CMakeLists.txt
++++ b/modules/pulse/CMakeLists.txt
+@@ -17,7 +17,10 @@ else ()
+     endif ()
+ endif ()
+ 
+-ss4s_add_module(pulse FOR_AUDIO DISPLAY_NAME PulseAudio WEIGHT 10 SOURCES pulse.c)
++# Above ALSA (10): the ALSA module plays through a single 5 ms period, and on a PipeWire desktop every late block
++# became a 5.33 ms hole of silence -- 5 a second in co-op (VEGA, 2026-10-23, docs L17); this module pulls with a
++# 20 ms target. ALSA stays the fallback: SS4S_ModuleCheck_PULSE fails when no server answers.
++ss4s_add_module(pulse FOR_AUDIO DISPLAY_NAME PulseAudio WEIGHT 20 SOURCES pulse.c)
+ if (NOT SS4S_MODULE_TARGET)
+     return()
+ endif ()
 diff --git a/modules/pulse/pulse.c b/modules/pulse/pulse.c
-index 6f02d7fe51dc1ad45949a495e2fac548fa214e49..80edd10939b6f2a9ea11c7d86f5097509b2f075e 100644
+index 6f02d7fe51dc1ad45949a495e2fac548fa214e49..0240f4cceffad4849f7a633663fe9d8487dafd63 100644
 --- a/modules/pulse/pulse.c
 +++ b/modules/pulse/pulse.c
 @@ -1,14 +1,43 @@
@@ -3560,6 +3576,52 @@ index 6f02d7fe51dc1ad45949a495e2fac548fa214e49..80edd10939b6f2a9ea11c7d86f509750
      pa_simple_free(instance->dev);
      free(instance);
  }
+@@ -95,3 +373,45 @@ SS4S_EXPORTED bool SS4S_ModuleOpen_PULSE(SS4S_Module *module, const SS4S_Library
+     LibContext = context;
+     return true;
+ }
++
++/* Passes only when a server ANSWERS (PulseAudio, or PipeWire's pulse layer), not when libpulse merely loads.
++ * Without a check this module passed on any machine with libpulse, so preferring it over ALSA (CMakeLists WEIGHT)
++ * would leave a pure-ALSA system silent: Eclipse streams without sound when the chosen output cannot open (docs L7).
++ * Never autospawns a server; gives up after 2 s. */
++SS4S_EXPORTED SS4S_ModuleCheckFlag SS4S_ModuleCheck_PULSE(SS4S_ModuleCheckFlag flags) {
++    if (flags & SS4S_MODULE_CHECK_VIDEO) {
++        return 0;
++    }
++    pa_mainloop *loop = pa_mainloop_new();
++    pa_context *context = loop != NULL ? pa_context_new(pa_mainloop_get_api(loop), "Eclipse") : NULL;
++    bool ready = false;
++    if (context != NULL && pa_context_connect(context, NULL, PA_CONTEXT_NOAUTOSPAWN, NULL) >= 0) {
++        struct timespec start, now;
++        clock_gettime(CLOCK_MONOTONIC, &start);
++        for (;;) {
++            const pa_context_state_t state = pa_context_get_state(context);
++            if (state == PA_CONTEXT_READY) {
++                ready = true;
++                break;
++            }
++            if (!PA_CONTEXT_IS_GOOD(state)) {
++                break;
++            }
++            clock_gettime(CLOCK_MONOTONIC, &now);
++            if ((now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000 >= 2000) {
++                break;
++            }
++            if (pa_mainloop_prepare(loop, 50000) < 0 || pa_mainloop_poll(loop) < 0 || pa_mainloop_dispatch(loop) < 0) {
++                break;
++            }
++        }
++        pa_context_disconnect(context);
++    }
++    if (context != NULL) {
++        pa_context_unref(context);
++    }
++    if (loop != NULL) {
++        pa_mainloop_free(loop);
++    }
++    return ready ? flags : 0;
++}
 diff --git a/modules/sdl/sdl.c b/modules/sdl/sdl.c
 index b0f27b53c5e51a3968078fbd605190699b4c2510..30c55a0e4733b78cc02dba665bd18809f9cdf304 100644
 --- a/modules/sdl/sdl.c
