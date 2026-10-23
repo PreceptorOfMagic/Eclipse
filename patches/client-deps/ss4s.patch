@@ -1158,10 +1158,10 @@ index 0000000000000000000000000000000000000000..3ebcf36001cdfaa850f2397a1b0975b4
 +}
 diff --git a/modules/ffmpeg/CMakeLists.txt b/modules/ffmpeg/CMakeLists.txt
 new file mode 100644
-index 0000000000000000000000000000000000000000..16a322e418df38c7c30b9394c75e4a78729f6edc
+index 0000000000000000000000000000000000000000..c9b2b760ecf9273fa2fb2f7abf57f9fa45139ab9
 --- /dev/null
 +++ b/modules/ffmpeg/CMakeLists.txt
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,60 @@
 +# Desktop video backend. ss4s has none: webos/mmal/steamlink cover their own hardware and
 +# the sdl module is audio-only. Decode and presentation are both modelled on moonlight-qt,
 +# the native PC client (see the header of ffmpegvid.c).
@@ -1183,6 +1183,9 @@ index 0000000000000000000000000000000000000000..16a322e418df38c7c30b9394c75e4a78
 +    # Linux GPU decode (NVDEC / VA-API, ffmpegvid.c) downloads frames and normalizes them with
 +    # libswscale exactly like the Windows bridge. Without libswscale the module stays software-only.
 +    pkg_check_modules(LIBSWSCALE libswscale)
++    # VA-API frames presented without a readback (ffmpegvid.c host_import_dmabuf). The libva
++    # FFmpeg's own VA-API decoder already loads; without it VA-API frames are read back as before.
++    pkg_check_modules(LIBVA libva)
 +endif ()
 +
 +if (LIBAVCODEC_FOUND AND LIBAVUTIL_FOUND AND SDL2_FOUND AND (NOT WIN32 OR LIBSWSCALE_FOUND))
@@ -1205,6 +1208,13 @@ index 0000000000000000000000000000000000000000..16a322e418df38c7c30b9394c75e4a78
 +            ${SDL2_LIBRARIES})
 +    if (NOT WIN32 AND LIBSWSCALE_FOUND)
 +        target_compile_definitions(${SS4S_MODULE_TARGET} PRIVATE SS4S_FFMPEG_HWACCEL=1)
++        if (LIBVA_FOUND)
++            # libEGL is not linked: it is looked up at run time in the process, where SDL loaded it.
++            target_include_directories(${SS4S_MODULE_TARGET} SYSTEM PRIVATE ${LIBVA_INCLUDE_DIRS})
++            target_link_directories(${SS4S_MODULE_TARGET} PRIVATE ${LIBVA_LIBRARY_DIRS})
++            target_link_libraries(${SS4S_MODULE_TARGET} PRIVATE ${LIBVA_LIBRARIES} ${CMAKE_DL_LIBS})
++            target_compile_definitions(${SS4S_MODULE_TARGET} PRIVATE SS4S_FFMPEG_VAAPI_DMABUF=1)
++        endif ()
 +    endif ()
 +    if (WIN32)
 +        # System SDK import libraries only: used to identify the adapter behind FFmpeg's
@@ -1214,10 +1224,10 @@ index 0000000000000000000000000000000000000000..16a322e418df38c7c30b9394c75e4a78
 +endif ()
 diff --git a/modules/ffmpeg/ffmpegvid.c b/modules/ffmpeg/ffmpegvid.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c6847b5d2bef
+index 0000000000000000000000000000000000000000..524ea602402cd32573a9fdcfeb8bce93997cf732
 --- /dev/null
 +++ b/modules/ffmpeg/ffmpegvid.c
-@@ -0,0 +1,1510 @@
+@@ -0,0 +1,1822 @@
 +/*
 + * SS4S video module: FFmpeg decode + SDL presentation, for desktop platforms.
 + *
@@ -1282,6 +1292,24 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +#include <libswscale/swscale.h>
 +
 +#define DIAGNOSTIC_DECODER_ENV "ECLIPSE_DIAGNOSTIC_VIDEO_DECODER"
++#endif
++
++#if defined(LINUX_HWACCEL) && defined(SS4S_FFMPEG_VAAPI_DMABUF)
++/* VA-API ZERO-COPY PRESENTATION (host_import_dmabuf). Reading a 4K frame back to the CPU, converting
++ * it to IYUV and uploading it again cost ~17 ms per frame on moonlight-common-c's receive thread
++ * (Feed runs there: CAPABILITY_DIRECT_SUBMIT), and the video socket overflowed behind it -- 26% of
++ * packets dropped at 4K60 on an RX Vega (measured 2026-10-23, docs L13). The decoded surface is
++ * instead exported as DMA-BUF planes and bound into the planes of an SDL NV12 texture, which SDL then
++ * draws with its own NV12 shader -- the moonlight-qt/mpv approach, kept inside SDL's renderer. EGL is
++ * looked up in the process (SDL loaded it for its context), so a GLX context simply falls back. */
++#define LINUX_DMABUF 1
++#define SDL_USE_BUILTIN_OPENGL_DEFINITIONS 1   /* SDL's bundled EGL definitions, not <EGL/egl.h> */
++#include <libavutil/hwcontext_vaapi.h>
++#include <va/va_drmcommon.h>
++#include <SDL_egl.h>
++#include <SDL_opengl.h>
++#include <dlfcn.h>
++#include <unistd.h>
 +#endif
 +
 +#include <stdio.h>
@@ -1370,6 +1398,15 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +    unsigned int hw_errors;         /* decode errors before the first GPU frame; 3 => software */
 +    bool hardware_confirmed;
 +#endif
++#ifdef LINUX_DMABUF
++    /* 0 = not tried yet, 1 = VA-API frames are presented zero-copy, -1 = unavailable here, so Feed()
++     * reads them back as before. Set by the UI thread, read by Feed(), both under `lock`. */
++    int dmabuf_state;
++    AVFrame *held[2];               /* the last two imported frames: GL may still be reading them */
++    unsigned long dmabuf_frames;
++#endif
++    Uint32 tex_format;              /* SDL_PIXELFORMAT_IYUV, or NV12 for an imported VA-API surface */
++    int pic_w, pic_h;              /* the picture inside the texture; a VA-API surface can be taller */
 +};
 +
 +/* A player context only so Open() learns its SS4S_Player: the stats API is per player, and
@@ -1760,6 +1797,10 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +    if (instance->download != NULL) { av_frame_free(&instance->download); }
 +    if (instance->i420 != NULL) { av_frame_free(&instance->i420); }
 +    if (instance->sws != NULL) { sws_freeContext(instance->sws); }
++#ifdef LINUX_DMABUF
++    av_frame_free(&instance->held[0]);
++    av_frame_free(&instance->held[1]);
++#endif
 +    av_buffer_unref(&instance->hw_device_ctx);
 +#endif
 +    if (instance->lock != NULL) { SDL_DestroyMutex(instance->lock); }
@@ -1859,6 +1900,13 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +            av_buffer_unref(&inst->hw_device_ctx);
 +            continue;
 +        }
++#ifdef LINUX_DMABUF
++        if (LinuxHwBackends[i].type == AV_HWDEVICE_TYPE_VAAPI) {
++            /* VA-API surfaces come from a fixed pool sized for the decoder alone. Zero-copy keeps up to
++             * three of them out of it: the frame waiting for the UI thread and the two in `held`. */
++            inst->codec_ctx->extra_hw_frames = 3;
++        }
++#endif
 +        inst->hw_pix_fmt = config->pix_fmt;
 +        inst->hw_path = LinuxHwBackends[i].name;
 +        LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
@@ -1911,6 +1959,23 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 + * to present: `decoded` itself when it is already a CPU frame in the renderer's layout. */
 +static AVFrame *linux_present_frame(SS4S_VideoInstance *inst, AVFrame *decoded) {
 +    AVFrame *cpu_frame = decoded;
++#ifdef LINUX_DMABUF
++    if (decoded->format == AV_PIX_FMT_VAAPI) {
++        /* The UI thread imports the surface itself (host_import_dmabuf): nothing to do here, which is
++         * the point -- this runs on the receive thread. Only once that import has failed does a VA-API
++         * frame fall through to the readback below. */
++        SDL_LockMutex(inst->lock);
++        const bool zero_copy = inst->dmabuf_state >= 0;
++        if (zero_copy) {
++            inst->hardware_frames++;
++            inst->hardware_confirmed = true;
++        }
++        SDL_UnlockMutex(inst->lock);
++        if (zero_copy) {
++            return decoded;
++        }
++    }
++#endif
 +    if (decoded->hw_frames_ctx != NULL) {
 +        av_frame_unref(inst->download);
 +        const int err = av_hwframe_transfer_data(inst->download, decoded, 0);
@@ -2160,8 +2225,8 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +    return SS4S_VIDEO_OPEN_OK;
 +}
 +
-+static bool ensure_texture(SS4S_VideoInstance *inst, int w, int h) {
-+    if (inst->texture != NULL && inst->tex_w == w && inst->tex_h == h) {
++static bool ensure_texture(SS4S_VideoInstance *inst, int w, int h, Uint32 format) {
++    if (inst->texture != NULL && inst->tex_w == w && inst->tex_h == h && inst->tex_format == format) {
 +        return true;
 +    }
 +    if (inst->texture != NULL) {
@@ -2169,18 +2234,242 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +        inst->texture = NULL;
 +    }
 +    /* IYUV because the presentation boundary is AV_PIX_FMT_YUV420P -- directly from the
-+     * decoder on other platforms, or normalized after D3D11VA readback on Windows. */
++     * decoder on other platforms, or normalized after D3D11VA readback on Windows. NV12 only
++     * for an imported VA-API surface, whose planes replace the texture's own storage. */
 +    SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
-+    inst->texture = SDL_CreateTexture(inst->renderer, SDL_PIXELFORMAT_IYUV,
-+                                      SDL_TEXTUREACCESS_STREAMING, w, h);
++    if (format == SDL_PIXELFORMAT_NV12) {
++        /* SDL 2.32 stores NV12's chroma as LUMINANCE_ALPHA and samples .ra unless this is set; an
++         * imported GR88 plane needs .rg (SDL_render_gl.c GL_CreateTexture, read at creation;
++         * SDL_render_gles2.c, read per draw). Only this module creates NV12 textures. */
++        SDL_SetHint("SDL_RENDER_OPENGL_NV12_RG_SHADER", "1");
++    }
++    inst->texture = SDL_CreateTexture(inst->renderer, format,
++                                      format == SDL_PIXELFORMAT_NV12 ? SDL_TEXTUREACCESS_STATIC :
++                                                                       SDL_TEXTUREACCESS_STREAMING, w, h);
 +    if (inst->texture == NULL) {
 +        LibContext->Log(SS4S_LogLevelError, "FFmpeg", "SDL_CreateTexture failed: %s", SDL_GetError());
 +        return false;
 +    }
 +    inst->tex_w = w;
 +    inst->tex_h = h;
++    inst->tex_format = format;
 +    return true;
 +}
++
++#ifdef LINUX_DMABUF
++#define DMABUF_DRM_FORMAT_R8 0x20203852u            /* fourcc 'R','8',' ',' ' (drm_fourcc.h) */
++#define DMABUF_DRM_FORMAT_GR88 0x38385247u          /* fourcc 'G','R','8','8' */
++#define DMABUF_DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
++
++/* What the import needs from EGL and GL, resolved once on the UI thread with SDL's context current. */
++static struct {
++    int state;                      /* 0 = not resolved, 1 = usable, -1 = not here (`why`) */
++    const char *why;
++    EGLDisplay display;
++    bool modifiers;                 /* EGL_EXT_image_dma_buf_import_modifiers */
++    PFNEGLCREATEIMAGEKHRPROC CreateImage;
++    PFNEGLDESTROYIMAGEKHRPROC DestroyImage;
++    void (APIENTRY *ImageTargetTexture2D)(GLenum target, void *image);
++    void (APIENTRY *ActiveTexture)(GLenum texture);
++    void (APIENTRY *GetIntegerv)(GLenum name, GLint *value);
++    GLenum (APIENTRY *GetError)(void);
++} DmabufApi;
++
++static bool has_token(const char *list, const char *token) {
++    const size_t n = strlen(token);
++    for (const char *p = list; p != NULL && (p = strstr(p, token)) != NULL; p += n) {
++        if ((p == list || p[-1] == ' ') && (p[n] == ' ' || p[n] == '\0')) {
++            return true;
++        }
++    }
++    return false;
++}
++
++/* Called with SDL's GL context current. A GLX context (X11 without EGL) has no libEGL loaded: no import. */
++static bool dmabuf_api_ready(void) {
++    if (DmabufApi.state != 0) {
++        return DmabufApi.state > 0;
++    }
++    DmabufApi.state = -1;
++    void *egl = dlopen("libEGL.so.1", RTLD_LAZY | RTLD_NOLOAD);
++    EGLDisplay (*get_current_display)(void) = egl != NULL ? (EGLDisplay (*)(void)) dlsym(egl, "eglGetCurrentDisplay") : NULL;
++    const char *(*query_string)(EGLDisplay, EGLint) =
++            egl != NULL ? (const char *(*)(EGLDisplay, EGLint)) dlsym(egl, "eglQueryString") : NULL;
++    void *(*get_proc)(const char *) = egl != NULL ? (void *(*)(const char *)) dlsym(egl, "eglGetProcAddress") : NULL;
++    if (get_current_display == NULL || query_string == NULL || get_proc == NULL) {
++        DmabufApi.why = "no EGL in this process (a GLX context)";
++        return false;
++    }
++    DmabufApi.display = get_current_display();
++    const char *extensions = DmabufApi.display != EGL_NO_DISPLAY ? query_string(DmabufApi.display, EGL_EXTENSIONS) : NULL;
++    if (extensions == NULL) {
++        DmabufApi.why = "SDL's GL context is not an EGL context";
++        return false;
++    }
++    if (!has_token(extensions, "EGL_EXT_image_dma_buf_import")) {
++        DmabufApi.why = "EGL_EXT_image_dma_buf_import missing";
++        return false;
++    }
++    DmabufApi.modifiers = has_token(extensions, "EGL_EXT_image_dma_buf_import_modifiers");
++    DmabufApi.CreateImage = (PFNEGLCREATEIMAGEKHRPROC) get_proc("eglCreateImageKHR");
++    DmabufApi.DestroyImage = (PFNEGLDESTROYIMAGEKHRPROC) get_proc("eglDestroyImageKHR");
++    DmabufApi.ImageTargetTexture2D = SDL_GL_GetProcAddress("glEGLImageTargetTexture2DOES");
++    DmabufApi.ActiveTexture = SDL_GL_GetProcAddress("glActiveTexture");
++    DmabufApi.GetIntegerv = SDL_GL_GetProcAddress("glGetIntegerv");
++    DmabufApi.GetError = SDL_GL_GetProcAddress("glGetError");
++    if (DmabufApi.CreateImage == NULL || DmabufApi.DestroyImage == NULL || DmabufApi.ActiveTexture == NULL ||
++            DmabufApi.GetIntegerv == NULL || DmabufApi.GetError == NULL) {
++        DmabufApi.why = "EGL/GL entry points missing";
++        return false;
++    }
++    if (DmabufApi.ImageTargetTexture2D == NULL || !SDL_GL_ExtensionSupported("GL_OES_EGL_image")) {
++        DmabufApi.why = "GL_OES_EGL_image missing";
++        return false;
++    }
++    DmabufApi.state = 1;
++    return true;
++}
++
++/* One exported layer (a single plane) as an EGLImage. */
++static EGLImageKHR dmabuf_layer_image(const VADRMPRIMESurfaceDescriptor *desc, int layer, int w, int h) {
++    const uint32_t object = desc->layers[layer].object_index[0];
++    const uint64_t modifier = desc->objects[object].drm_format_modifier;
++    EGLint attribs[20];
++    int n = 0;
++    attribs[n++] = EGL_WIDTH;
++    attribs[n++] = w;
++    attribs[n++] = EGL_HEIGHT;
++    attribs[n++] = h;
++    attribs[n++] = EGL_LINUX_DRM_FOURCC_EXT;
++    attribs[n++] = (EGLint) desc->layers[layer].drm_format;
++    attribs[n++] = EGL_DMA_BUF_PLANE0_FD_EXT;
++    attribs[n++] = desc->objects[object].fd;
++    attribs[n++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
++    attribs[n++] = (EGLint) desc->layers[layer].offset[0];
++    attribs[n++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
++    attribs[n++] = (EGLint) desc->layers[layer].pitch[0];
++    if (modifier != DMABUF_DRM_FORMAT_MOD_INVALID) {
++        if (!DmabufApi.modifiers) {
++            /* Without the modifiers extension EGL assumes a linear layout: a tiled surface would come out
++             * scrambled, so refuse it (0 = DRM_FORMAT_MOD_LINEAR is the one layout it can take). */
++            if (modifier != 0) {
++                return EGL_NO_IMAGE_KHR;
++            }
++        } else {
++            attribs[n++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
++            attribs[n++] = (EGLint) (modifier & 0xffffffffu);
++            attribs[n++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
++            attribs[n++] = (EGLint) (modifier >> 32);
++        }
++    }
++    attribs[n] = EGL_NONE;
++    return DmabufApi.CreateImage(DmabufApi.display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attribs);
++}
++
++/* UI thread. Present a VA-API frame without touching its pixels: export the surface's two planes as
++ * DMA-BUFs, make them the storage of an SDL NV12 texture's Y and UV textures, and keep the frame alive
++ * while GL may read it. Takes ownership of `frame`. Any failure turns zero-copy off for this stream;
++ * Feed() then reads frames back as before, and this one frame is not drawn. */
++static void host_import_dmabuf(SS4S_VideoInstance *inst, AVFrame *frame) {
++    if (inst->dmabuf_state < 0) {
++        av_frame_free(&frame);      /* published by Feed() just before the switch; the next is a CPU frame */
++        return;
++    }
++    const char *why = NULL;
++    const AVHWFramesContext *frames = (const AVHWFramesContext *) frame->hw_frames_ctx->data;
++    const AVVAAPIDeviceContext *va = frames->device_ctx->hwctx;
++    const VASurfaceID surface = (VASurfaceID) (uintptr_t) frame->data[3];
++    VADRMPRIMESurfaceDescriptor desc;
++    bool exported = false;
++    EGLImageKHR images[2] = {EGL_NO_IMAGE_KHR, EGL_NO_IMAGE_KHR};
++
++    if (vaSyncSurface(va->display, surface) != VA_STATUS_SUCCESS) {
++        why = "vaSyncSurface failed";
++    } else if (vaExportSurfaceHandle(va->display, surface, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
++                                     VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS,
++                                     &desc) != VA_STATUS_SUCCESS) {
++        why = "vaExportSurfaceHandle failed";
++    } else {
++        exported = true;
++        if (desc.num_layers != 2 || desc.layers[0].drm_format != DMABUF_DRM_FORMAT_R8 ||
++                desc.layers[1].drm_format != DMABUF_DRM_FORMAT_GR88) {
++            why = "the surface is not 8-bit NV12";
++        } else if (!ensure_texture(inst, (int) desc.width, (int) desc.height, SDL_PIXELFORMAT_NV12)) {
++            why = "no SDL NV12 texture";
++        } else if (SDL_GL_BindTexture(inst->texture, NULL, NULL) != 0) {
++            why = "SDL_GL_BindTexture failed (not a GL renderer)";
++        } else {
++            /* Bound: Y on GL_TEXTURE0, UV on GL_TEXTURE1 (SDL_render_gl.c / SDL_render_gles2.c BindTexture). */
++            GLint bound = 0;
++            if (dmabuf_api_ready()) {
++                DmabufApi.GetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
++            }
++            if (DmabufApi.state < 0) {
++                why = DmabufApi.why;
++            } else if (bound == 0) {
++                why = "SDL's texture is not a GL_TEXTURE_2D";
++            } else {
++                images[0] = dmabuf_layer_image(&desc, 0, (int) desc.width, (int) desc.height);
++                images[1] = dmabuf_layer_image(&desc, 1, ((int) desc.width + 1) / 2, ((int) desc.height + 1) / 2);
++                if (images[0] == EGL_NO_IMAGE_KHR || images[1] == EGL_NO_IMAGE_KHR) {
++                    why = "eglCreateImageKHR failed";
++                } else {
++                    while (DmabufApi.GetError() != GL_NO_ERROR) {}
++                    DmabufApi.ImageTargetTexture2D(GL_TEXTURE_2D, images[0]);
++                    DmabufApi.ActiveTexture(GL_TEXTURE1);
++                    DmabufApi.ImageTargetTexture2D(GL_TEXTURE_2D, images[1]);
++                    DmabufApi.ActiveTexture(GL_TEXTURE0);
++                    if (DmabufApi.GetError() != GL_NO_ERROR) {
++                        why = "glEGLImageTargetTexture2DOES failed";
++                    }
++                }
++            }
++            SDL_GL_UnbindTexture(inst->texture);
++        }
++    }
++    /* The textures keep the buffers; the images and descriptors are not needed past this point. */
++    for (int i = 0; i < 2; i++) {
++        if (images[i] != EGL_NO_IMAGE_KHR) {
++            DmabufApi.DestroyImage(DmabufApi.display, images[i]);
++        }
++    }
++    if (exported) {
++        for (uint32_t i = 0; i < desc.num_objects; i++) {
++            close(desc.objects[i].fd);
++        }
++    }
++
++    SDL_LockMutex(inst->lock);
++    const bool first = why == NULL && inst->dmabuf_state == 0;
++    inst->dmabuf_state = why == NULL ? 1 : -1;
++    if (why == NULL) {
++        inst->dmabuf_frames++;
++    }
++    SDL_UnlockMutex(inst->lock);
++    if (why != NULL) {
++        av_frame_free(&frame);
++        if (inst->texture != NULL && inst->tex_format == SDL_PIXELFORMAT_NV12) {
++            SDL_DestroyTexture(inst->texture);   /* half-imported; the readback path makes an IYUV one */
++            inst->texture = NULL;
++        }
++        LibContext->Log(SS4S_LogLevelWarn, "FFmpeg", "vaapi zero-copy unavailable (%s); reading frames back instead",
++                        why);
++        return;
++    }
++    if (first) {
++        LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
++                        "vaapi ACTIVE: GPU decode confirmed, presenting zero-copy (DMA-BUF %ux%u, modifier 0x%llx)",
++                        desc.width, desc.height,
++                        (unsigned long long) desc.objects[desc.layers[0].object_index[0]].drm_format_modifier);
++    }
++    av_frame_free(&inst->held[1]);
++    inst->held[1] = inst->held[0];
++    inst->held[0] = frame;
++    inst->pic_w = frame->width;
++    inst->pic_h = frame->height;
++    inst->mean_luma = -1;           /* not measured: reading the pixels is what this path avoids */
++}
++#endif
 +
 +static bool host_pending(void *context) {
 +    FFmpegHostRenderProxy *proxy = context;
@@ -2245,13 +2534,30 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +    const char *hw_path_snapshot;
 +    unsigned long hardware_frames_snapshot;
 +#endif
++#ifdef LINUX_DMABUF
++    AVFrame *gpu_frame = NULL;
++#endif
 +    SDL_LockMutex(inst->lock);
++#ifdef LINUX_DMABUF
++    if (inst->has_new && inst->shared->format == AV_PIX_FMT_VAAPI) {
++        /* Taken out under the lock, imported after it: Feed() on the receive thread never waits for GL. */
++        gpu_frame = av_frame_alloc();
++        if (gpu_frame != NULL) {
++            av_frame_move_ref(gpu_frame, inst->shared);
++        } else {
++            av_frame_unref(inst->shared);
++        }
++        inst->has_new = false;
++    }
++#endif
 +    if (inst->has_new && inst->shared->data[0] != NULL) {
-+        if (ensure_texture(inst, inst->shared->width, inst->shared->height)) {
++        if (ensure_texture(inst, inst->shared->width, inst->shared->height, SDL_PIXELFORMAT_IYUV)) {
 +            SDL_UpdateYUVTexture(inst->texture, NULL,
 +                                 inst->shared->data[0], inst->shared->linesize[0],
 +                                 inst->shared->data[1], inst->shared->linesize[1],
 +                                 inst->shared->data[2], inst->shared->linesize[2]);
++            inst->pic_w = inst->shared->width;
++            inst->pic_h = inst->shared->height;
 +        }
 +        /* Mean luma of the frame we just uploaded. A black window is either a black
 +         * SOURCE -- which is what a fullscreen client on the machine it is streaming FROM
@@ -2289,6 +2595,11 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +    hardware_frames_snapshot = inst->hardware_frames;
 +#endif
 +    SDL_UnlockMutex(inst->lock);
++#ifdef LINUX_DMABUF
++    if (gpu_frame != NULL) {
++        host_import_dmabuf(inst, gpu_frame);
++    }
++#endif
 +
 +    if (inst->texture == NULL) {
 +        SDL_UnlockMutex(proxy->lock);
@@ -2313,11 +2624,20 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +                        last_corrupt_frame_flags_snapshot, last_decode_error_flags_snapshot,
 +                        inst->drawn, inst->tex_w, inst->tex_h, inst->mean_luma);
 +#elif defined(LINUX_HWACCEL)
++        /* present=dmabuf: VA-API frames reached the screen without a readback, and dmabuf counts them.
++         * Both are written on this thread only (host_import_dmabuf). */
++#ifdef LINUX_DMABUF
++        const char *present = inst->dmabuf_state > 0 ? "dmabuf" : "copy";
++        const unsigned long dmabuf_frames = inst->dmabuf_frames;
++#else
++        const char *present = "copy";
++        const unsigned long dmabuf_frames = 0;
++#endif
 +        LibContext->Log(SS4S_LogLevelInfo, "FFmpeg",
-+                        "path=%s fed=%lu decoded=%lu hw_frames=%lu corrupt=%lu last=0x%x/0x%x "
-+                        "drawn=%lu tex=%dx%d meanY=%d",
-+                        hw_path_snapshot, fed_snapshot, decoded_snapshot, hardware_frames_snapshot,
-+                        corrupt_frames_snapshot, last_corrupt_frame_flags_snapshot,
++                        "path=%s present=%s fed=%lu decoded=%lu hw_frames=%lu dmabuf=%lu corrupt=%lu "
++                        "last=0x%x/0x%x drawn=%lu tex=%dx%d meanY=%d",
++                        hw_path_snapshot, present, fed_snapshot, decoded_snapshot, hardware_frames_snapshot,
++                        dmabuf_frames, corrupt_frames_snapshot, last_corrupt_frame_flags_snapshot,
 +                        last_decode_error_flags_snapshot, inst->drawn, inst->tex_w, inst->tex_h,
 +                        inst->mean_luma);
 +#else
@@ -2336,13 +2656,15 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +        SDL_UnlockMutex(proxy->lock);
 +        return false;
 +    }
++    /* The picture, not the texture: an imported VA-API surface can be taller than the frame. */
++    const SDL_Rect src = {0, 0, inst->pic_w > 0 ? inst->pic_w : inst->tex_w, inst->pic_h > 0 ? inst->pic_h : inst->tex_h};
 +    SDL_Rect dst;
-+    const int scaled_h = inst->tex_h * win_w / inst->tex_w;
++    const int scaled_h = src.h * win_w / src.w;
 +    if (scaled_h <= win_h) {
 +        dst.w = win_w;
 +        dst.h = scaled_h;
 +    } else {
-+        dst.w = inst->tex_w * win_h / inst->tex_h;
++        dst.w = src.w * win_h / src.h;
 +        dst.h = win_h;
 +    }
 +    dst.x = (win_w - dst.w) / 2;
@@ -2350,7 +2672,7 @@ index 0000000000000000000000000000000000000000..97ae72d62b9fb6ee9409f83b4db0c684
 +
 +    SDL_SetRenderDrawColor(inst->renderer, 0, 0, 0, 0xFF);
 +    SDL_RenderClear(inst->renderer);
-+    SDL_RenderCopy(inst->renderer, inst->texture, NULL, &dst);
++    SDL_RenderCopy(inst->renderer, inst->texture, &src, &dst);
 +    SDL_UnlockMutex(proxy->lock);
 +    return true;
 +}
