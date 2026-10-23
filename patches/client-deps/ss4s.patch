@@ -1224,10 +1224,10 @@ index 0000000000000000000000000000000000000000..c9b2b760ecf9273fa2fb2f7abf57f9fa
 +endif ()
 diff --git a/modules/ffmpeg/ffmpegvid.c b/modules/ffmpeg/ffmpegvid.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..524ea602402cd32573a9fdcfeb8bce93997cf732
+index 0000000000000000000000000000000000000000..da87fda51edb0e5fbb7e8449b4c49af69d0d6a70
 --- /dev/null
 +++ b/modules/ffmpeg/ffmpegvid.c
-@@ -0,0 +1,1822 @@
+@@ -0,0 +1,1839 @@
 +/*
 + * SS4S video module: FFmpeg decode + SDL presentation, for desktop platforms.
 + *
@@ -1396,6 +1396,7 @@ index 0000000000000000000000000000000000000000..524ea602402cd32573a9fdcfeb8bce93
 +    struct SwsContext *sws;
 +    unsigned long hardware_frames;
 +    unsigned int hw_errors;         /* decode errors before the first GPU frame; 3 => software */
++    unsigned int hw_corrupt;        /* corrupt GPU frames before the first clean one; LINUX_GPU_CORRUPT_BUDGET => software */
 +    bool hardware_confirmed;
 +#endif
 +#ifdef LINUX_DMABUF
@@ -1947,6 +1948,9 @@ index 0000000000000000000000000000000000000000..524ea602402cd32573a9fdcfeb8bce93
 +    av_buffer_unref(&inst->hw_device_ctx);
 +    return true;
 +}
++
++/* ~5 s at 60 fps of corrupt-only GPU frames: far longer than a co-op start or a loss takes to clear. */
++#define LINUX_GPU_CORRUPT_BUDGET 300
 +
 +/* A decode error while a GPU path is armed but unproven: the third one falls back. */
 +static void linux_note_gpu_error(SS4S_VideoInstance *inst, const char *what) {
@@ -2863,9 +2867,22 @@ index 0000000000000000000000000000000000000000..524ea602402cd32573a9fdcfeb8bce93
 +            LibContext->Log(SS4S_LogLevelWarn, "FFmpeg",
 +                            "Discarding corrupt decoded frame: flags=0x%x decode_errors=0x%x",
 +                            frame_flags, decode_error_flags);
++#ifdef LINUX_HWACCEL
++            const bool gpu_frame = instance->frame->hw_frames_ctx != NULL;
++#endif
 +            av_frame_unref(instance->frame);
 +#ifdef LINUX_HWACCEL
-+            linux_note_gpu_error(instance, "corrupt frames");
++            /* A corrupt frame the GPU RETURNED is a decoder that works and lacks a reference (a co-op
++             * composite before both panes' keyframes, a lost packet). Counted as one of the three GPU
++             * errors, every co-op start that began with three of them moved the 3840x2176 composite to
++             * software decoding on the receive thread: 34 fps, PC2's socket overflowing, keyframe pumping
++             * (VEGA 2026-10-23, docs L16). Only a GPU that returns nothing BUT corrupt frames gives up. */
++            if (!gpu_frame) {
++                linux_note_gpu_error(instance, "corrupt frames");
++            } else if (instance->hw_pix_fmt != AV_PIX_FMT_NONE && !instance->hardware_confirmed &&
++                       ++instance->hw_corrupt >= LINUX_GPU_CORRUPT_BUDGET) {
++                linux_fallback_to_software(instance, "only corrupt frames");
++            }
 +#endif
 +            return SS4S_VIDEO_FEED_REQUEST_KEYFRAME;
 +        }
