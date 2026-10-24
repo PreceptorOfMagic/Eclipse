@@ -293,7 +293,7 @@ modules:
       # submodules. The commit holding this manifest comes after it, so the pin is set there.
       - type: git
         url: https://github.com/PreceptorOfMagic/Eclipse.git
-        commit: 21718d0d1c6ab96207b968fecbbd0f4ee91e0b55
+        commit: 9f520ae4617c0ea5815da56a2ecba15c373ef0b7
       # The packaging files beside this manifest (the same as the pinned commit's, apart from the manifest itself).
       - type: dir
         path: .
