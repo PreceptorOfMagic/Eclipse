@@ -286,15 +286,61 @@ modules:
       - install -Dm644 packaging/linux/flatpak/io.github.PreceptorOfMagic.Eclipse.metainfo.xml /app/share/metainfo/io.github.PreceptorOfMagic.Eclipse.metainfo.xml
       - install -Dm644 LICENSE.txt /app/share/licenses/io.github.PreceptorOfMagic.Eclipse/LICENSE.txt
       - install -m644 COPYRIGHT ACKNOWLEDGEMENTS.md /app/share/licenses/io.github.PreceptorOfMagic.Eclipse/
+      # The third-party licences and THIRD-PARTY-NOTICES.txt, as the tarball ships them.
+      - sh packaging/linux/flatpak/install-notices.sh /app/share/licenses/io.github.PreceptorOfMagic.Eclipse
     sources:
-      # The Eclipse 1.3.5 code (tag eclipse-v1.3.5); flatpak-builder fetches its pinned submodules.
+      # The Eclipse code this bundle is built from (the release tag's commit); flatpak-builder fetches its pinned
+      # submodules. The commit holding this manifest comes after it, so the pin is set there.
       - type: git
         url: https://github.com/PreceptorOfMagic/Eclipse.git
         commit: 21718d0d1c6ab96207b968fecbbd0f4ee91e0b55
-      # The packaging files of this branch, which the 1.3.5 tag predates.
+      # The packaging files beside this manifest (the same as the pinned commit's, apart from the manifest itself).
       - type: dir
         path: .
         dest: packaging/linux/flatpak
+      # The licence texts of the bundled libraries, from the archives the modules above were built from.
+      - type: archive
+        url: https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
+        sha256: a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+        dest: notices/mbedtls
+      - type: archive
+        url: https://curl.se/download/curl-8.22.0.tar.xz
+        sha256: f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
+        dest: notices/curl
+      - type: archive
+        url: https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+        sha256: 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+        dest: notices/opus
+      - type: archive
+        url: https://github.com/benhoyt/inih/archive/refs/tags/r58.tar.gz
+        sha256: e79216260d5dffe809bda840be48ab0eec7737b2bb9f02d2275c1b46344ea7b7
+        dest: notices/inih
+      - type: archive
+        url: https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n13.0.19.1.tar.gz
+        sha256: c293161bd92dac53f2f8fab08abcd4f96773c3644a57b23c2260b4be2311ab2f
+        dest: notices/nv-codec-headers
+      - type: archive
+        url: https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
+        sha256: 5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165
+        dest: notices/sdl2
+      - type: archive
+        url: https://github.com/libsdl-org/SDL_image/releases/download/release-2.8.12/SDL2_image-2.8.12.tar.gz
+        sha256: 393f5efb50536ec13ca4f4affb69cc9966d3c3f969e6c5e701faddf9f9785381
+        dest: notices/sdl2-image
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
+        sha256: cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
+        dest: notices/ffmpeg
+      - type: file
+        url: https://raw.githubusercontent.com/gabomdq/SDL_GameControllerDB/5a12daa568d19344f9b6e9286ef5929833b25c7c/LICENSE
+        sha256: 97f35b302b361680ec1e891e95d2d52097bb95abff361434916d99dc1305f127
+        dest: notices
+        dest-filename: SDL_GameControllerDB-LICENSE.txt
+      - type: file
+        url: https://raw.githubusercontent.com/google/material-design-icons/27e9ef1dbeedc13d682fece4a58e1eda4cb0961a/LICENSE
+        sha256: 58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd
+        dest: notices
+        dest-filename: Material-Icons-LICENSE.txt
       - type: file
         url: https://raw.githubusercontent.com/gabomdq/SDL_GameControllerDB/5a12daa568d19344f9b6e9286ef5929833b25c7c/gamecontrollerdb.txt
         sha256: 07ec5b753e685c4829987919b27905cc3c45c8e18c11b3046e275fcf38b0f3cb

@@ -1,6 +1,6 @@
 # Code signing policy
 
-**Status:** signing through SignPath Foundation is being set up. Every package of every release up to and including Eclipse 1.3.5 is **unsigned**, except the Android APK (below). Until signing is approved, check each download against its published SHA-256.
+**Status:** signing through SignPath Foundation is being set up. Every package of every release up to and including Eclipse 1.3.6 is **unsigned**, except the Android APK (below). Until signing is approved, check each download against its published SHA-256.
 
 **Android:** Android installs only signed APKs, and an update only over an install signed with the same key. From its first release (1.3.5), Eclipse for Android is signed with the project's own release key, kept by the maintainer, and every update will be signed with it. Its certificate SHA-256 is `8C:31:18:05:69:36:39:EF:2A:F8:28:63:9A:31:DE:9B:F4:DB:CC:28:AA:2A:5B:98:89:F3:E6:04:75:26:EF:AC`; check a download with `apksigner verify --print-certs eclipse-android.apk`.
 

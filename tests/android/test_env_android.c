@@ -7,6 +7,7 @@
  * show it when this test was run against it.) The wrapper's results are left in place by design, so leak detection
  * is off for this test. Also checks that setenv/unsetenv behave as the C library's do for this program's uses. */
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>

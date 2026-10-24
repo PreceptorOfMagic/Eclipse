@@ -381,13 +381,19 @@ step "manifests"
 PROJECT_VERSION=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$BUILD/CMakeCache.txt")
 [[ "$PROJECT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Invalid configured Eclipse version: $PROJECT_VERSION"
 
+# The VA-API zero-copy path (ss4s.patch host_import_dmabuf) is compiled in only when the sysroot has libva.
+PRESENTATION='Presentation path: decode, GPU-to-CPU readback and I420 conversion (not zero-copy)'
+if grep -qs 'SS4S_FFMPEG_VAAPI_DMABUF' "$BUILD"/third_party/ss4s/modules/ffmpeg/CMakeFiles/*/flags.make; then
+    PRESENTATION='Presentation path: VA-API frames shown without a copy (DMA-BUF into the renderer over EGL); NVDEC and software frames read back and converted to I420'
+fi
+
 BUILDINFO_CONTRACT=(
     "Version: $PROJECT_VERSION"
     'Code signing: NONE (unsigned community build)'
     "Target: x86_64 Linux with glibc $GLIBC_FLOOR or newer (linked against Ubuntu 22.04 libraries)"
     'Hardware video decode: NVDEC (NVIDIA) then VA-API (Intel/AMD) when the driver allows; software decode otherwise'
     'Decoder override: ECLIPSE_DIAGNOSTIC_VIDEO_DECODER=software|nvdec|vaapi'
-    'Presentation path: decode, GPU-to-CPU readback and I420 conversion (not zero-copy)'
+    "$PRESENTATION"
     'TLS: one shared mbedTLS 3.6.7 built with MBEDTLS_THREADING_C, used by curl 8.22.0'
     "System libraries (not bundled): glibc, $DESKTOP_LIBS, X11/Wayland/GL, PulseAudio/ALSA"
     'Bundled fallbacks (used only when the system lacks them): libva.so.2, libva-drm.so.2, libdrm.so.2 from Ubuntu 22.04'

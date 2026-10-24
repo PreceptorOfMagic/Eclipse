@@ -14,7 +14,7 @@ Open [Eclipse releases](https://github.com/PreceptorOfMagic/Eclipse/releases), c
 |---|---|---|
 | LG webOS TV | Standard `com.aurora.gamestream_<version>_arm.ipk` (not beta) | [LG TV steps](#lg-webos) |
 | Windows x64 | Installer `eclipse-windows-x64-setup-unsigned.exe` (or portable `eclipse-windows-x64-unsigned.zip`) + checksum | [Windows steps](#windows-x64) |
-| Linux x86_64 | `eclipse-linux-x86_64.tar.gz` + checksum | [Linux steps](#linux-x86_64) |
+| Linux x86_64 | Flatpak `Eclipse-<version>-linux-x86_64.flatpak` + checksum (the older tarball `eclipse-linux-x86_64.tar.gz` is still attached) | [Linux steps](#linux-x86_64) |
 | NVIDIA SHIELD TV | `eclipse-android.apk` + checksum | [SHIELD steps](#nvidia-shield-tv) |
 
 ### LG webOS
@@ -38,12 +38,18 @@ Both packages are unsigned; check its provenance and checksum before responding 
 
 ### Linux x86_64
 
-1. Download the archive and its matching checksum; compare with `sha256sum eclipse-linux-x86_64.tar.gz`.
-2. Extract it with `tar -xzf eclipse-linux-x86_64.tar.gz` and enter `eclipse-linux-x86_64`.
-3. Run `./install.sh` to install Eclipse for your user and add it to the applications menu; installing a newer version the same way keeps settings and pairings.
-4. Or run `./eclipse` in place (keep the directory together; `./install-desktop-entry.sh` adds that copy to the menu).
+The Flatpak is the Linux package from 1.3.6 on. It runs on any x86_64 distribution with Flatpak, on Wayland or X11, and uses the same Freedesktop runtime as Umbra for Linux.
 
-Requires glibc 2.35+ (Ubuntu 22.04 baseline), a graphical desktop and working GPU drivers. Current Linux tests are WSL-based with NVDEC; native Linux and AMD/Intel VAAPI still need validation.
+1. Install Flatpak and add Flathub if you have not already (Ubuntu does not include Flatpak by default): `sudo apt install flatpak`, then `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`.
+2. Download `Eclipse-<version>-linux-x86_64.flatpak` and its `.sha256` into one folder and check it: `sha256sum -c Eclipse-<version>-linux-x86_64.flatpak.sha256`.
+3. Install it for your user: `flatpak install --user Eclipse-<version>-linux-x86_64.flatpak`. Flatpak fetches the runtime and, on NVIDIA, the driver extension matching your installed driver.
+4. Start **Eclipse** from the applications menu, or with `flatpak run io.github.PreceptorOfMagic.Eclipse`.
+
+The Flatpak uses the tarball's settings folder (`~/.local/share/com.limelight/moonlight-tv`), so a PC that already runs the tarball keeps its paired hosts and settings. To update, install the newer bundle with `--reinstall` added; to remove it, `flatpak uninstall --user io.github.PreceptorOfMagic.Eclipse` (settings and pairings stay in that folder).
+
+Tested on Ubuntu 26.04 with an AMD Radeon RX Vega (VA-API; GNOME, and KDE Plasma on Wayland and X11) and an NVIDIA RTX 2060 SUPER (NVDEC; GNOME), and installed and streamed on Ubuntu 26.04, Fedora 44, openSUSE Tumbleweed, Arch Linux and Debian 13 under WSL. Intel graphics are untested.
+
+**Older package:** the Ubuntu-built tarball `eclipse-linux-x86_64.tar.gz` stays on each release. Extract it, enter `eclipse-linux-x86_64` and run `./install.sh` (or `./eclipse` in place). It needs glibc 2.35+ (Ubuntu 22.04 baseline).
 
 [Full Linux installation](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md#eclipse-linux).
 
