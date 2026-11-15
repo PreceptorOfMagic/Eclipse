@@ -35,8 +35,12 @@ lv_obj_t *appitem_view(apps_fragment_t *controller, lv_obj_t *parent) {
     lv_obj_set_style_transform_pivot_x(item, controller->col_width / 2, 0);
     lv_obj_set_style_transform_pivot_y(item, controller->col_height / 2, 0);
 
-    lv_obj_set_style_transform_zoom(item, 256 * 99 / 100, LV_STATE_PRESSED);
-    lv_obj_set_style_transform_zoom(item, 256 * 102 / 100, LV_STATE_FOCUS_KEY);
+    /* NO ZOOM ON FOCUS OR PRESS. Reported (user, 2026-11-12; long-standing): the highlighted border
+     * sometimes glitches instead of being a solid frame, seen once on moving Down to the buttons below the grid.
+     * SUSPECTED, not measured: a zoomed object is drawn into an off-screen layer and scaled back, so the 3 px
+     * rounded outline is resampled at 102% / 99% -- the only part of the ring's drawing that differs from frame
+     * to frame. Without a transform the ring is drawn straight onto the screen at its real width; the outline
+     * fade is unchanged. If the glitch comes back without the zoom, this was not its cause. */
     lv_obj_set_style_transition(item, &styles->tr_pressed, LV_STATE_PRESSED | LV_STATE_FOCUS_KEY);
     lv_obj_set_style_transition(item, &styles->tr_released, LV_STATE_DEFAULT);
     lv_obj_add_event_cb(item, appitem_draw_decor, LV_EVENT_DRAW_MAIN, styles);

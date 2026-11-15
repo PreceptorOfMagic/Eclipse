@@ -85,9 +85,9 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
 /** Close the Start wheel (start_wheel.h) without acting: the stream menu or the keyboard opened another way. */
 void stream_input_cancel_start_wheel(void);
 
-#if TARGET_ANDROID
 /** Announce again, to the second co-op PC, the controllers routed to it (once its session is up). */
 void stream_input_reannounce_peer_gamepads(stream_input_t *input);
+#if TARGET_ANDROID
 
 /** Press and let go of the first controller's Guide button on the host (the stream menu's Guide button). */
 void stream_input_send_guide(stream_input_t *input);

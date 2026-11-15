@@ -24,6 +24,11 @@
 #include "ss4s/video.h"
 #include "stream/video/coop_stream_mode.h"
 
+/* Controllers a stream can carry at once (gamestream slot = bit in activeGamepadMask). 16 is the protocol's
+ * ceiling with Sunshine-family hosts (moonlight-common-c Limelight.h, LiSendMultiControllerEvent: "On
+ * Sunshine, it is limited to 16 bits"); GFE took 4, which is what this was until 2026-11-13. */
+#define APP_GAMEPAD_SLOTS 16
+
 typedef struct window_state_t {
     int x, y, w, h;      /**< the NORMAL (restored) rectangle -- never the maximized one */
     bool maximized;
@@ -35,6 +40,7 @@ typedef struct app_settings_t {
     /** Keep the app's log in rotating files under <conf>/logs, for the About pane's "Share logs" page
      *  (util/diag_logs.h). Off by default; takes effect at the next start. */
     bool diag_logging;
+    bool check_updates;   /* the daily update notice check (backend/update_check.h), default on */
     char *decoder;
     char *audio_backend;
     char *audio_device;
@@ -95,6 +101,14 @@ typedef struct app_settings_t {
     bool hardware_mouse;
     bool virtual_mouse;
     bool swap_abxy;
+    /** Steam Controller (2026, Valve puck 28DE:1304/1305 or the controller itself 1302/1303): read it
+     *  through src/app/input/steam_triton.c and present each connected slot as a game controller.
+     *  Default ON; off = the device is not opened and keeps its keyboard/mouse emulation ("lizard mode"). */
+    bool steam_controller;
+    /** Co-op with this PC as one of the hosts: what to do with apps (Steam, Game Bar...) that already
+     *  hold a controller assigned to the OTHER PC -- PAD_APPS_ASK / _CLOSE_REOPEN / _LEAVE
+     *  (ui/launcher/pad_own_gate.h). Set by the popup's "Remember my choice" or Settings > Co-op. */
+    int pad_apps_policy;
     /** Nintendo controllers: NINTENDO_LAYOUT_OFF / _AS_PRINTED / _XBOX (input_gamepad.c).
      *
      *  DETECTED PER CONTROLLER. swap_abxy swaps EVERY pad, so a Switch Pro Controller beside an Xbox pad
@@ -155,7 +169,9 @@ typedef struct app_settings_t {
     /** Which host each controller drives: COOP_PAD_PRIMARY / _SECONDARY. Index is the
      *  controller number - 1. BOTH is no longer offered (user, 2026-09-26: a controller
      *  goes to one PC); a stored BOTH is read back as PRIMARY. */
-    int coop_pad_pane[4];
+    /* Route per gamestream pad slot. Only slots 1-4 are persisted (coop_pad1..4_pane, the pre-ownership
+     * conf); the rest are set by the co-op launch screen for the session. */
+    int coop_pad_pane[APP_GAMEPAD_SLOTS];
     /** Which host(s) are heard: COOP_AUDIO_MIX / _PRIMARY_ONLY / _SECONDARY_ONLY.
      *  Mixing is the default because couch co-op is a shared soundstage -- one TV,
      *  both games, the way local co-op sounded on a 360. */
@@ -237,6 +253,20 @@ typedef struct app_settings_t {
      *  controllers -- as COOP_KBM_MOUSE / COOP_KBM_KEYBOARD, claimed per PC in hosts.ini the way
      *  a pad is -- and belongs to one PC for the whole session. */
     bool coop_kbm_assign;
+    /** CO-OP, THIS PC AS ONE OF THE TWO: RUN ITS SIDE LOCALLY (user 2026-11-10: "a pc acting as client and host
+     *  isn't streaming its own plane to itself instead we are running the pc acting as client and host fully
+     *  locally and composing in the other pc's stream"). On (the default): this PC's half is a virtual display
+     *  shown straight in the Eclipse window and only the other PC is streamed -- nothing is asked of a host
+     *  program on this PC, so it needs no pairing with itself. Off: the previous method, this PC's own host
+     *  program streams its half back to it. Windows only; ignored where the virtual display driver is missing. */
+    bool coop_local_pane;
+    /** CO-OP: A GAME THAT LOCKS THE MOUSE KEEPS IT (user 2026-11-13: "I don't want this to be the default behaviour
+     *  but I do actually want it to be a behaviour option ... for all versions of co-op"). Off (the default): the
+     *  pointer crosses to the other PC's pane even while a game confines the cursor. On: a game that confines
+     *  the cursor holds it in its pane until it lets go (Alt+Tab, its menu). Applied today where this PC runs its
+     *  side locally (local_input_win.c check_cursor); a STREAMED pane cannot honour it yet -- the host does not
+     *  tell the client when its game confines the cursor. */
+    bool coop_game_mouse_lock;
 
     /** CO-OP ADVANCED DIALS, ONE VALUE PER ORIENTATION.
      *

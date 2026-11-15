@@ -141,6 +141,13 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
                                  "Performance (B goes back to the middle), and let go of Start. It works on any "
                                  "controller. Button combos: LB + RB + View + Start opens the stream menu, and the "
                                  "combos above."), false);
+#if !defined(TARGET_WEBOS) && !defined(__ANDROID__)
+    pref_title_label(view, locstr("Steam Controller"));
+    pref_checkbox(view, locstr("Steam Controller support"), &app_configuration->steam_controller, false);
+    pref_desc_label(view, locstr("Reads the Steam Controller (2026) and its wireless receiver directly, so each "
+                                 "connected controller works as a gamepad here and in streams. Turn it off to "
+                                 "leave the controller in its own mouse and keyboard mode."), false);
+#endif
 
 #if FEATURE_INPUT_EVMOUSE
     hwmouse_state_update(pane);

@@ -1,11 +1,15 @@
 name: Build (Android)
 
 on:
+  # Work branches do not build on push (user 2026-11-04, 2026-11-14: GitHub Actions only when needed, ideally only
+  # for releases). main and release branches still build on push; anything else from a pull request or "Run workflow".
   push:
     tags-ignore:
       - 'v*.*.*'
     branches:
-      - '**'
+      - main
+      - 'release/**'
+      - 'eclipse-public/**'
   pull_request:
   workflow_dispatch:
 

@@ -4,6 +4,7 @@
 #include <SDL_joystick.h>
 #include <SDL_version.h>
 #include "gamecontrollerdb_updater.h"
+#include "app_settings.h"   /* APP_GAMEPAD_SLOTS */
 
 #include "lvgl.h"
 #include "lvgl/input/lv_drv_sdl_key.h"
@@ -51,7 +52,7 @@ typedef struct app_input_t {
     char *gcdb_ca_path;
     SDL_Surface *blank_cursor_surface;
     size_t max_num_gamepads;
-    app_gamepad_state_t gamepads[16];
+    app_gamepad_state_t gamepads[APP_GAMEPAD_SLOTS];
     size_t gamepads_count;
     short activeGamepadMask;
     /* Stream-only state behind the moonlight-qt shortcuts (Ctrl+Alt+Shift+Z/M/C/L, desktop builds). Reset

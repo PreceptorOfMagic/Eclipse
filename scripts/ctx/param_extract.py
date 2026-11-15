@@ -54,10 +54,13 @@ def rg(pattern, path=SRC, globs=("*.c", "*.h")):
         return []
     rows = []
     for line in out.splitlines():
-        parts = line.split(":", 2)
-        if len(parts) != 3:
+        # A Windows path starts with a drive letter ("C:"): split after it, or the rest of the
+        # path lands where the line number belongs.
+        drive = line[:2] if len(line) > 2 and line[1] == ":" and line[0].isalpha() else ""
+        parts = line[len(drive):].split(":", 2)
+        if len(parts) != 3 or not parts[1].isdigit():
             continue
-        rows.append((os.path.relpath(parts[0], ROOT), int(parts[1]), parts[2].strip()))
+        rows.append((os.path.relpath(drive + parts[0], ROOT), int(parts[1]), parts[2].strip()))
     return rows
 
 

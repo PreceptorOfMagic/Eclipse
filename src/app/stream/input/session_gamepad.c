@@ -108,6 +108,7 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
     int button = 0;
     /* Per controller: a detected Nintendo pad has its own layout setting (input_gamepad.c). */
     const bool swap_abxy = app_input_gamepad_swaps_abxy(gamepad->controller);
+    const bool swap_xy = app_input_gamepad_swaps_xy(gamepad->controller);
     switch (event->button) {
         case SDL_CONTROLLER_BUTTON_A:
             button = swap_abxy ? B_FLAG : A_FLAG;
@@ -116,10 +117,10 @@ void stream_input_handle_cbutton(stream_input_t *input, const SDL_ControllerButt
             button = swap_abxy ? A_FLAG : B_FLAG;
             break;
         case SDL_CONTROLLER_BUTTON_Y:
-            button = swap_abxy ? X_FLAG : Y_FLAG;
+            button = swap_xy ? X_FLAG : Y_FLAG;
             break;
         case SDL_CONTROLLER_BUTTON_X:
-            button = swap_abxy ? Y_FLAG : X_FLAG;
+            button = swap_xy ? Y_FLAG : X_FLAG;
             break;
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
             button = UP_FLAG;
@@ -522,10 +523,10 @@ void stream_input_send_gamepad_arrive(stream_input_t *input, app_gamepad_state_t
     coop_input_send_arrive(gamepad->gs_id, active_mask, type, capabilities, 0xFFFFFFFF);
 }
 
-#if TARGET_ANDROID
 void stream_input_reannounce_peer_gamepads(stream_input_t *input) {
-    /* The second co-op PC's controllers, announced again once its session is up. On Android the primary's
-     * stream starts before the secondary is ready (session_video.c), so their first arrival can come while
+    /* The second co-op PC's controllers, announced again once its session is up. The primary's stream starts
+     * before the secondary is ready (session_video.c; Android first, every platform since 2026-11-10), so their
+     * first arrival can come while
      * the coordinator has no secondary to give it to, and is dropped: PC1 then made a default pad on the
      * first input, without the controller's type or features (2026-10-16). coop_input_send_arrive() sends
      * only the pads routed to the secondary. */
@@ -545,7 +546,6 @@ void stream_input_reannounce_peer_gamepads(stream_input_t *input) {
         coop_input_send_arrive(gamepad->gs_id, active_mask, type, capabilities, 0xFFFFFFFF);
     }
 }
-#endif
 
 static void gamepad_arrival_info(const app_gamepad_state_t *gamepad, uint8_t *type_out, uint16_t *caps_out,
                                  bool log) {

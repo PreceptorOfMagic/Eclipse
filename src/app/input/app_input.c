@@ -2,6 +2,8 @@
 #include "logging.h"
 #include "app.h"
 #include "input_gamepad_mapping.h"
+#include "steam_triton.h"
+#include "platform/pad_ownership.h"
 
 #include "lvgl/lv_sdl_drv_input.h"
 
@@ -23,7 +25,13 @@ void app_input_init(app_input_t *input, app_t *app) {
     /* The database is kept to choose from as each controller connects (input_gamepad_mapping.c). */
     app_input_load_gamepad_db(app->settings.condb_path);
 #endif
-    input->max_num_gamepads = 4;
+    /* Steam Controller (2026) puck: SDL2 cannot see it; steam_triton.c presents its slots as
+     * virtual game controllers (setting `steam_controller`). */
+    steam_triton_init();
+    /* A previous run that crashed or was killed mid co-op may have left controllers hidden from
+     * this PC (pad_ownership_win.c state file): undo that first. No-op otherwise. */
+    pad_own_startup_recover();
+    input->max_num_gamepads = APP_GAMEPAD_SLOTS;
     input->gamepads_count = 0;
     for (int i = 0; i < input->max_num_gamepads; i++) {
         input->gamepads[i].instance_id = -1;
@@ -47,6 +55,7 @@ void app_input_deinit(app_input_t *input) {
         SDL_FreeCursor(input->blank_cursor_surface->userdata);
     }
     SDL_FreeSurface(input->blank_cursor_surface);
+    steam_triton_deinit();
     SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
 }
 

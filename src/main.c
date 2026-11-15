@@ -4,6 +4,8 @@
 #include "logging.h"
 #include "stream/video/coop_secondary.h"
 #include "stream/video/coop_coord.h"
+#include "platform/taskbar_menu.h"
+#include "platform/pad_ownership.h"
 
 #if defined(TARGET_WEBOS) && !defined(DEBUG)
 
@@ -24,6 +26,22 @@
 static int settings_load(app_settings_t *settings);
 
 int main(int argc, char *argv[]) {
+    /* The elevated copy that restarts services holding a co-op controller (pad_ownership.h,
+     * pad_own_evict_admin): it does that and nothing else -- no window, no SDL, no stream. Windows only. */
+    {
+        int admin_exit = 0;
+        if (pad_own_admin_main(argc, argv, &admin_exit)) {
+            return admin_exit;
+        }
+    }
+    /* A taskbar right-click entry starts the exe again with --taskbar=<command>: hand it to the running
+     * Eclipse and exit before anything else starts (platform/taskbar_menu.h). Windows only. */
+    {
+        int carried_exit = 0;
+        if (taskbar_menu_forward(argc, argv, &carried_exit)) {
+            return carried_exit;
+        }
+    }
 #if defined(TARGET_ANDROID)
     /* libmain.so's main() is SDL_main, called by SDLActivity. The co-op peer is the same program built as a
      * plain executable (libeclipse_peer.so) and exec'd by the primary; SDL must be told its entry point

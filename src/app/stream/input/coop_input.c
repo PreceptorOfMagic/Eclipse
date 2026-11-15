@@ -102,12 +102,28 @@ static bool fill_addr(struct sockaddr_un *addr) {
 /* ── routing ──────────────────────────────────────────────────────────────── */
 
 int coop_input_route(int gs_id) {
+    if (app_launch_local_pane()) {
+        /* THIS PC'S SIDE IS LOCAL: the one stream is the OTHER PC. coop_pad_pane[] keeps its meaning (0 =
+         * player 1's machine, 1 = the other), so a pad is the stream's unless it is assigned to the machine
+         * that is this PC. Those are answered "the peer" -- there is no peer link, so nothing is sent
+         * anywhere for them (coord_send drops while the coordinator is off) and this PC's game reads the pad
+         * itself, natively. "Both" is the stream too: this PC's game sees every pad that is not hidden. */
+        if (app_configuration == NULL || gs_id < 0 || gs_id >= APP_GAMEPAD_SLOTS) {
+            return COOP_PAD_PRIMARY;
+        }
+        const int v = app_configuration->coop_pad_pane[gs_id];
+        if (v == COOP_PAD_BOTH) {
+            return COOP_PAD_PRIMARY;
+        }
+        const bool first_machine = v != COOP_PAD_SECONDARY;
+        return first_machine == app_launch_local_pane_first() ? COOP_PAD_SECONDARY : COOP_PAD_PRIMARY;
+    }
     /* Outside co-op every pad is ours, so the ordinary single-host path never
      * consults the config and never changes behaviour. */
     if (!app_launch_coop_requested() || app_configuration == NULL) {
         return COOP_PAD_PRIMARY;
     }
-    if (gs_id < 0 || gs_id >= 4) {
+    if (gs_id < 0 || gs_id >= APP_GAMEPAD_SLOTS) {
         return COOP_PAD_PRIMARY;
     }
     const int v = app_configuration->coop_pad_pane[gs_id];

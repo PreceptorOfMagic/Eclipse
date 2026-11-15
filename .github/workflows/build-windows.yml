@@ -1,11 +1,16 @@
 name: Build (Windows)
 
 on:
+  # Work branches do not build on push (user 2026-11-04): every backup push of a
+  # work-in-progress branch ran these and mailed a failure. main and release branches
+  # still build on push; anything else builds from a pull request or "Run workflow".
   push:
     tags-ignore:
       - 'v*.*.*'
     branches:
-      - '**'
+      - main
+      - 'release/**'
+      - 'eclipse-public/**'
   pull_request:
   workflow_dispatch:
 

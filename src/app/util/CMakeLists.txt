@@ -2,5 +2,6 @@ target_sources(moonlight-lib PRIVATE
         path.c
         img_loader.c
         nullable.c
+        json_mini.c
         font.c
         diag_logs.c diag_report.c crash_log.c)

@@ -17,6 +17,20 @@ finish-args:
   # The settings and pairings of the tarball build, shared rather than copied: SDL_GetPrefPath() resolves
   # this folder once the launcher points XDG_DATA_HOME back at the user's own data directory.
   - --filesystem=xdg-data/com.limelight/moonlight-tv:create
+  # Host-and-client co-op (this PC is one of the two hosts and runs its side locally), as Umbra for Linux uses
+  # them: GNOME makes this PC's half as a virtual output (ScreenCast + RemoteDesktop, no prompt), places it in the
+  # layout (DisplayConfig) and hands over the pointer (RemoteDesktop); its picture is read from PipeWire. Mouse and
+  # keyboard for the stream's half come through the InputCapture portal (allowed to every Flatpak).
+  - --talk-name=org.gnome.Mutter.ScreenCast
+  - --talk-name=org.gnome.Mutter.RemoteDesktop
+  - --talk-name=org.gnome.Mutter.DisplayConfig
+  - --filesystem=xdg-run/pipewire-0
+  # ...and on KDE Plasma, KWin's own protocols, granted through the desktop file (eclipse.sh): Flatpak 1.18.4+ drops
+  # the key from the exported copy, so eclipse.sh reads the export and keeps a copy with the key in the user's
+  # applications folder (only its own file, only on KDE).
+  - --filesystem=xdg-data/flatpak/exports/share/applications:ro
+  - --filesystem=/var/lib/flatpak/exports/share/applications:ro
+  - --filesystem=xdg-data/applications:create
 
 cleanup:
   - /include
@@ -249,6 +263,32 @@ modules:
         url: https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
         sha256: cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
 
+  # The client side of the InputCapture portal's events (host-and-client co-op on Linux). Only libei itself; its
+  # protocol generator needs Jinja2 at build time, which is unpacked into the build directory, not installed.
+  - name: libei
+    buildsystem: meson
+    config-opts:
+      - -Dlibei=enabled
+      - -Dlibeis=disabled
+      - -Dliboeffis=disabled
+      - -Dtests=disabled
+      - -Ddocumentation=[]
+    build-options:
+      env:
+        PYTHONPATH: /run/build/libei/pydeps/jinja2/src:/run/build/libei/pydeps/markupsafe/src
+    sources:
+      - type: archive
+        url: https://gitlab.freedesktop.org/libinput/libei/-/archive/1.5.0/libei-1.5.0.tar.bz2
+        sha256: da1fba92daccd0667bc46c3ee952d4ae8cfc6bdb4c0bb4d34df26528fb240618
+      - type: archive
+        url: https://files.pythonhosted.org/packages/df/bf/f7da0350254c0ed7c72f3e33cef02e048281fec7ecec5f032d4aac52226b/jinja2-3.1.6.tar.gz
+        sha256: 0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d
+        dest: pydeps/jinja2
+      - type: archive
+        url: https://files.pythonhosted.org/packages/b2/97/5d42485e71dfc078108a86d6de8fa46db44a1a9295e89c5d6d4a06e23a62/markupsafe-3.0.2.tar.gz
+        sha256: ee55d3edf80167e48ea11a923c7386f4669df67d7994554387f84e7d8b0a2bf0
+        dest: pydeps/markupsafe
+
   - name: eclipse
     buildsystem: simple
     build-commands:
@@ -331,6 +371,10 @@ modules:
         url: https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
         sha256: cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
         dest: notices/ffmpeg
+      - type: archive
+        url: https://gitlab.freedesktop.org/libinput/libei/-/archive/1.5.0/libei-1.5.0.tar.bz2
+        sha256: da1fba92daccd0667bc46c3ee952d4ae8cfc6bdb4c0bb4d34df26528fb240618
+        dest: notices/libei
       - type: file
         url: https://raw.githubusercontent.com/gabomdq/SDL_GameControllerDB/5a12daa568d19344f9b6e9286ef5929833b25c7c/LICENSE
         sha256: 97f35b302b361680ec1e891e95d2d52097bb95abff361434916d99dc1305f127

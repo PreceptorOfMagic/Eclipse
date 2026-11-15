@@ -46,12 +46,15 @@
 #include "backend/pcmanager.h"
 #include "platform/input_names.h"
 #include "platform/this_pc.h"
+#include "platform/local_pane_session.h"
 #include "stream/input/coop_assign.h"
 #include "stream/input/coop_pi_pads.h"
 #include "stream/input/coop_pointer.h"
 #include "stream/video/coop_session.h"
 #include "stream/audio/coop_audio.h"
 #include "stream/video/coop_tunables.h"
+#include "ui/launcher/pad_own_gate.h"
+#include "ui/launcher/admin_gate.h"
 #include "ui/streaming/pin_autoentry.h"
 #include "ui/streaming/streaming.controller.h"
 #include "ui/ui_hover.h"
@@ -161,6 +164,13 @@ typedef struct coop_dialog_t {
      *  false, and answering simply returns the user to the dialog with the banner corrected. */
     bool gpu_ask_then_launch;
 
+    /** The controller-ownership step (pad_own_gate.c) has run for this launch: launch_session is
+     *  re-entered after it (and after the GPU question), and must not ask twice. */
+    bool pad_own_done;
+
+    /** The local-pane session's admin question (admin_gate.c) has been answered for this launch. */
+    bool admin_done;
+
     /** The mode banner, kept so changing a machine can rewrite it -- swapping in a PC of
      *  another make changes the codec, and a banner that still described the old pair
      *  would be worse than none. NULL while there is nothing to say. */
@@ -213,11 +223,14 @@ typedef struct coop_dialog_t {
     struct coop_app_resolution_t *app_resolution;
     /** A PC is busy with another app and the user is being asked / the quit is in flight. */
     struct coop_busy_t *busy;
-    /** Start buttons at the front of the action row: 2 in CHOOSE mode (app_settings.h host_monitor_mode) --
-     *  "Start co-op" and "Start, monitors off" -- else 1. Every enable/disable covers them all. */
+    /** Start buttons at the front of the action row: always 1 ("Start co-op") since co-op stopped offering a
+     *  monitors-off start (user, 2026-11-04). Every enable/disable covers them all. */
     uint16_t start_btns;
-    /** The start pressed was the monitors-off one; applied in launch_session. */
-    bool monitor_off_choice;
+    /** THIS PC'S SIDE RUNS LOCALLY (app_launch.h, app_launch_local_pane): which of wake_primary (0) /
+     *  wake_secondary (1) is this PC, or -1 for an ordinary two-stream session. Decided by launch_session at
+     *  every Start. The PC it names is asked for NOTHING from then on -- no status query, no magic packet, no
+     *  sign-in, no app list, no launch -- because nothing of it is streamed. */
+    int lp_side;
 } coop_dialog_t;
 
 static void refresh_pads(coop_dialog_t *dlg);
@@ -230,11 +243,15 @@ static void refresh_mode_banner(coop_dialog_t *dlg);
 static void refresh_machine_facts(coop_dialog_t *dlg);
 
 static void launch_session(coop_dialog_t *dlg);
+static bool pad_own_step(coop_dialog_t *dlg);
+static bool admin_step(coop_dialog_t *dlg, const uuidstr_t *primary, const uuidstr_t *secondary);
 static void gpu_ask_answered_cb(lv_event_t *e);
 
 static void start_stream(app_t *global, const uuidstr_t *primary, const uuidstr_t *secondary,
                          int primary_app_id, int secondary_app_id, int orientation,
                          const coop_stream_plan_t *plan);
+static void launch_resolved(app_t *global, const uuidstr_t *primary, const uuidstr_t *secondary,
+                            int primary_app_id, int secondary_app_id, int orientation, int lp_side);
 
 static void pad_item_click_cb(lv_event_t *e);
 
@@ -422,9 +439,13 @@ static void coop_app_list_failed(int code, const char *error, void *userdata) {
     coop_app_resolution_finish(query->resolution, false, query->host, code, error);
 }
 
+/** @p skip: 0 / 1 = that PC is THIS PC with its side run locally (coop_dialog_t.lp_side), so it is not asked
+ *  for its app list -- it launches nothing, and an unpaired Umbra on it must not fail the session. Its app id
+ *  and running id stay 0. -1 = ask both. */
 static coop_app_resolution_t *coop_app_resolution_start(app_t *global,
                                                         const uuidstr_t *primary,
                                                         const uuidstr_t *secondary,
+                                                        int skip,
                                                         coop_app_resolution_cb callback,
                                                         void *userdata) {
     coop_app_resolution_t *resolution = SDL_calloc(1, sizeof(*resolution));
@@ -446,11 +467,18 @@ static coop_app_resolution_t *coop_app_resolution_start(app_t *global,
                     sizeof(resolution->host_name[i]));
         resolution->query[i].resolution = resolution;
         resolution->query[i].host = i;
+        if (i == skip) {
+            resolution->complete_mask |= 1u << i;
+            continue;
+        }
         resolution->loader[i] = apploader_create(global, hosts[i], &callbacks,
                                                   &resolution->query[i]);
     }
-    apploader_load(resolution->loader[0]);
-    apploader_load(resolution->loader[1]);
+    for (int i = 0; i < 2; ++i) {
+        if (resolution->loader[i] != NULL) {
+            apploader_load(resolution->loader[i]);
+        }
+    }
     return resolution;
 }
 
@@ -1453,12 +1481,28 @@ static void wake_update_done(int result, const char *error, const uuidstr_t *uui
     }
 }
 
-static void wake_ask_both(const uuidstr_t *primary, const uuidstr_t *secondary) {
+/** @p skip: the side that is this PC run locally (coop_dialog_t.lp_side) is not asked -- it is the machine
+ *  this is running on, so it counts as answered; -1 asks both. */
+static void wake_ask_both(const uuidstr_t *primary, const uuidstr_t *secondary, int skip) {
     g_wake_uuid[0] = *primary;
     g_wake_uuid[1] = *secondary;
-    g_wake_fresh[0] = g_wake_fresh[1] = false;
-    pcmanager_request_update(pcmanager, primary, wake_update_done, NULL);
-    pcmanager_request_update(pcmanager, secondary, wake_update_done, NULL);
+    g_wake_fresh[0] = skip == 0;
+    g_wake_fresh[1] = skip == 1;
+    if (skip != 0) {
+        pcmanager_request_update(pcmanager, primary, wake_update_done, NULL);
+    }
+    if (skip != 1) {
+        pcmanager_request_update(pcmanager, secondary, wake_update_done, NULL);
+    }
+}
+
+/** host_online() for wake_primary (0) / wake_secondary (1), except that this PC run locally is simply here:
+ *  whether its Umbra answers is not this session's business. */
+static bool side_online(const coop_dialog_t *dlg, int side) {
+    if (side == dlg->lp_side) {
+        return true;
+    }
+    return host_online(side == 0 ? &dlg->wake_primary : &dlg->wake_secondary);
 }
 
 static void wake_stop(coop_dialog_t *dlg) {
@@ -1512,6 +1556,37 @@ static void start_btns_disabled(coop_dialog_t *dlg, lv_obj_t *btns, bool disable
     }
 }
 
+/** Which machine column is THIS PC (0 or 1), or -1 when neither is. */
+static int this_pc_machine(const coop_dialog_t *dlg) {
+    for (int m = 0; m < 2; m++) {
+        const pclist_t *node = pcmanager_node(pcmanager, &dlg->machine_uuid[m]);
+        if (node != NULL && node->server != NULL && local_host_is_this_pc(node->server->serverInfo.address)) {
+            return m;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Which of the two (0 = @p primary, 1 = @p secondary) is THIS PC with its side run locally instead of streamed
+ * to itself (app_launch.h, app_launch_local_pane), or -1 for an ordinary two-stream session: neither is this
+ * PC, the setting is off (coop_local_pane), or this PC cannot make its own display. Asked afresh wherever it
+ * matters, never remembered across launches -- the setting and the driver can both change between two.
+ */
+static int local_pane_side_for(const uuidstr_t *primary, const uuidstr_t *secondary) {
+    if (app_configuration == NULL || !app_configuration->coop_local_pane) {
+        return -1;
+    }
+    const uuidstr_t *hosts[2] = {primary, secondary};
+    for (int i = 0; i < 2; ++i) {
+        const pclist_t *node = pcmanager_node(pcmanager, hosts[i]);
+        if (node != NULL && node->server != NULL && local_host_is_this_pc(node->server->serverInfo.address)) {
+            return local_pane_session_supported() ? i : -1;
+        }
+    }
+    return -1;
+}
+
 static void busy_enable_start(coop_dialog_t *dlg) {
     start_btns_disabled(dlg, lv_msgbox_get_btns(dlg->msgbox), false);
 }
@@ -1528,10 +1603,9 @@ static void busy_finish(coop_busy_t *busy) {
             wake_sections_hidden(dlg, false);
             busy_enable_start(dlg);
         } else {
-            const coop_stream_plan_t plan = plan_for_pair(&busy->host[0], &busy->host[1]);
             lv_msgbox_close_async(dlg->msgbox);
-            start_stream(dlg->global, &busy->host[0], &busy->host[1], busy->app_id[0], busy->app_id[1],
-                         dlg->orientation, &plan);
+            launch_resolved(dlg->global, &busy->host[0], &busy->host[1], busy->app_id[0], busy->app_id[1],
+                            dlg->orientation, dlg->lp_side);
         }
     }
     SDL_free(busy);
@@ -1706,10 +1780,9 @@ static void coop_app_resolution_done(coop_app_resolution_t *resolution, bool suc
     if (busy_ask(dlg, resolution)) {
         return;
     }
-    const coop_stream_plan_t plan = plan_for_pair(&dlg->wake_primary, &dlg->wake_secondary);
     lv_msgbox_close_async(dlg->msgbox);
-    start_stream(dlg->global, &dlg->wake_primary, &dlg->wake_secondary,
-                 primary_app_id, secondary_app_id, dlg->orientation, &plan);
+    launch_resolved(dlg->global, &dlg->wake_primary, &dlg->wake_secondary,
+                    primary_app_id, secondary_app_id, dlg->orientation, dlg->lp_side);
 }
 
 static void begin_app_resolution(coop_dialog_t *dlg) {
@@ -1719,12 +1792,17 @@ static void begin_app_resolution(coop_dialog_t *dlg) {
     if (dlg->wake_label != NULL) {
         const pclist_t *primary = pcmanager_node(pcmanager, &dlg->wake_primary);
         const pclist_t *secondary = pcmanager_node(pcmanager, &dlg->wake_secondary);
-        lv_label_set_text_fmt(dlg->wake_label, locstr("Checking '%s' on %s and %s..."),
-                              COOP_SESSION_APP_NAME, host_display_name(primary),
-                              host_display_name(secondary));
+        if (dlg->lp_side >= 0) {
+            lv_label_set_text_fmt(dlg->wake_label, locstr("Checking '%s' on %s..."), COOP_SESSION_APP_NAME,
+                                  host_display_name(dlg->lp_side == 0 ? secondary : primary));
+        } else {
+            lv_label_set_text_fmt(dlg->wake_label, locstr("Checking '%s' on %s and %s..."),
+                                  COOP_SESSION_APP_NAME, host_display_name(primary),
+                                  host_display_name(secondary));
+        }
     }
     dlg->app_resolution = coop_app_resolution_start(
-            dlg->global, &dlg->wake_primary, &dlg->wake_secondary,
+            dlg->global, &dlg->wake_primary, &dlg->wake_secondary, dlg->lp_side,
             coop_app_resolution_done, dlg);
     if (dlg->app_resolution == NULL) {
         if (dlg->wake_label != NULL) {
@@ -1738,8 +1816,8 @@ static void begin_app_resolution(coop_dialog_t *dlg) {
 
 static void wake_failed(coop_dialog_t *dlg) {
     wake_stop(dlg);
-    const bool p = host_online(&dlg->wake_primary);
-    const bool s = host_online(&dlg->wake_secondary);
+    const bool p = side_online(dlg, 0);
+    const bool s = side_online(dlg, 1);
     /* NAME THE MACHINE THAT DID NOT COME BACK. "Could not start" sends someone to
      * look at the wrong PC; this is the difference between a two-minute check and an
      * evening of guessing. */
@@ -1757,8 +1835,8 @@ static void wake_failed(coop_dialog_t *dlg) {
 
 static void wake_tick_cb(lv_timer_t *timer) {
     coop_dialog_t *dlg = timer->user_data;
-    const bool p = host_online(&dlg->wake_primary);
-    const bool s = host_online(&dlg->wake_secondary);
+    const bool p = side_online(dlg, 0);
+    const bool s = side_online(dlg, 1);
     /* Until both have ANSWERED since Start was pressed, `p` and `s` are the old cache
      * and must not be acted on -- neither to launch, nor to decide who needs a packet. */
     const bool answered = g_wake_fresh[0] && g_wake_fresh[1];
@@ -1806,7 +1884,8 @@ static void wake_tick_cb(lv_timer_t *timer) {
          * waking anything yet, and claiming otherwise is what made the old dialog's
          * "Waking..." unfalsifiable -- it said the same thing whether a packet had gone
          * out or not. */
-        const char *what = !answered ? locstr("Checking both PCs...")
+        const char *what = !answered ? (dlg->lp_side >= 0 ? locstr("Checking the other PC...")
+                                                          : locstr("Checking both PCs..."))
                            : (!p && !s) ? locstr("Waking both PCs and signing in...")
                                         : locstr("Waking the other PC and signing in...");
         snprintf(msg, sizeof(msg), "%s (%ds)", what, secs);
@@ -1827,8 +1906,12 @@ static void wake_tick_cb(lv_timer_t *timer) {
      * bug above: a host believed online was never asked again, so a machine that went
      * down just before the launch stayed "up" forever and the session was launched into
      * it. Re-asking an online host costs one serverinfo per 2.5 s. */
-    pcmanager_request_update(pcmanager, &dlg->wake_primary, wake_update_done, NULL);
-    pcmanager_request_update(pcmanager, &dlg->wake_secondary, wake_update_done, NULL);
+    if (dlg->lp_side != 0) {
+        pcmanager_request_update(pcmanager, &dlg->wake_primary, wake_update_done, NULL);
+    }
+    if (dlg->lp_side != 1) {
+        pcmanager_request_update(pcmanager, &dlg->wake_secondary, wake_update_done, NULL);
+    }
 }
 
 /**
@@ -1840,8 +1923,8 @@ static void wake_tick_cb(lv_timer_t *timer) {
  *         in both directions at once. The caller must not launch.
  */
 static bool wake_begin(coop_dialog_t *dlg) {
-    const bool p = host_online(&dlg->wake_primary);
-    const bool s = host_online(&dlg->wake_secondary);
+    const bool p = side_online(dlg, 0);
+    const bool s = side_online(dlg, 1);
 
     /* ARM THE LOGIN FOR BOTH HOSTS, ALWAYS -- **"ONLINE" DOES NOT MEAN "USABLE"**.
      *
@@ -1868,8 +1951,13 @@ static bool wake_begin(coop_dialog_t *dlg) {
      * pin_autoentry is opt-in and OFF by default, and because at the start of a co-op
      * session nobody is sitting at either PC, so locked is the overwhelming case.
      * pin_autoentry_arm() is itself a no-op when the feature is off. */
-    pin_autoentry_arm(&dlg->wake_primary);
-    pin_autoentry_arm(&dlg->wake_secondary);
+    /* ...but never this PC run locally: nothing is streamed from it, so there is no stream to type into. */
+    if (dlg->lp_side != 0) {
+        pin_autoentry_arm(&dlg->wake_primary);
+    }
+    if (dlg->lp_side != 1) {
+        pin_autoentry_arm(&dlg->wake_secondary);
+    }
 
     /* ALWAYS DEFER, even when both look up. The cached state has no expiry (see
      * wake_ask_both above) and reading it here is what launched a session into a
@@ -1880,7 +1968,7 @@ static bool wake_begin(coop_dialog_t *dlg) {
     (void) p;
     (void) s;
     g_wake_sent[0] = g_wake_sent[1] = false;
-    wake_ask_both(&dlg->wake_primary, &dlg->wake_secondary);
+    wake_ask_both(&dlg->wake_primary, &dlg->wake_secondary, dlg->lp_side);
 
     wake_sections_hidden(dlg, true);
     if (dlg->wake_label == NULL) {
@@ -1889,7 +1977,8 @@ static bool wake_begin(coop_dialog_t *dlg) {
         lv_obj_set_width(dlg->wake_label, LV_PCT(100));
     }
     lv_obj_clear_flag(dlg->wake_label, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(dlg->wake_label, locstr("Checking both PCs..."));
+    lv_label_set_text(dlg->wake_label, dlg->lp_side >= 0 ? locstr("Checking the other PC...")
+                                                         : locstr("Checking both PCs..."));
     /* The Start button is disabled rather than hidden: pressing it again would send a
      * second wake and start a second wait over the top of this one. */
     start_btns_disabled(dlg, lv_msgbox_get_btns(dlg->msgbox), true);
@@ -2036,8 +2125,6 @@ static void launch_session(coop_dialog_t *dlg) {
     if (!dlg->hosts_ok) {
         return;
     }
-    /* Before either stream is armed: both panes read it (the secondary through the environment). */
-    app_launch_choose_host_monitor(dlg->monitor_off_choice);
     /* THE ONE PLACE a machine index becomes a pane. Everywhere above, a controller
      * is assigned to machine 0 or machine 1; the stream uses primary/secondary, so
      * conversion happens once against player 1. */
@@ -2094,7 +2181,7 @@ static void launch_session(coop_dialog_t *dlg) {
     settings_set_string(&app_configuration->coop_secondary_uuid, secondary->data);
     for (size_t i = 0; i < dlg->pad_count; ++i) {
         const int gs_id = dlg->gs_id_of[i];
-        if (gs_id < 0 || gs_id >= 4) {
+        if (gs_id < 0 || gs_id >= APP_GAMEPAD_SLOTS) {
             continue;                       /* Pi pads do not enter coop_input */
         }
         app_configuration->coop_pad_pane[gs_id] =
@@ -2115,15 +2202,39 @@ static void launch_session(coop_dialog_t *dlg) {
         }
     }
 
-    /* BACKSTOP ONLY. The question is normally asked when the dialog OPENS, so that the mode
-     * banner is true before the user commits and Start does what it says. This catches the one
-     * case open cannot: a PC swapped into a column afterwards. Still ahead of the wake step --
-     * a question should not be queued behind a machine that takes three minutes to boot. */
-    dlg->gpu_ask_then_launch = true;
-    if (gpu_ask_begin(dlg)) {
+    /* ADMIN FOR A SESSION WHERE THIS PC IS BOTH A HOST AND THE CLIENT (user 2026-11-12: always ask, saying why).
+     * First, so the controller step below needs no second prompt. Returns true when it took over; it re-enters. */
+    if (admin_step(dlg, primary, secondary)) {
         return;
     }
-    dlg->gpu_ask_then_launch = false;
+
+    /* CONTROLLER OWNERSHIP. When this PC is one of the two hosts, the controllers given to the OTHER
+     * PC are hidden from this PC before anything starts here, and apps that already hold them are
+     * dealt with (pad_own_gate.c). Returns true when it took over; it re-enters this function. */
+    if (pad_own_step(dlg)) {
+        return;
+    }
+
+    /* IS ONE OF THE TWO THIS PC, RUN LOCALLY? Decided here, at every Start, and carried by the dialog through
+     * the wake, the app lookup and the busy check, all of which then leave this PC alone. Such a session is one
+     * ordinary stream, so the GPU question -- which exists to pick a codec two streams can share -- is not
+     * asked for it. */
+    dlg->lp_side = local_pane_side_for(primary, secondary);
+    if (dlg->lp_side >= 0) {
+        commons_log_info("COOP", "[COOP-LP] %s is this PC: its side runs here and is not streamed; it is asked "
+                         "for nothing (no pairing, app list or launch)",
+                         dlg->machine_name[dlg->lp_side == 0 ? dlg->primary_machine : 1 - dlg->primary_machine]);
+    } else {
+        /* BACKSTOP ONLY. The question is normally asked when the dialog OPENS, so that the mode
+         * banner is true before the user commits and Start does what it says. This catches the one
+         * case open cannot: a PC swapped into a column afterwards. Still ahead of the wake step --
+         * a question should not be queued behind a machine that takes three minutes to boot. */
+        dlg->gpu_ask_then_launch = true;
+        if (gpu_ask_begin(dlg)) {
+            return;
+        }
+        dlg->gpu_ask_then_launch = false;
+    }
 
     /* WAKE ANYTHING THAT IS ASLEEP, THEN LAUNCH. Returns true when it took over; the
      * timer finishes the launch once both machines answer. */
@@ -2144,6 +2255,15 @@ static void launch_session(coop_dialog_t *dlg) {
 static void start_stream(app_t *global, const uuidstr_t *primary, const uuidstr_t *secondary,
                          int primary_app_id, int secondary_app_id, int orientation,
                          const coop_stream_plan_t *plan) {
+    /* Every co-op launch (dialog, wake, busy-quit and relaunch paths) comes through here, before either
+     * stream is armed: both panes read it (the secondary through the environment).
+     * CO-OP NEVER ASKS A HOST TO SWITCH ITS MONITOR OFF, whatever host_monitor_mode says (user, 2026-11-04):
+     * a co-op pane's virtual display already takes the host's real monitor out of use on Umbra's default
+     * layout, so the old "Start, monitors off" button added nothing -- and where this PC is a host it
+     * blanked the screen the session is played on. Normal streams keep the setting (apps.controller.c). */
+    app_launch_keep_host_monitors_on();
+    /* Two streams: not a session with this PC's side run locally, whatever the last launch was. */
+    app_launch_set_local_pane(false, false, false);
     /* ARM THE MODE ON DISK. The orientation is not just a number the session carries:
      * `/tmp/coop-vmirror` selects tile columns and `/tmp/coop-hh-tiles` selects tile
      * rows, and a session that writes neither runs the retired stacked-halves path. This
@@ -2228,10 +2348,74 @@ static void start_stream(app_t *global, const uuidstr_t *primary, const uuidstr_
     lv_fragment_manager_push(ui->fm, fragment, container);
 }
 
+/**
+ * THE LAUNCH WHEN ONE OF THE TWO IS THIS PC AND ITS SIDE RUNS LOCALLY (app_launch.h; user 2026-11-10: "a pc
+ * acting as client and host isn't streaming its own plane to itself"). ONE ordinary stream, to the OTHER PC's
+ * co-op pane. This PC is asked for nothing -- no app list, no launch, no pairing with its own host software --
+ * because nothing of it is streamed. The session asks the other PC for half the picture and makes this PC's
+ * display (session.c, session_worker.c); the window then shows the two side by side
+ * (platform/local_pane_session.h).
+ *
+ * @p local_first: this PC is player 1's machine, so its half is the left / top one.
+ */
+static void start_local_pane_stream(app_t *global, const uuidstr_t *remote, int remote_app_id, int orientation,
+                                    bool local_first) {
+    app_launch_keep_host_monitors_on();
+    /* NOT a two-stream session: nothing is spliced and no second process is started. Everything that would
+     * arm one is put to "off" here, as an ordinary launch does (apps.controller.c), rather than left as the
+     * previous launch had it. session.c disarms the mode switches for every stream that is not co-op. */
+    app_launch_set_coop_requested(false);
+    coop_session_clear();
+    coop_pointer_set_local_pane(-1);
+    coop_audio_prepare_local_host(false);
+    /* THE SPLIT AS CHOSEN. coop_orientation_for_mode() is not consulted: it rules a left/right split out for
+     * codecs that cannot SPLICE one, and nothing is spliced here. */
+    const bool vertical = orientation == COOP_ORIENTATION_VERTICAL;
+    app_launch_set_local_pane(true, vertical, local_first);
+    /* The assigned mouse and keyboard, machine -> pane in THIS session's panes: 0 = the stream, 1 = this PC
+     * (coop_pointer_start_local). g_kbm_pane holds 0 for player 1's machine, which is this PC when
+     * local_first. */
+    int pins[2] = {-1, -1};
+    if (app_configuration->coop_kbm_assign) {
+        for (int k = 0; k < 2; ++k) {
+            pins[k] = g_kbm_pane[k] < 0 ? -1 : ((g_kbm_pane[k] == 0) == local_first ? 1 : 0);
+        }
+    }
+    coop_pointer_set_pins(pins[0], pins[1]);
+    commons_log_info("COOP", "[COOP-LP] local pane session: this PC's side is the %s half and runs here; one "
+                     "stream, to the other PC (app id %d)",
+                     local_first ? (vertical ? "left" : "top") : (vertical ? "right" : "bottom"), remote_app_id);
+
+    static char coop_app_name[] = COOP_SESSION_APP_NAME;
+    streaming_scene_arg_t args = {
+            .global = global,
+            .uuid = *remote,
+            .app = {.name = coop_app_name, .id = remote_app_id, .hdr = 0, .next = NULL},
+    };
+    app_ui_t *ui = &global->ui;
+    lv_fragment_t *fragment = lv_fragment_create(&streaming_controller_class, &args);
+    lv_obj_t *const *container = lv_fragment_get_container(lv_fragment_manager_get_top(ui->fm));
+    lv_fragment_manager_push(ui->fm, fragment, container);
+}
+
+/** Both PCs have answered (or one is this PC run locally, @p lp_side 0 / 1, and was not asked): start the
+ *  session the pairing calls for. Every co-op launch -- dialog, busy-quit, relaunch -- ends here. */
+static void launch_resolved(app_t *global, const uuidstr_t *primary, const uuidstr_t *secondary,
+                            int primary_app_id, int secondary_app_id, int orientation, int lp_side) {
+    if (lp_side >= 0) {
+        start_local_pane_stream(global, lp_side == 0 ? secondary : primary,
+                                lp_side == 0 ? secondary_app_id : primary_app_id, orientation, lp_side == 0);
+        return;
+    }
+    const coop_stream_plan_t plan = plan_for_pair(primary, secondary);
+    start_stream(global, primary, secondary, primary_app_id, secondary_app_id, orientation, &plan);
+}
+
 typedef struct coop_relaunch_t {
     app_t *global;
     uuidstr_t host[2];
     int orientation;
+    int lp_side;                /* as coop_dialog_t.lp_side, decided when the relaunch began */
 } coop_relaunch_t;
 
 static coop_app_resolution_t *g_relaunch_resolution;
@@ -2248,9 +2432,8 @@ static void coop_relaunch_resolution_done(coop_app_resolution_t *resolution, boo
     if (success) {
         commons_log_info("COOP", "relaunching co-op session (orientation %d, app ids %d/%d)",
                          relaunch->orientation, resolution->app_id[0], resolution->app_id[1]);
-        const coop_stream_plan_t plan = plan_for_pair(&relaunch->host[0], &relaunch->host[1]);
-        start_stream(relaunch->global, &relaunch->host[0], &relaunch->host[1],
-                     resolution->app_id[0], resolution->app_id[1], relaunch->orientation, &plan);
+        launch_resolved(relaunch->global, &relaunch->host[0], &relaunch->host[1],
+                        resolution->app_id[0], resolution->app_id[1], relaunch->orientation, relaunch->lp_side);
     } else {
         const char *who = failed_host >= 0 && failed_host < 2
                           ? resolution->host_name[failed_host] : locstr("One PC");
@@ -2279,11 +2462,93 @@ static void coop_relaunch_resolution_done(coop_app_resolution_t *resolution, boo
     SDL_free(relaunch);
 }
 
+/* A RESUME RUNS THE SAME TWO STEPS AS A START (user 2026-11-13: "on resume the controllers are not having the
+ * controller routing happening so the Xbox control is going to both pc's"). A Start passes the admin question and
+ * the controller step in launch_session; a resume (taskbar or the paused app's tile) came straight here and
+ * launched, so nothing hid the pads given to the other PC. When this PC runs its side locally, the admin question
+ * comes first, then the pads the LAST Start gave to the other PC (coop_pad_pane, written at that Start) are
+ * hidden, then the session relaunches. */
+static bool g_relaunch_gating;
+
+static bool relaunch_go(coop_relaunch_t *relaunch) {
+    g_relaunch_gating = false;
+    g_relaunch_resolution = coop_app_resolution_start(relaunch->global, &relaunch->host[0], &relaunch->host[1],
+                                                       relaunch->lp_side, coop_relaunch_resolution_done, relaunch);
+    if (g_relaunch_resolution == NULL) {
+        SDL_free(relaunch);
+        return false;
+    }
+    return true;
+}
+
+static void relaunch_pads_done(void *ctx, bool proceed) {
+    coop_relaunch_t *relaunch = ctx;
+    if (!proceed) {
+        g_relaunch_gating = false;
+        SDL_free(relaunch);
+        return;
+    }
+    relaunch_go(relaunch);
+}
+
+/** @return true when the controller gate took over (relaunch_pads_done continues). */
+static bool relaunch_pad_step(coop_relaunch_t *relaunch) {
+    pad_own_pad_t pads[PAD_OWN_MAX_PADS];
+    int count = 0;
+    const app_input_t *input = &relaunch->global->input;
+    const int slots = (int) (sizeof(app_configuration->coop_pad_pane) / sizeof(app_configuration->coop_pad_pane[0]));
+    for (size_t k = 0; k < input->max_num_gamepads && count < PAD_OWN_MAX_PADS; ++k) {
+        const app_gamepad_state_t *gp = &input->gamepads[k];
+        if (gp->controller == NULL || gp->gs_id < 0 || gp->gs_id >= slots) {
+            continue;
+        }
+        if (app_configuration->coop_pad_pane[gp->gs_id] == relaunch->lp_side) {
+            continue;   /* stays with this PC */
+        }
+        if (pad_own_resolve(gp->instance_id, SDL_GameControllerName(gp->controller), &pads[count])) {
+            count++;
+        }
+    }
+    const int matched = count;
+    /* AND every pad the last Start hid. MEASURED 2026-11-13 22:33 on SKYNET: the resume matched 0 pads through the
+     * live list (coop_pad2_pane = 1, the Xbox pad was on and had been hidden at the Start) and the Xbox pad stayed
+     * visible to this PC. What the last Start actually hid does not depend on this process's pad list. */
+    pad_own_pad_t last[PAD_OWN_MAX_PADS];
+    const int last_count = pad_own_last_hidden(last, PAD_OWN_MAX_PADS);
+    for (int i = 0; i < last_count && count < PAD_OWN_MAX_PADS; i++) {
+        bool dup = false;
+        for (int j = 0; j < count; j++) {
+            if (strcmp(pads[j].instance, last[i].instance) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) {
+            pads[count++] = last[i];
+        }
+    }
+    commons_log_info("COOP", "[COOP-LP] resume: %d controller(s) to hide (%d by the last Start's assignment, %d more "
+                     "the last Start hid)", count, matched, count - matched);
+    return count > 0 && pad_own_gate_begin(pads, count, relaunch_pads_done, relaunch);
+}
+
+static void relaunch_admin_done(void *ctx, bool proceed) {
+    coop_relaunch_t *relaunch = ctx;
+    if (!proceed) {
+        g_relaunch_gating = false;
+        SDL_free(relaunch);
+        return;
+    }
+    if (!relaunch_pad_step(relaunch)) {
+        relaunch_go(relaunch);
+    }
+}
+
 bool coop_dialog_relaunch_last(app_t *global) {
     if (global == NULL || app_configuration == NULL) {
         return false;
     }
-    if (g_relaunch_resolution != NULL) {
+    if (g_relaunch_resolution != NULL || g_relaunch_gating) {
         return true;
     }
     const char *want[2] = {app_configuration->coop_primary_uuid,
@@ -2315,19 +2580,84 @@ bool coop_dialog_relaunch_last(app_t *global) {
     relaunch->host[0] = resolved[0];
     relaunch->host[1] = resolved[1];
     relaunch->orientation = app_configuration->coop_orientation;
-    g_relaunch_resolution = coop_app_resolution_start(global, &resolved[0], &resolved[1],
-                                                       coop_relaunch_resolution_done, relaunch);
-    if (g_relaunch_resolution == NULL) {
-        SDL_free(relaunch);
-        return false;
+    relaunch->lp_side = local_pane_side_for(&resolved[0], &resolved[1]);
+    if (relaunch->lp_side >= 0) {
+        g_relaunch_gating = true;
+        if (admin_gate_begin(relaunch_admin_done, relaunch)) {
+            return true;
+        }
+        if (relaunch_pad_step(relaunch)) {
+            return true;
+        }
     }
-    return true;
+    return relaunch_go(relaunch);
 }
 
 /* -------------------------------------------------------------- scaffolding */
 
+static void pad_own_done_cb(void *ctx, bool proceed) {
+    coop_dialog_t *dlg = ctx;
+    dlg->pad_own_done = proceed;
+    if (proceed) {
+        launch_session(dlg);
+    }
+}
+
+static void admin_done_cb(void *ctx, bool proceed) {
+    coop_dialog_t *dlg = ctx;
+    dlg->admin_done = proceed;
+    if (proceed) {
+        launch_session(dlg);
+    }
+}
+
+static bool admin_step(coop_dialog_t *dlg, const uuidstr_t *primary, const uuidstr_t *secondary) {
+    if (dlg->admin_done || local_pane_side_for(primary, secondary) < 0) {
+        return false;
+    }
+    if (admin_gate_begin(admin_done_cb, dlg)) {
+        return true;
+    }
+    dlg->admin_done = true;              /* nothing to ask (already elevated) */
+    return false;
+}
+
+static bool pad_own_step(coop_dialog_t *dlg) {
+    if (dlg->pad_own_done) {
+        return false;
+    }
+    const int local_machine = this_pc_machine(dlg);
+    if (local_machine < 0) {
+        return false;
+    }
+    pad_own_pad_t pads[PAD_OWN_MAX_PADS];
+    int count = 0;
+    const app_input_t *input = &dlg->global->input;
+    for (size_t i = 0; i < dlg->pad_count && count < PAD_OWN_MAX_PADS; ++i) {
+        const int gs_id = dlg->gs_id_of[i];
+        if (gs_id < 0 || dlg->kbm_of[i] >= 0 || dlg->assign[i].route == local_machine) {
+            continue;                     /* a Pi pad, the mouse/keyboard, or staying on this PC */
+        }
+        for (size_t k = 0; k < input->max_num_gamepads; ++k) {
+            const app_gamepad_state_t *gp = &input->gamepads[k];
+            if (gp->controller != NULL && gp->gs_id == gs_id) {
+                if (pad_own_resolve(gp->instance_id, dlg->pads[i].name, &pads[count])) {
+                    count++;
+                }
+                break;
+            }
+        }
+    }
+    if (count == 0) {
+        return false;
+    }
+    return pad_own_gate_begin(pads, count, pad_own_done_cb, dlg);
+}
+
 static void dialog_deleted_cb(lv_event_t *e) {
     coop_dialog_t *dlg = lv_event_get_user_data(e);
+    pad_own_gate_cancel(dlg);
+    admin_gate_cancel(dlg);
     if (dlg->rescan != NULL) {
         lv_timer_del(dlg->rescan);
         dlg->rescan = NULL;
@@ -2366,7 +2696,6 @@ static void dialog_btn_cb(lv_event_t *e) {
     }
     const uint16_t pressed = lv_msgbox_get_active_btn(msgbox);
     if (pressed < dlg->start_btns && dlg->hosts_ok) {
-        dlg->monitor_off_choice = pressed == 1;
         launch_session(dlg);
     } else {
         lv_msgbox_close_async(msgbox);
@@ -2471,6 +2800,16 @@ static void build_mode_banner(coop_dialog_t *dlg, lv_obj_t *content) {
         } \
     } while (0)
 
+    {
+        /* THIS PC'S SIDE RUNS LOCALLY: one ordinary stream, so nothing below -- the encoder the two share,
+         * HDR across both halves, the makes of GPU -- describes this session. Say what does. */
+        const int lp_side = local_pane_side_for(&dlg->machine_uuid[0], &dlg->machine_uuid[1]);
+        if (lp_side >= 0) {
+            BANNER_APPEND(locstr("%s is this PC: its side runs here and is not streamed. Only %s is streamed."),
+                          dlg->machine_name[lp_side], dlg->machine_name[1 - lp_side]);
+            goto banner_show;
+        }
+    }
     if (plan->gpu_hevc && plan->forced) {
         BANNER_APPEND("%s", locstr("GPU HEVC encoder on both PCs: forced in Settings > Co-op > Encoder."));
     } else if (plan->gpu_hevc) {
@@ -2542,6 +2881,7 @@ static void build_mode_banner(coop_dialog_t *dlg, lv_obj_t *content) {
 #endif
     }
 
+banner_show:
 #undef BANNER_APPEND
 
     if (w == 0) {
@@ -2585,6 +2925,7 @@ void coop_dialog_open(launcher_fragment_t *launcher) {
     }
     dlg->launcher = launcher;
     dlg->global = launcher->global;
+    dlg->lp_side = -1;
     dlg->orientation = app_configuration->coop_orientation == COOP_ORIENTATION_VERTICAL
                        ? COOP_ORIENTATION_VERTICAL : COOP_ORIENTATION_HORIZONTAL;
     resolve_hosts(dlg);
@@ -2598,14 +2939,10 @@ void coop_dialog_open(launcher_fragment_t *launcher) {
     }
     collect_pads(dlg);
 
-    /* CHOOSE MODE (app_settings.h host_monitor_mode): a second start that switches both PCs' monitors off.
-     * Offered whatever the pair -- a PC that cannot (not Umbra, or this PC) simply keeps its monitor on. */
+    /* One start: co-op no longer offers "Start, monitors off" (launch_session). */
     static const char *btn_texts[] = {translatable("Start co-op"), translatable("Cancel"), ""};
-    static const char *btn_texts_choice[] = {translatable("Start co-op"), translatable("Start, monitors off"),
-                                             translatable("Cancel"), ""};
-    dlg->start_btns = app_launch_host_monitor_choice_offered() ? 2 : 1;
-    lv_obj_t *msgbox = lv_msgbox_create_i18n(NULL, locstr("Co-op session"), NULL,
-                                             dlg->start_btns == 2 ? btn_texts_choice : btn_texts, false);
+    dlg->start_btns = 1;
+    lv_obj_t *msgbox = lv_msgbox_create_i18n(NULL, locstr("Co-op session"), NULL, btn_texts, false);
     dlg->msgbox = msgbox;
     lv_obj_set_user_data(msgbox, dlg);
     lv_obj_add_event_cb(msgbox, dialog_deleted_cb, LV_EVENT_DELETE, dlg);
@@ -2641,8 +2978,8 @@ void coop_dialog_open(launcher_fragment_t *launcher) {
         lv_obj_t *warn = lv_label_create(content);
         lv_label_set_long_mode(warn, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(warn, LV_PCT(100));
-        lv_label_set_text_static(warn, locstr("Co-op needs two paired computers. Add or pair a "
-                                              "second PC, then open this again."));
+        lv_label_set_text_static(warn, locstr("Co-op needs two computers running Umbra. Add a second "
+                                              "PC, then open this again."));
         start_btns_disabled(dlg, lv_msgbox_get_btns(msgbox), true);
         lv_obj_center(msgbox);
         return;

@@ -24,6 +24,7 @@
 #include "wired_nic.h"
 #include "backend/aurora_host_caps.h"
 #include "platform/this_pc.h"
+#include "platform/local_pane_session.h"
 #include "backend/pcmanager.h"
 #if TARGET_ANDROID
 #include "platform/android/android_platform.h"
@@ -196,7 +197,11 @@ int session_worker(session_t *session) {
     /* CO-OP-ONLY HOST TUNING, per launch: an Umbra host applies its co-op encoder settings to this
      * session and no other (UmbraCaps bit 2). Off in Settings > Co-op leaves the host as it is. */
     const bool host_tuning = app_launch_coop_requested() && app_configuration->coop_host_tuning;
-    gs_set_coop(client, app_launch_coop_requested(), host_tuning);
+    /* With this PC's side run locally (app_launch_local_pane) the one stream goes to the other PC's co-op pane
+     * app and says umbraCoop=0: nothing is spliced, so there is no encoder to tune for a splice. Saying nothing
+     * is not the same -- Umbra's source (nvhttp.cpp resolve_coop_flag) gives a launch of its co-op pane the
+     * co-op tuning when the argument is absent, and takes 0 as the client's explicit "no". */
+    gs_set_coop(client, app_launch_coop_requested() || app_launch_local_pane(), host_tuning);
     /* HOST MONITOR OFF (app_settings.h host_monitor_mode): only to a host that offers it (UmbraCaps bit 4), and
      * never to this PC -- its monitor is where this client's window is. */
     {
@@ -253,6 +258,21 @@ int session_worker(session_t *session) {
         }
     }
 #endif
+    /* THIS PC'S SIDE OF A CO-OP SESSION, RUN LOCALLY (platform/local_pane_session.h): its display is made BEFORE
+     * the other PC is asked to start anything, so a PC that cannot make one stops here with a reason instead
+     * of leaving the other PC streaming into half a window. The size is this stream's -- both halves are alike. */
+    if (app_launch_local_pane() && coop_secondary_mode() == NULL &&
+        !local_pane_session_prepare(session->config.stream.width, session->config.stream.height,
+                                    session->config.stream.fps)) {
+        session_set_state(session, STREAMING_ERROR);
+        streaming_error(session, GS_WRONG_STATE,
+                        "This PC's own display for the co-op session could not be set up, so the session was not "
+                        "started. To use the previous method instead (this PC streams its side to itself), turn "
+                        "off \"Run this PC's side of a co-op session locally\" in Settings > Co-op.");
+        commons_log_error("Session", "[COOP-LP] this PC's display (%dx%d at %d) could not be made; not launching",
+                          session->config.stream.width, session->config.stream.height, session->config.stream.fps);
+        goto thread_cleanup;
+    }
 #if TARGET_WEBOS
     /* THE WIRED PIN (wired_nic.h, app_settings.h wired_pin_mode): resolved here, at the point of use. */
     if (app_configuration->wired_pin_mode != WIRED_PIN_OFF) {
@@ -491,6 +511,9 @@ int session_worker(session_t *session) {
     if (coop_secondary_mode() == NULL) {
         session_log_host(client, server);
     }
+    /* This PC's own display of a co-op session run locally goes now (no-op for every other session), before the
+     * session file that guards the client window through the layout change does. */
+    local_pane_session_worker_end();
 #ifdef _WIN32
     local_host_session_end();
 #endif

@@ -1,5 +1,6 @@
 #include "ui/root.h"
 #include "lv_disp_drv_app.h"
+#include "platform/local_pane_session.h"
 
 #include "draw/sdl/lv_draw_sdl.h"
 
@@ -81,6 +82,7 @@ void lv_app_redraw_now(lv_disp_drv_t *disp_drv) {
             SDL_RenderClear(renderer);
         }
     }
+    local_pane_session_draw(renderer);   /* host-and-client co-op: this PC's half, under the UI (Linux) */
     SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
     SDL_RenderCopy(renderer, texture, NULL, NULL);
     SDL_RenderPresent(renderer);

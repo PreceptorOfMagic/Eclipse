@@ -89,6 +89,9 @@ void session_interrupt(session_t *session, bool quitapp, streaming_interrupt_rea
 /** True while the streaming worker reports STREAMING_STREAMING (active decode path). */
 bool session_is_streaming(const session_t *session);
 
+/** The stream is ending with the app QUIT on the host (Quit), not only paused (Disconnect). */
+bool session_is_quitting(const session_t *session);
+
 bool session_start_input(session_t *session);
 
 void session_stop_input(session_t *session);
@@ -114,6 +117,16 @@ void streaming_display_size(session_t *session, short width, short height);
 void streaming_enter_fullscreen(session_t *session);
 
 void streaming_enter_overlay(session_t *session, int x, int y, int w, int h);
+
+/**
+ * Draw the stream in PART of the window (renderer output pixels), or in all of it again with an empty rectangle.
+ * For the one case where the client shows something else beside the picture: a co-op session whose other half is
+ * this PC's own display (platform/local_pane_session.h). Unlike the two above it is not skipped for a video
+ * module that composites the UI itself -- that is the module it is for. UI thread.
+ */
+/** Where the stream's picture is drawn. @return false when the video module did not take it (no video yet, or not
+ *  the module's current instance) -- the caller must try again later. */
+bool streaming_video_area(session_t *session, int x, int y, int w, int h);
 
 void streaming_set_hdr(session_t *session, bool hdr);
 

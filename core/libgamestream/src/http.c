@@ -224,6 +224,13 @@ void http_set_timeout(HTTP *http, int timeout) {
     pthread_mutex_unlock(&http->mutex);
 }
 
+void http_set_stall_timeout(HTTP *http, int timeout) {
+    assert(http != NULL);
+    pthread_mutex_lock(&http->mutex);
+    curl_easy_setopt(http->curl, CURLOPT_LOW_SPEED_TIME, (long) timeout);
+    pthread_mutex_unlock(&http->mutex);
+}
+
 HTTP_DATA *http_data_alloc() {
     HTTP_DATA *data = malloc(sizeof(HTTP_DATA));
     assert(data != NULL);

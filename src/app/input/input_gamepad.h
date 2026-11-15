@@ -18,6 +18,9 @@ bool app_input_gamepad_is_nintendo(SDL_GameController *controller);
  *  `swap_abxy`, which swaps every controller. */
 bool app_input_gamepad_swaps_abxy(SDL_GameController *controller);
 
+/** Whether THIS controller's X/Y are swapped (differs from A/B on Nintendo pads, see input_gamepad.c). */
+bool app_input_gamepad_swaps_xy(SDL_GameController *controller);
+
 void app_input_close_gamepad(app_input_t *input, SDL_JoystickID sdl_id);
 
 int app_input_get_gamepads_count(app_input_t *input);

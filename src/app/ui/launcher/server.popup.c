@@ -1,4 +1,5 @@
 #include "platform/this_pc.h"
+#include "platform/local_pane_session.h"
 #include "server.popup.h"
 #include "server.context_menu.h"
 #include "coop.dialog.h"
@@ -224,6 +225,12 @@ void server_popup_open(launcher_fragment_t *controller) {
          * make it the launcher's host instead. */
         const bool this_pc = local_host_is_this_pc(server->serverInfo.address);
         if (this_pc && cur->state.code != SERVER_STATE_NOT_PAIRED) { continue; }
+        /* NOT EVEN UNPAIRED when this PC's side of co-op runs locally (2026-11-15, user: "they are on the same
+         * PC so it really isn't needed"): such a session never pairs with, asks or launches anything on this
+         * PC's host, and the co-op dialog takes any PC it can see. Only a co-op that streams this PC to itself
+         * (the setting off, or no local display on this desktop) still needs the pairing this row offers. */
+        if (this_pc && app_configuration != NULL && app_configuration->coop_local_pane &&
+            local_pane_session_supported()) { continue; }
         const char *icon = server_popup_item_icon(cur);
         char this_pc_label[160];
         if (this_pc) {

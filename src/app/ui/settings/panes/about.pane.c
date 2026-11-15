@@ -11,6 +11,8 @@
 #include "util/diag_report.h"
 #include "lvgl/util/lv_app_utils.h"
 #include "os_info.h"
+#include "backend/update_check.h"
+#include "ui/common/update_dot.h"
 
 
 #define MAXIMUM_ROWS 32
@@ -51,6 +53,8 @@ static const char *module_name(const SS4S_ModuleInfo *info);
 
 static void share_logs_cb(lv_event_t *e);
 
+static void whats_new_cb(lv_event_t *e);
+
 static inline void about_full_row(lv_obj_t *obj, int row) {
     lv_obj_set_grid_cell(obj, LV_GRID_ALIGN_STRETCH, 0, 4, LV_GRID_ALIGN_CENTER, row, 1);
 }
@@ -75,6 +79,22 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
     lv_obj_set_grid_dsc_array(view, col_dsc, controller->row_dsc);
     int rowcount = 0;
     about_line(view, locstr("Version"), APP_VERSION, rowcount++, 1);
+    /* THE UPDATE NOTICE (backend/update_check.h): one line and a button, only when there is something. */
+    const update_info_t *update = update_check_info();
+    if (update->available && app->settings.check_updates) {
+        static char available_text[96];
+        snprintf(available_text, sizeof(available_text), locstr("Eclipse %s is available"),
+                 update->latest_version);
+        lv_obj_t *available = lv_label_create(view);
+        lv_label_set_text_static(available, available_text);
+        lv_obj_set_grid_cell(available, LV_GRID_ALIGN_START, 0, 2, LV_GRID_ALIGN_CENTER, rowcount, 1);
+        lv_obj_t *whats_new = lv_btn_create(view);
+        lv_obj_t *whats_new_label = lv_label_create(whats_new);
+        lv_label_set_text(whats_new_label, locstr("What's new"));
+        lv_obj_center(whats_new_label);
+        lv_obj_set_grid_cell(whats_new, LV_GRID_ALIGN_END, 2, 2, LV_GRID_ALIGN_CENTER, rowcount++, 1);
+        lv_obj_add_event_cb(whats_new, whats_new_cb, LV_EVENT_CLICKED, parent);
+    }
     about_line(view, locstr("Video decoder"), module_name(app->ss4s.selection.video_module), rowcount++, 2);
     about_line(view, locstr("Audio backend"), module_name(app->ss4s.selection.audio_module), rowcount++, 2);
     char *os_str = os_info_str(&app->os_info);
@@ -107,6 +127,13 @@ static lv_obj_t *create_obj(lv_fragment_t *self, lv_obj_t *container) {
     lv_obj_center(share_label);
     lv_obj_set_grid_cell(share, LV_GRID_ALIGN_START, 0, 2, LV_GRID_ALIGN_CENTER, rowcount++, 1);
     lv_obj_add_event_cb(share, share_logs_cb, LV_EVENT_CLICKED, app);
+    lv_obj_t *check = pref_checkbox(view, locstr("Check for updates"), &app_configuration->check_updates, false);
+    about_full_row(check, rowcount++);
+    lv_obj_t *check_desc = pref_desc_label(view, locstr("Once a day, Eclipse downloads the list of releases from "
+                                                        "the Project Hub. A newer version shows as a dot on "
+                                                        "Settings. Nothing about you or your PCs is sent."),
+                                           false);
+    about_full_row(check_desc, rowcount++);
     LV_ASSERT(rowcount <= MAXIMUM_ROWS);
     for (int i = 0; i < rowcount; i++) {
         controller->row_dsc[i] = LV_GRID_CONTENT;
@@ -197,4 +224,79 @@ const char *module_name(const SS4S_ModuleInfo *info) {
         return "Not available";
     }
     return id;
+}
+
+/* "What's new": every release since this one, then how to update on this platform. */
+#define WHATS_NEW_MAX_RELEASES 4
+#define WHATS_NEW_MAX_HIGHLIGHTS 10
+
+static void append(char *buf, size_t size, const char *text) {
+    strncat(buf, text, size - strlen(buf) - 1);
+}
+
+static void whats_new_dialog_cb(lv_event_t *e) {
+    lv_obj_t *dialog = lv_event_get_current_target(e);
+    const char *pressed = lv_msgbox_get_active_btn_text(dialog);
+#if !TARGET_WEBOS && !TARGET_ANDROID
+    const update_info_t *update = update_check_info();
+    if (pressed != NULL && strcmp(pressed, locstr("Download page")) == 0 && update->download_url != NULL) {
+        SDL_OpenURL(update->download_url);
+        return;   /* the dialog stays */
+    }
+#else
+    LV_UNUSED(pressed);
+#endif
+    lv_msgbox_close_async(dialog);
+}
+
+static void whats_new_cb(lv_event_t *e) {
+    settings_controller_t *parent = lv_event_get_user_data(e);
+    const update_info_t *update = update_check_info();
+    if (!update->available) {
+        return;
+    }
+    char body[4096] = "";
+    char line[512];
+    for (size_t i = 0; i < update->releases_count && i < WHATS_NEW_MAX_RELEASES; i++) {
+        const update_release_t *r = &update->releases[i];
+        if (r->date != NULL) {
+            snprintf(line, sizeof(line), "%sEclipse %s (%s)\n", i > 0 ? "\n" : "", r->version, r->date);
+        } else {
+            snprintf(line, sizeof(line), "%sEclipse %s\n", i > 0 ? "\n" : "", r->version);
+        }
+        append(body, sizeof(body), line);
+        for (size_t j = 0; j < r->highlights_count && j < WHATS_NEW_MAX_HIGHLIGHTS; j++) {
+            if (r->highlights[j] == NULL) {
+                continue;
+            }
+            snprintf(line, sizeof(line), "- %s\n", r->highlights[j]);
+            append(body, sizeof(body), line);
+        }
+    }
+    if (update->how_to_update != NULL) {
+        snprintf(line, sizeof(line), "\n%s\n%s", locstr("How to update"), update->how_to_update);
+        append(body, sizeof(body), line);
+    }
+#if TARGET_WEBOS || TARGET_ANDROID
+    /* No browser to hand the link to: show where the download is. */
+    if (update->download_url != NULL) {
+        snprintf(line, sizeof(line), "\n\n%s", update->download_url);
+        append(body, sizeof(body), line);
+    }
+    static const char *buttons[] = {translatable("Close"), ""};
+#else
+    static const char *buttons[] = {translatable("Download page"), translatable("Close"), ""};
+#endif
+    lv_obj_t *dialog = lv_msgbox_create_i18n(NULL, locstr("What's new"), body, buttons, false);
+    /* Wide enough for the release page's address on one line (at the default width it broke
+     * mid-word on the TV, 2026-11-14). */
+    lv_obj_set_width(dialog, LV_PCT(60));
+    /* A long list scrolls inside the dialog instead of running off the screen. */
+    lv_obj_t *content = lv_msgbox_get_content(dialog);
+    lv_obj_set_style_max_height(content, LV_PCT(60), 0);
+    lv_obj_add_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(dialog, whats_new_dialog_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_center(dialog);
+    update_check_mark_seen();   /* the dot goes away for this version; the About line stays */
+    update_dot_refresh(parent->about_dot);
 }

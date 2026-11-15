@@ -567,6 +567,72 @@ void coop_audio_release_local_host(void) {
     SS4S_SetAudioDevice(app_configuration != NULL ? app_configuration->audio_device : NULL);
 }
 
+#ifdef _WIN32
+#include <direct.h>   /* _mkdir */
+
+/* THE REAL SPEAKERS, REMEMBERED (2026-11-04). A co-op Disconnect only PAUSES the host's pane, and Umbra keeps
+ * its virtual sink as the default output while a pane is paused ("Audio retained for resumable app" in its
+ * log), so the NEXT launch found the default already the sink and fell back to "this PC plays its own sound":
+ * the game and Eclipse both went to the sink and the user heard nothing (measured on SKYNET). So the real
+ * default is written down each time it is seen, and used when the default is the sink. */
+static bool real_output_path(char *out, size_t len) {
+    const char *base = getenv("LOCALAPPDATA");
+    return base != NULL && snprintf(out, len, "%s\\Eclipse\\coop-real-audio-output.txt", base) < (int) len;
+}
+
+static void real_output_remember(const char *name) {
+    char path[512];
+    if (!real_output_path(path, sizeof(path))) {
+        return;
+    }
+    /* %LOCALAPPDATA%\Eclipse may not exist yet on a PC that never hid a controller. */
+    char dir[512];
+    SDL_strlcpy(dir, path, sizeof(dir));
+    char *slash = strrchr(dir, '\\');
+    if (slash != NULL) {
+        *slash = '\0';
+        _mkdir(dir);
+    }
+    FILE *f = fopen(path, "w");
+    if (f != NULL) {
+        fputs(name, f);
+        fclose(f);
+    }
+}
+
+/* The remembered real output if it is still present, else the first output that is not a Steam Streaming
+ * device. @return a name to SDL_free, or NULL. */
+static char *real_output_recall(void) {
+    char remembered[256] = "";
+    char path[512];
+    if (real_output_path(path, sizeof(path))) {
+        FILE *f = fopen(path, "r");
+        if (f != NULL) {
+            if (fgets(remembered, sizeof(remembered), f) == NULL) {
+                remembered[0] = '\0';
+            }
+            remembered[strcspn(remembered, "\r\n")] = '\0';
+            fclose(f);
+        }
+    }
+    char *first_real = NULL;
+    for (int i = 0, n = SDL_GetNumAudioDevices(0); i < n; ++i) {
+        const char *name = SDL_GetAudioDeviceName(i, 0);
+        if (name == NULL || strstr(name, "Steam Streaming") != NULL) {
+            continue;
+        }
+        if (remembered[0] != '\0' && strcmp(name, remembered) == 0) {
+            SDL_free(first_real);
+            return SDL_strdup(name);
+        }
+        if (first_real == NULL) {
+            first_real = SDL_strdup(name);
+        }
+    }
+    return first_real;
+}
+#endif
+
 void coop_audio_prepare_local_host(bool this_pc_is_a_host) {
     unsetenv(COOP_LOCAL_AUDIO_ENV);
     SS4S_SetAudioDevice(app_configuration != NULL ? app_configuration->audio_device : NULL);
@@ -590,6 +656,7 @@ void coop_audio_prepare_local_host(bool this_pc_is_a_host) {
     /* The device Eclipse will play to: the user's choice if they made one, else the CURRENT default. */
     const char *chosen = app_configuration != NULL ? app_configuration->audio_device : NULL;
     char *default_name = NULL;
+    char *recalled = NULL;
     SDL_AudioSpec spec;
     if (chosen == NULL || chosen[0] == '\0' || strcmp(chosen, "default") == 0) {
         if (SDL_GetDefaultAudioInfo(&default_name, &spec, 0) == 0) {
@@ -597,6 +664,13 @@ void coop_audio_prepare_local_host(bool this_pc_is_a_host) {
         } else {
             chosen = NULL;
         }
+    }
+    if (chosen != NULL && strstr(chosen, COOP_VIRTUAL_SINK_NAME) == NULL) {
+        real_output_remember(chosen);            /* a real device: the one to come back to */
+    } else if (chosen != NULL && (recalled = real_output_recall()) != NULL) {
+        coop_audio_log("[COOP-AUD] local host: the default output is still the virtual sink (a paused co-op pane "
+                       "keeps it) -> using the real output \"%s\"", recalled);
+        chosen = recalled;
     }
     const char *why = !have_sink ? "no \"" COOP_VIRTUAL_SINK_NAME "\" on this PC, so its host would capture the "
                                    "device Eclipse plays to"
@@ -614,6 +688,7 @@ void coop_audio_prepare_local_host(bool this_pc_is_a_host) {
                        chosen);
     }
     SDL_free(default_name);
+    SDL_free(recalled);
 #else
     (void) this_pc_is_a_host;
 #endif

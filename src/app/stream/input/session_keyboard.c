@@ -2,6 +2,7 @@
 #include "logging.h"
 #include "stream/input/coop_input.h"
 #include "stream/input/coop_pointer.h"
+#include "platform/local_input.h"
 #include "stream/input/session_input.h"
 #include "stream/session.h"
 
@@ -697,8 +698,18 @@ void stream_input_handle_key(stream_input_t *input, const SDL_KeyboardEvent *eve
         } else if (event->state == SDL_RELEASED) {
             keydown_count--;
         }
-        send_key(0x8000 | keyCode, event->state == SDL_PRESSED ? KEY_ACTION_DOWN : KEY_ACTION_UP,
-                 modifiers, to_peer);
+#if defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
+        /* Linux host-and-client co-op: the pointer is in THIS PC's half, but the client still has the keyboard focus
+         * (this PC's game has not been clicked yet): a key pressed now is meant for this PC, never the stream
+         * (platform/linux/local_input_linux.c). Releases still go, so nothing stays held on the stream. */
+        const bool for_this_pc = local_input_handed_off() && event->state == SDL_PRESSED;
+#else
+        const bool for_this_pc = false;
+#endif
+        if (!for_this_pc) {
+            send_key(0x8000 | keyCode, event->state == SDL_PRESSED ? KEY_ACTION_DOWN : KEY_ACTION_UP,
+                     modifiers, to_peer);
+        }
     }
 
     if (_pending_key_combo != KeyComboMax && keys_len(_pressed_keys) == 0) {

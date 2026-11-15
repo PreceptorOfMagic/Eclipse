@@ -7,6 +7,7 @@ if (NOT WIN32)   # the coordinator spawns its secondary with fork/exec there
 endif ()
 add_unit_test(test_img_loader_shutdown test_img_loader_shutdown.c)
 add_unit_test(test_start_wheel test_start_wheel.c)
+add_unit_test(test_update_manifest test_update_manifest.c)
 
 # The virtual mouse in co-op points like the magic remote (session_virt_mouse.c with the real coop_pointer.c, both
 # included rather than linked, so it does not take moonlight-lib): it crosses the divider and clicks on the PC it is over.

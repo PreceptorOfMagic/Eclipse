@@ -143,6 +143,16 @@ bool session_is_streaming(const session_t *session) {
     return streaming;
 }
 
+bool session_is_quitting(const session_t *session) {
+    if (!session) {
+        return false;
+    }
+    SDL_LockMutex(session->mutex);
+    const bool quitting = session->interrupted && session->quitapp;
+    SDL_UnlockMutex(session->mutex);
+    return quitting;
+}
+
 void session_interrupt(session_t *session, bool quitapp, streaming_interrupt_reason_t reason) {
     if (!session) {
         return;
@@ -287,6 +297,14 @@ void streaming_enter_overlay(session_t *session, int x, int y, int w, int h) {
     }
 }
 
+bool streaming_video_area(session_t *session, int x, int y, int w, int h) {
+    if (session == NULL || session->player == NULL) {
+        return false;
+    }
+    SS4S_VideoRect dst = {x, y, w, h};
+    return SS4S_PlayerVideoSetDisplayArea(session->player, NULL, w > 0 && h > 0 ? &dst : NULL);
+}
+
 void streaming_set_hdr(session_t *session, bool hdr) {
     commons_log_info("Session", "HDR is %s", hdr ? "enabled" : "disabled");
     SS_HDR_METADATA hdr_metadata;
@@ -368,6 +386,26 @@ void session_config_init(app_t *app, session_config_t *config, const SERVER_DATA
          * from a co-op run silently reshapes this one. That is the documented trap: a
          * sentinel from another mode making a broken run look like a working one. */
         coop_tunables_disarm();
+        if (app_launch_local_pane() && coop_secondary_mode() == NULL) {
+            /* CO-OP WITH THIS PC'S SIDE RUN LOCALLY (app_launch.h): this one stream is the OTHER PC's pane, so
+             * it is asked for the half of the picture the window gives it, at half the Video bitrate -- the
+             * same bits per pixel the two-stream method gives each PC. The frame rate is the ordinary one,
+             * set below. The stream thread makes this PC's display the same size (session_worker.c). */
+            const int full_w = config->stream.width, full_h = config->stream.height;
+            if (app_launch_local_pane_vertical()) {
+                config->stream.width = (full_w / 2) & ~1;
+            } else {
+                config->stream.height = (full_h / 2) & ~1;
+            }
+            if (config->stream.bitrate > 0) {
+                config->stream.bitrate /= 2;
+            }
+            commons_log_info("Session", "[COOP-LP] this PC's side is local: the other PC is asked for %dx%d (the %s "
+                             "half of %dx%d) at %d kbps", config->stream.width, config->stream.height,
+                             app_launch_local_pane_vertical() ? (app_launch_local_pane_first() ? "right" : "left")
+                                                              : (app_launch_local_pane_first() ? "bottom" : "top"),
+                             full_w, full_h, config->stream.bitrate);
+        }
     }
     if (app_launch_coop_requested()) {
         /* ARM THE MODE SELECTOR FROM THE SETTINGS, because the shell cannot.

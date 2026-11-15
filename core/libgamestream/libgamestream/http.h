@@ -39,6 +39,9 @@ void http_destroy(HTTP *http);
 
 void http_set_timeout(HTTP *http, int timeout);
 
+/** Only the stalled-reply window (LOW_SPEED_TIME); the connect timeout stays as http_set_timeout left it. */
+void http_set_stall_timeout(HTTP *http, int timeout);
+
 HTTP_DATA * http_data_alloc();
 
 void http_data_free(HTTP_DATA * data);

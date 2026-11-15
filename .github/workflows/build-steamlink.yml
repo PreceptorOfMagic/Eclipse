@@ -1,12 +1,18 @@
 name: Build (Steam Link)
 
 on:
+  # Work branches do not build on push (user 2026-11-04): every backup push of a
+  # work-in-progress branch ran these and mailed a failure. main and release branches
+  # still build on push; anything else builds from "Run workflow".
   push:
     # Don't run for tags
     tags-ignore:
       - 'v*.*.*'
     branches:
-      - '**'
+      - main
+      - 'release/**'
+      - 'eclipse-public/**'
+  workflow_dispatch:
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: Debug

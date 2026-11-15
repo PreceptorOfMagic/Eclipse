@@ -1,5 +1,6 @@
 #include "settings.controller.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -12,12 +13,14 @@
 #include "util/user_event.h"
 #include "util/font.h"
 #include "util/i18n.h"
+#include "ui/streaming/hints.h"
 #include "app.h"
 #include "stream/session.h"
 #include "lvgl/theme/lv_theme_moonlight.h"
 #include "lvgl/theme/lv_theme_moonlight_colors.h"
 
 #include "../launcher/launcher.controller.h"
+#include "ui/common/update_dot.h"
 #if TARGET_ANDROID
 #include "platform/android/android_platform.h"
 #endif
@@ -264,6 +267,10 @@ static void on_view_created(lv_fragment_t *self, lv_obj_t *view) {
             lv_obj_set_style_bg_opa(item_view, LV_OPA_COVER, LV_STATE_FOCUS_KEY);
             lv_obj_add_flag(item_view, LV_OBJ_FLAG_EVENT_BUBBLE);
             item_view->user_data = (void *) entry.cls;
+            if (entry.cls == &settings_pane_about_cls) {
+                controller->about_dot = update_dot_create(item_view);
+                update_dot_refresh(controller->about_dot);
+            }
         }
         show_pane(controller, entries[0].cls);
     }
@@ -272,6 +279,7 @@ static void on_view_created(lv_fragment_t *self, lv_obj_t *view) {
 static void on_destroy_view(lv_fragment_t *self, lv_obj_t *view) {
     settings_controller_t *controller = (settings_controller_t *) self;
     LV_UNUSED(view);
+    controller->about_dot = NULL;   /* deleted with the view */
     if (!controller->save_complete) {
         (void) settings_save(app_configuration);
     }
@@ -1420,6 +1428,100 @@ static void embed_backdrop_cb(lv_event_t *e) {
     settings_request_close_pane_popup(c);
 }
 
+/* ---- Tips in the settings bar (user 2026-11-13): the next tip each time settings opens, "Next tip" to cycle,
+ * "All tips" to read the whole list. Every tip is eligible here, co-op and HDR included (settings_rank order);
+ * the shown history is shared with the stream screen. */
+
+static void embed_tip_show_next(lv_obj_t *label) {
+    const char *tip = hints_obtain_settings();
+    if (tip != NULL) {
+        lv_label_set_text_fmt(label, locstr("Tip: %s"), tip);
+    } else {
+        lv_label_set_text(label, "");
+    }
+}
+
+static void embed_tip_next_cb(lv_event_t *e) {
+    embed_tip_show_next(lv_event_get_user_data(e));
+}
+
+static void embed_tips_dialog_cb(lv_event_t *e) {
+    lv_obj_t *box = lv_event_get_current_target(e);
+    if (lv_msgbox_get_active_btn(box) != LV_BTNMATRIX_BTN_NONE) {
+        lv_msgbox_close_async(box);
+    }
+}
+
+/* The list is longer than the dialog. The theme's msgbox keys only move focus between buttons, so on a TV remote
+ * the text could not be scrolled (seen on the TV 2026-11-13): UP/DOWN scroll it here by most of a screenful,
+ * BACK closes. USER_4 tells the theme this dialog handles its own keys. */
+static void embed_tips_dialog_key_cb(lv_event_t *e) {
+    lv_obj_t *box = lv_event_get_current_target(e);
+    lv_obj_t *content = lv_msgbox_get_content(box);
+    if (content == NULL) {
+        return;
+    }
+    const lv_coord_t page = lv_obj_get_height(content) * 2 / 3;
+    lv_coord_t d = 0;
+    switch (lv_event_get_key(e)) {
+        case LV_KEY_DOWN:
+            d = -LV_MIN(page, lv_obj_get_scroll_bottom(content));
+            break;
+        case LV_KEY_UP:
+            d = LV_MIN(page, lv_obj_get_scroll_top(content));   /* positive = show what is above */
+            break;
+        default:
+            return;
+    }
+    if (d != 0) {
+        lv_obj_scroll_by(content, 0, d, LV_ANIM_ON);
+    }
+}
+
+static void embed_tips_dialog_cancel_cb(lv_event_t *e) {
+    lv_msgbox_close_async(lv_event_get_current_target(e));
+}
+
+static void embed_tip_all_cb(lv_event_t *e) {
+    LV_UNUSED(e);
+    char *text = hints_all_text();
+    if (text == NULL) {
+        return;
+    }
+    static const char *btns[] = {translatable("Close"), ""};
+    lv_obj_t *box = lv_msgbox_create_i18n(NULL, locstr("All tips"), text, btns, false);
+    free(text);   /* the msgbox label keeps its own copy */
+    lv_obj_set_width(box, LV_PCT(74));
+    lv_obj_set_style_max_height(box, LV_PCT(80), 0);
+    lv_obj_center(box);
+    lv_obj_add_event_cb(box, embed_tips_dialog_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_flag(box, LV_OBJ_FLAG_USER_4);
+    lv_obj_add_event_cb(box, embed_tips_dialog_key_cb, LV_EVENT_KEY, NULL);
+    lv_obj_add_event_cb(box, embed_tips_dialog_cancel_cb, LV_EVENT_CANCEL, NULL);
+}
+
+/** A text button styled like the bar's round icon buttons, in the bar's focus group (direct child). */
+static lv_obj_t *embed_tip_btn(settings_controller_t *c, lv_obj_t *bar, const char *text, lv_event_cb_t cb,
+                               void *user_data) {
+    lv_obj_t *btn = lv_btn_create(bar);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_set_height(btn, LV_DPX(36));
+    lv_obj_set_width(btn, LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_ver(btn, 0, 0);
+    lv_obj_set_style_pad_hor(btn, LV_DPX(12), 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_t *lab = lv_label_create(btn);
+    lv_label_set_text(lab, text);
+    lv_obj_set_style_text_font(lab, lv_theme_get_font_small(bar), 0);
+    lv_obj_set_style_text_color(lab, ml_color_hex(ML_COLOR_TEXT), 0);
+    lv_obj_center(lab);
+    lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
+    lv_obj_add_event_cb(btn, embed_cancel_cb, LV_EVENT_CANCEL, c);
+    return btn;
+}
+
 static void embed_appbar_key(lv_event_t *e) {
     settings_controller_t *controller = lv_event_get_user_data(e);
     switch (lv_event_get_key(e)) {
@@ -1478,7 +1580,12 @@ lv_obj_t *settings_launcher_embedded_create(lv_fragment_t *self, lv_obj_t *paren
     c->nav = bar;
     lv_obj_remove_style_all(bar);
     lv_obj_set_width(bar, LV_PCT(100));
-    lv_obj_set_height(bar, LV_DPX(44));
+    /* 36 px buttons + room for their rings: the focus ring reaches 4 px outside a button (outline 2 + pad 2,
+     * theme), the hover outline 3. The bar is the TOP EDGE of the screen, and the TV hides the top few rows of
+     * the picture (overscan or the bezel: a 4K capture of the display showed the whole ring while the user's
+     * photo of the panel showed its top cut, 2026-11-14). So 12 px above the buttons (ring ~8 px clear of the
+     * edge), 6 below. */
+    lv_obj_set_height(bar, LV_DPX(54));
     lv_obj_set_layout(bar, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1490,7 +1597,8 @@ lv_obj_t *settings_launcher_embedded_create(lv_fragment_t *self, lv_obj_t *paren
     lv_obj_set_style_border_width(bar, LV_DPX(1), 0);
     lv_obj_set_style_border_color(bar, ml_color_hex(ML_COLOR_BORDER), 0);
     lv_obj_set_scroll_dir(bar, LV_DIR_HOR);
-    lv_obj_set_style_pad_ver(bar, LV_DPX(4), 0);
+    lv_obj_set_style_pad_top(bar, LV_DPX(12), 0);
+    lv_obj_set_style_pad_bottom(bar, LV_DPX(6), 0);
 
     for (int i = 0; i < entries_len; i++) {
         lv_obj_t *btn = lv_btn_create(bar);
@@ -1506,14 +1614,27 @@ lv_obj_t *settings_launcher_embedded_create(lv_fragment_t *self, lv_obj_t *paren
         lv_obj_center(lab);
         lv_obj_clear_flag(lab, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_user_data(btn, (void *) entries[i].cls);
+        if (entries[i].cls == &settings_pane_about_cls) {
+            c->about_dot = update_dot_create(btn);
+            update_dot_refresh(c->about_dot);
+        }
         lv_obj_add_event_cb(btn, embed_entry_btn_cb, LV_EVENT_CLICKED, c);
         lv_obj_add_event_cb(btn, embed_cancel_cb, LV_EVENT_CANCEL, c);
     }
 
-    lv_obj_t *sp = lv_obj_create(bar);
-    lv_obj_remove_style_all(sp);
-    lv_obj_set_height(sp, LV_DPX(4));
-    lv_obj_set_flex_grow(sp, 1);
+    /* The free space between the tabs and the close button holds a tip (it was an empty spacer). */
+    lv_obj_t *tip = lv_label_create(bar);
+    lv_obj_set_flex_grow(tip, 1);
+    lv_obj_set_height(tip, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_height(tip, LV_DPX(36), 0);   /* the bar's button height; centred by the bar's flex */
+    lv_obj_set_style_pad_hor(tip, LV_DPX(10), 0);
+    lv_label_set_long_mode(tip, LV_LABEL_LONG_DOT);   /* narrow window: two lines, then "..." -- All tips has the rest */
+    lv_obj_set_style_text_font(tip, lv_theme_get_font_small(bar), 0);
+    lv_obj_set_style_text_color(tip, ml_color_hex(ML_COLOR_TEXT_MUTED), 0);
+    lv_obj_clear_flag(tip, LV_OBJ_FLAG_CLICKABLE);
+    embed_tip_show_next(tip);
+    embed_tip_btn(c, bar, locstr("Next tip"), embed_tip_next_cb, tip);
+    embed_tip_btn(c, bar, locstr("All tips"), embed_tip_all_cb, NULL);
 
     lv_obj_t *close_btn = lv_btn_create(bar);
     c->close_btn = close_btn;

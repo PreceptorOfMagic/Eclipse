@@ -16,6 +16,14 @@
  */
 bool local_host_session_begin(const char *address);
 
+/**
+ * A co-op session whose own side this PC runs locally is about to add its display (platform/local_pane_session.h).
+ * Writes the same file, so local_host_window_tick() keeps the client window on its monitor while the display
+ * layout changes, but blocks NO input: the session's one stream goes to the other PC. Ended by
+ * local_host_session_end() like the other. @return true if the file was written.
+ */
+bool local_host_pane_session_begin(void);
+
 /** The stream ended: unblock input and remove the file, if this process wrote it. Always safe. */
 void local_host_session_end(void);
 

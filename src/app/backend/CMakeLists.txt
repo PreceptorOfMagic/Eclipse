@@ -1,5 +1,7 @@
 target_sources(moonlight-lib PRIVATE
         aurora_host_caps.c
+        update_check.c
+        update_manifest.c
         backend_root.c
         backend_gs.c
         pcmanager/pcmanager.c

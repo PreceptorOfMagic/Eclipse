@@ -443,3 +443,13 @@ static bool tv_should_ignore_controller_like_device(const char *name, const char
 }
 
 #endif
+bool app_input_gamepad_swaps_xy(SDL_GameController *controller) {
+    /* The webOS gamecontrollerdb rows for the Switch Pro Controller bind a/b to the PRINTED A/B but x/y to
+     * the Xbox POSITIONS (e.g. a:b1,b:b0,x:b3,y:b2), so on a Nintendo pad X/Y need the opposite of A/B. */
+    const bool swap = app_input_gamepad_swaps_abxy(controller);
+    if (app_configuration != NULL && app_configuration->nintendo_layout != NINTENDO_LAYOUT_OFF &&
+        app_input_gamepad_is_nintendo(controller)) {
+        return !swap;
+    }
+    return swap;
+}

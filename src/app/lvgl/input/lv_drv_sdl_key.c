@@ -9,6 +9,7 @@
 #include "ui/root.h"
 #include "ui/streaming/streaming.controller.h"
 #include "ui/streaming/soft_keyboard.h"
+#include "ui/ui_stick_scroll.h"
 
 #include "util/user_event.h"
 #include "util/bus.h"
@@ -143,6 +144,9 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
         data->continue_reading = true;
     } else if (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_CONTROLLERAXISMOTION, SDL_CONTROLLERDEVICEREMAPPED) > 0) {
         bool handled_modal = false;
+        if (e.type == SDL_CONTROLLERDEVICEREMOVED) {
+            ui_stick_scroll_forget(e.cdevice.which);
+        }
         if (ui_modal_consumes_input()
             && (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP)) {
             bool pressed = (e.cbutton.state == SDL_PRESSED);
@@ -204,7 +208,10 @@ static void sdl_input_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
         } else if (!handled_modal && !ui_modal_consumes_input()) {
             /* Avoid switching input mode while soft keyboard is open – prevents KEY ↔ GAMEPAD
              * loop when remote sends both key and gamepad events for combos like Alt+Q. */
-            if (read_event(&e, state)) {
+            if (e.type == SDL_CONTROLLERAXISMOTION && e.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY) {
+                /* The right stick scrolls; it never moves focus (ui_stick_scroll.h). */
+                ui_stick_scroll_axis(input, e.caxis.which, e.caxis.value);
+            } else if (read_event(&e, state)) {
                 ui_set_input_mode(input, UI_INPUT_MODE_GAMEPAD);
             }
         } else if (handled_modal) {

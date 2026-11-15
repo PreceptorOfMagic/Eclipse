@@ -42,6 +42,7 @@ install -m644 notices/mbedtls/LICENSE "$DEP/mbedTLS-Apache-2.0.txt"
 install -m644 notices/curl/COPYING "$DEP/curl-COPYING.txt"
 install -m644 notices/opus/COPYING "$DEP/Opus-BSD-3-Clause.txt"
 install -m644 notices/inih/LICENSE.txt "$DEP/inih-BSD-3-Clause.txt"
+install -m644 notices/libei/COPYING "$DEP/libei-MIT.txt"
 # The MIT licence of nv-codec-headers is the leading comment of this header.
 python3 - notices/nv-codec-headers/include/ffnvcodec/dynlink_loader.h "$DEP/nv-codec-headers-MIT.txt" << 'EOF'
 import re, sys
@@ -73,6 +74,7 @@ EOF
     echo '- opus-1.6.1 (BSD-3-Clause), linked into bin/moonlight-tv -- licenses/dependencies/Opus-BSD-3-Clause.txt'
     echo '- inih r58 (BSD-3-Clause), linked into bin/moonlight-tv -- licenses/dependencies/inih-BSD-3-Clause.txt'
     echo '- nv-codec-headers n13.0.19.1 (MIT), compiled into FFmpeg -- licenses/dependencies/nv-codec-headers-MIT.txt'
+    echo '- libei-1.5.0 (MIT): lib/libei.so.1 -- licenses/dependencies/libei-MIT.txt'
     echo
     echo 'EXTERNAL DATA AND EMBEDDED ASSETS'
     echo '- LVGL embedded fonts (Montserrat, Font Awesome, Unscii): licenses/external/LVGL-Embedded-Fonts-NOTICE.md'

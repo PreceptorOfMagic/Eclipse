@@ -3129,17 +3129,28 @@ static void coop_wayland_probe(void) {}
 static void coop_import_punchthrough(const char *wid) { (void) wid; }
 #endif
 
-#if TARGET_ANDROID
-/* THE SECOND PC IS AWAITED BESIDE THE STREAM ON ANDROID, NOT BEFORE IT. This set-up runs inside moonlight's
+/* THE SECOND PC IS AWAITED BESIDE THE STREAM, NOT BEFORE IT. This set-up runs inside moonlight's
  * startVideoStream, which starts the primary's UDP ping only once it returns -- and the primary host gives up on
  * a client whose ping has not arrived after a few seconds ("Initial Ping Timeout"). Waiting here for the secondary's
  * first live frame took 6.7 and 8.4 s on the SHIELD TV, against host time-outs of 6.6 and 8.3 s, and both starts
- * ended as a network error (2026-10-16). On Android the same 30 s readiness check runs on this thread instead, and
- * a secondary that fails still ends the session with the co-op error, so co-op never degrades into one pane. */
+ * ended as a network error (2026-10-16); the same on Windows on 2026-11-10 (SKYNET's Umbra dropped the primary 8.3 s
+ * after CLIENT CONNECTED, PC2's pane was ready ~1 s later). Android moved first; since 2026-11-10 every platform runs
+ * the readiness check on this thread, and a secondary that fails still ends the session with the co-op error, so
+ * co-op never degrades into one pane. While it waits the loading dialog stays up (the composite has not anchored),
+ * and past COOP_SECONDARY_SLOW_MS the stream screen asks the user whether to keep waiting (streaming.controller.c). */
 static pthread_t coop_ready_thread;
 static bool coop_ready_thread_live = false;
 static volatile int coop_ready_cancel = 0;
 static bool coop_ready_ui = false;
+static volatile int coop_ready_waiting = 0;          /* 1 while the watch runs and has decided nothing */
+static volatile unsigned long coop_ready_since_ms = 0;
+
+long coop_secondary_wait_elapsed_ms(void) {
+    if (!coop_ready_waiting) {
+        return -1;
+    }
+    return (long) (coop_trace_now_ms() - coop_ready_since_ms);
+}
 
 /* On the main thread, like every other controller event. */
 static void coop_reannounce_pads(void *data) {
@@ -3151,7 +3162,10 @@ static void coop_reannounce_pads(void *data) {
 
 static void *coop_ready_watch(void *arg) {
     session_t *watched = arg;
-    if (coop_coord_wait_secondary_ready_cancellable(30000, &coop_ready_cancel)) {
+    const bool ready = coop_coord_wait_secondary_ready_cancellable(COOP_SECONDARY_READY_TIMEOUT_MS,
+                                                                   &coop_ready_cancel);
+    coop_ready_waiting = 0;
+    if (ready) {
         if (diag_log != NULL) {
             fprintf(diag_log, "[COOP-SPAWN] secondary READY with a live frame (%s, awaited beside the stream)\n",
                     coop_ready_ui ? "ui" : "sentinel");
@@ -3162,7 +3176,7 @@ static void *coop_ready_watch(void *arg) {
         return NULL;
     }
     if (coop_ready_cancel) {
-        return NULL;                            /* the session ended first */
+        return NULL;                            /* the session ended first (or the user chose End) */
     }
     if (diag_log != NULL) {
         fprintf(diag_log, "[COOP-SPAWN] secondary readiness FAILED: %s\n", coop_coord_start_error_message());
@@ -3172,7 +3186,6 @@ static void *coop_ready_watch(void *arg) {
     session_interrupt(watched, false, STREAMING_INTERRUPT_ERROR);
     return NULL;
 }
-#endif
 
 int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags) {
     /* HALF-HEIGHT: the SESSION negotiated 3840x1080 (each host sends only its own rows),
@@ -3564,20 +3577,22 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
                 return CALLBACKS_SESSION_ERROR_COOP_START;
             }
             coop_spawned = true;
-            bool ready_in_background = false;
-#if TARGET_ANDROID
             coop_ready_cancel = 0;
             coop_ready_ui = coop_ui_session != NULL;
+            coop_ready_since_ms = coop_trace_now_ms();
+            coop_ready_waiting = 1;
             coop_ready_thread_live = pthread_create(&coop_ready_thread, NULL, coop_ready_watch, session) == 0;
-            ready_in_background = coop_ready_thread_live;
-#endif
+            if (!coop_ready_thread_live) {
+                coop_ready_waiting = 0;
+            }
+            const bool ready_in_background = coop_ready_thread_live;
             /* A process id only proves CreateProcess/fork succeeded.  Do not let
              * co-op degrade into a plausible one-pane stream: the helper must
              * prove that it queried the requested host, launched the requested
              * app, connected, and forwarded a live frame. */
             if (ready_in_background) {
-                /* Android: coop_ready_watch() decides, beside the stream. */
-            } else if (!coop_coord_wait_secondary_ready(30000)) {
+                /* coop_ready_watch() decides, beside the stream. */
+            } else if (!coop_coord_wait_secondary_ready(COOP_SECONDARY_READY_TIMEOUT_MS)) {
                 if (diag_log != NULL) {
                     fprintf(diag_log, "[COOP-SPAWN] secondary readiness FAILED: %s\n",
                             coop_coord_start_error_message());
@@ -3782,13 +3797,12 @@ int vdec_delegate_setup(int videoFormat, int width, int height, int redrawRate, 
 void vdec_delegate_cleanup() {
     coop_netcap_teardown();   /* stop the capture thread BEFORE anything it reads goes away */
     coop_pump_stop();
-#if TARGET_ANDROID
     if (coop_ready_thread_live) {
         coop_ready_cancel = 1;              /* the readiness watch must not outlive the session it would end */
         pthread_join(coop_ready_thread, NULL);
         coop_ready_thread_live = false;
     }
-#endif
+    coop_ready_waiting = 0;
     if (coop_spawned) {
         coop_coord_request_peer_shutdown();
         coop_coord_reap_secondary();   /* never leave a stale child behind */

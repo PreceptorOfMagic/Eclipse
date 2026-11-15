@@ -9,3 +9,6 @@ Terminal=false
 Categories=Game;Network;RemoteAccess;
 Keywords=moonlight;sunshine;apollo;umbra;stream;gamestream;
 StartupWMClass=io.github.PreceptorOfMagic.Eclipse
+# KDE Plasma: KWin offers its virtual outputs, output layout and fake pointer (co-op with this PC as one of
+# the two PCs) only to apps whose desktop file lists them.
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1,kde_output_management_v2,kde_output_device_registry_v2,kde_output_device_v2,org_kde_kwin_fake_input

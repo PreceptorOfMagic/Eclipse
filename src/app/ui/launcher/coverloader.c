@@ -506,10 +506,19 @@ static void img_loader_result_cb(coverloader_req_t *req) {
     req->task = NULL;
     coverloader_t *loader = req->loader;
     if (req->target == NULL) {
+        /* The tile went away while its cover was loading (the grid is torn down when a stream starts). */
+        commons_log_info("CoverLoader", "Cover %d arrived for a deleted tile: dropped", req->id);
         goto done;
     }
 
-    lv_obj_remove_event_cb(req->target, target_deleted_cb);
+    /* THIS REQUEST'S OWN HOOK, NOT THE FIRST ONE. A tile can have two requests at once: coverloader_display
+     * cancels the old one, but the cancel is only a mark -- its cancel/result callback runs later, here on the
+     * main loop -- so the old request is still registered when the new one adds its hook. lv_obj_remove_event_cb()
+     * removes the FIRST target_deleted_cb on the tile, whichever request owns it. MEASURED 2026-11-12 on the TV:
+     * SIGSEGV in img_loader_result_cb -> img_set_cover / lv_obj_remove_event_cb on resumes (three crash records,
+     * beta 5e68baa5). That two requests per tile is the path there is SUSPECTED from the code, not yet measured:
+     * the 'arrived for a deleted tile' line above is the evidence the fixed path ran. */
+    lv_obj_remove_event_cb_with_user_data(req->target, target_deleted_cb, req);
     appitem_viewholder_t *holder = req->target->user_data;
     img_set_cover(req->target, req->src);
     if (req->src) {
@@ -525,7 +534,7 @@ static void img_loader_result_cb(coverloader_req_t *req) {
 
 static void img_loader_cancel_cb(coverloader_req_t *req) {
     if (req->target) {
-        lv_obj_remove_event_cb(req->target, target_deleted_cb);
+        lv_obj_remove_event_cb_with_user_data(req->target, target_deleted_cb, req);   /* own hook: see above */
     }
     req->task = NULL;
     coverloader_t *loader = req->loader;

@@ -109,6 +109,16 @@ bool coop_pointer_has_local_pane(void);
 void coop_pointer_set_local_pane(int pane);
 
 /**
+ * THE SPLIT FOR A SESSION WHOSE OTHER HALF IS THIS PC ITSELF, SHOWN LOCALLY (app_launch_local_pane): there is
+ * one stream and no peer link. Pane 0 (the primary) is the stream; pane 1 (the "peer") is this PC's own display,
+ * where nothing is ever sent -- the pointer entering it hands the real cursor over (platform/local_input.h), as
+ * with coop_pointer_set_local_pane. @p vertical: the panes are side by side; @p local_first: this PC's pane is
+ * the left / top one. Latches the pins of coop_pointer_set_pins (0 = the stream, 1 = this PC). Ended by
+ * coop_pointer_stop. UI thread.
+ */
+void coop_pointer_start_local(bool vertical, bool local_first);
+
+/**
  * THE MOUSE AND KEYBOARD ASSIGNED LIKE CONTROLLERS (issue #37, co-op setting "assign mouse and
  * keyboard like controllers"): @p mouse_pane / @p keys_pane = 0 primary, 1 peer, anything else =
  * follows the pointer (the default). An assigned mouse never crosses the divider -- its position

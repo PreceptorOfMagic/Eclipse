@@ -575,7 +575,14 @@ int gs_start_app(GS_CLIENT hnd, PSERVER_DATA server, STREAM_CONFIGURATION *confi
     if (reconnect_same_app) {
         gs_set_timeout(hnd, 120);
     } else {
+        /* A NEW LAUNCH MAY TAKE LONG TO ANSWER: the host makes its virtual display, runs prep commands and starts
+         * the app before it replies. 30 s cut that off, and co-op waits up to 60 s for its second PC
+         * (COOP_SECONDARY_READY_TIMEOUT_MS, with a "still connecting" prompt at 20 s): MEASURED 2026-11-14 (Linux
+         * Flatpak, VEGA's launch held 28 s by a prep command) the second PC's /launch ended at 31.0 s with
+         * "cURL error: Timeout was reached" while the prompt still said 39 s were left. The connect stays at
+         * 30 s, so an unreachable host still fails as fast; only the wait for the reply is 120 s, as a resume's. */
         gs_set_timeout(hnd, 30);
+        http_set_stall_timeout(hnd->http, 120);
     }
 
     // Using an FPS value over 60 causes SOPS to default to 720p60,

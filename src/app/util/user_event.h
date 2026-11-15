@@ -18,6 +18,8 @@
 #define USER_TOGGLE_STATS_PIN 534
 /* The Start wheel's picture (stream/input/start_wheel.h): data1 = 0 to hide it, else 1 + the highlighted action. */
 #define USER_START_WHEEL 535
+/* The taskbar icon's right-click menu (platform/taskbar_menu.h): data1 = the taskbar_cmd_t. */
+#define USER_TASKBAR_COMMAND 536
 
 
 extern unsigned int app_userevent_remotebutton;

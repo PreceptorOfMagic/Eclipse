@@ -172,6 +172,7 @@ NAVKEY navkey_axis_map(const SDL_ControllerAxisEvent *axis, bool *pressed) {
 NAVKEY navkey_gamepad_map(SDL_JoystickID which, Uint8 button) {
     /* The same per-controller A/B X/Y choice as in a stream (input_gamepad.c). */
     const bool swap_abxy = app_input_gamepad_swaps_abxy(SDL_GameControllerFromInstanceID(which));
+    const bool swap_xy = app_input_gamepad_swaps_xy(SDL_GameControllerFromInstanceID(which));
     switch (button) {
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
             return NAVKEY_UP;
@@ -186,9 +187,9 @@ NAVKEY navkey_gamepad_map(SDL_JoystickID which, Uint8 button) {
         case SDL_CONTROLLER_BUTTON_B:
             return swap_abxy ? NAVKEY_CONFIRM : NAVKEY_CANCEL;
         case SDL_CONTROLLER_BUTTON_X:
-            return swap_abxy ? NAVKEY_ALTERNATIVE : NAVKEY_NEGATIVE;
+            return swap_xy ? NAVKEY_ALTERNATIVE : NAVKEY_NEGATIVE;
         case SDL_CONTROLLER_BUTTON_Y:
-            return swap_abxy ? NAVKEY_NEGATIVE : NAVKEY_ALTERNATIVE;
+            return swap_xy ? NAVKEY_NEGATIVE : NAVKEY_ALTERNATIVE;
         case SDL_CONTROLLER_BUTTON_BACK:
             return NAVKEY_MENU;
         case SDL_CONTROLLER_BUTTON_START:

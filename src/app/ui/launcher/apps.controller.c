@@ -794,7 +794,7 @@ bool apps_controller_reconnect_running_app(app_t *global) {
     /* Remember what to relaunch; the recreated apps view picks this up in
      * appload_loaded once the stream has torn down. */
     g_pending_hdr_relaunch_app = app_id;
-    g_pending_hdr_relaunch_coop = app_launch_coop_requested();
+    g_pending_hdr_relaunch_coop = app_launch_coop_requested() || app_launch_local_pane();
     g_hdr_relaunch_attempts = 0;
     commons_log_info("PIN", "HDR reconnect: quitting to relaunch app %d fresh (coop=%d)", app_id,
                      g_pending_hdr_relaunch_coop ? 1 : 0);
@@ -840,9 +840,26 @@ static void launcher_launch_game_monitor_off(apps_fragment_t *controller, const 
 
 static void launcher_launch_game(apps_fragment_t *controller, const apploader_item_t *app) {
     LV_ASSERT(app->base.id != 0);
-    /* Every launch answers the host-monitor question, so no earlier launch's answer can carry over. */
-    app_launch_choose_host_monitor(g_launch_monitor_off);
+    /* Every launch answers the host-monitor question, so no earlier launch's answer can carry over -- except a
+     * RESUME, which answers it the way the session was STARTED (user, 2026-11-11: "it should only offer to resume
+     * as the state that it was opened in"). Umbra's /resume reads umbraMonitorOff like /launch does (its nvhttp.cpp
+     * builds both through make_launch_session_from_snapshot), so resending the start's answer keeps the state.
+     * Remembered for this run of the client only: after a restart a resume does not know it and sends "on". */
+    static struct {
+        uuidstr_t host;
+        int app_id;
+        bool off;
+    } opened = {.app_id = 0};
+    bool off = g_launch_monitor_off;
     g_launch_monitor_off = false;
+    const bool resume = pcmanager_server_current_app(pcmanager, &controller->uuid) == app->base.id;
+    if (resume && opened.app_id == app->base.id && uuidstr_t_equals_t(&opened.host, &controller->uuid)) {
+        off = opened.off;
+    }
+    app_launch_choose_host_monitor(off);
+    opened.host = controller->uuid;
+    opened.app_id = app->base.id;
+    opened.off = off;
     /* A RUNNING CO-OP PANE RESUMES THE WHOLE CO-OP SESSION, never one half of it. The tile is only
      * shown while co-op runs on this PC (apps_hide_idle_coop_pane); resuming it alone would stream a
      * single pane. The last pair is relaunched on BOTH hosts (each resumes its paused pane); without
@@ -909,6 +926,9 @@ static void launcher_launch_game(apps_fragment_t *controller, const apploader_it
         app_launch_set_coop_requested(false);
         coop_session_clear();
     }
+    /* A co-op session with this PC's side run locally is never started from here (coop.dialog.c starts its one
+     * stream itself), so whatever this launches is not one: the state of the last such session ends here. */
+    app_launch_set_local_pane(false, false, false);
 
     streaming_scene_arg_t args = {
             .global = controller->global,
@@ -1134,10 +1154,10 @@ static void open_context_menu(apps_fragment_t *fragment, appitem_viewholder_t *h
                                                                         : locstr("Start streaming"));
         lv_obj_add_flag(start_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_user_data(start_btn, launcher_launch_game);
-        if (host_monitor_choice_here(fragment)) {
-            lv_obj_t *off_btn = lv_list_add_btn(content, NULL,
-                                                currentId == app->base.id ? locstr("Resume streaming (host monitor off)")
-                                                                          : locstr("Start streaming (host monitor off)"));
+        /* A RESUME OFFERS ONE BUTTON (user, 2026-11-11: "it should only offer to resume as the state that it was
+         * opened in"); launcher_launch_game resends the monitor state the session was started with. */
+        if (host_monitor_choice_here(fragment) && currentId != app->base.id) {
+            lv_obj_t *off_btn = lv_list_add_btn(content, NULL, locstr("Start streaming (host monitor off)"));
             lv_obj_add_flag(off_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
             lv_obj_set_user_data(off_btn, launcher_launch_game_monitor_off);
         }

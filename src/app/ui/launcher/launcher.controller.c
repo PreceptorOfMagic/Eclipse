@@ -12,6 +12,8 @@
 #include "ui/help/help.dialog.h"
 #include "ui/root.h"
 #include "ui/settings/settings.controller.h"
+#include "ui/common/update_dot.h"
+#include "backend/update_check.h"
 
 #include "lvgl/font/material_icons_regular_symbols.h"
 #include "lvgl/util/lv_app_utils.h"
@@ -53,6 +55,8 @@ static void cb_server_btn_clicked(lv_event_t *event);
 static void open_manual_add(lv_event_t *event);
 
 static void open_settings(lv_event_t *event);
+
+static void launcher_update_changed(void *ctx);
 
 static void open_help(lv_event_t *event);
 
@@ -188,6 +192,13 @@ static void launcher_view_init(lv_fragment_t *self, lv_obj_t *view) {
     lv_obj_add_event_cb(fragment->help_btn, open_help, LV_EVENT_CLICKED, fragment);
     lv_obj_add_event_cb(fragment->quit_btn, app_quit_confirm, LV_EVENT_CLICKED, fragment);
 
+    /* The update notice: a dot on Settings, nothing else on this screen. The launcher is never shown
+     * during a stream, so the daily check never competes with one. */
+    fragment->pref_dot = update_dot_create(fragment->pref_btn);
+    update_dot_refresh(fragment->pref_dot);
+    update_check_set_listener(launcher_update_changed, fragment);
+    update_check_maybe_start();
+
     populate_selected_host(fragment);
 
     /* Auto-load the previously selected PC (if any) and request status refresh
@@ -230,6 +241,8 @@ static void launcher_view_destroy(lv_fragment_t *self, lv_obj_t *view) {
     if (current_instance == controller) {
         current_instance = NULL;
     }
+    update_check_set_listener(NULL, NULL);
+    controller->pref_dot = NULL;
     if (controller->settings_fragment) {
         lv_fragment_del(controller->settings_fragment);
         controller->settings_fragment = NULL;
@@ -551,5 +564,14 @@ static void populate_selected_host(launcher_fragment_t *controller) {
             controller->def_host_selected = true;
             break;
         }
+    }
+}
+
+/* backend/update_check.h: the result or the "seen" state changed. */
+static void launcher_update_changed(void *ctx) {
+    launcher_fragment_t *self = ctx;
+    update_dot_refresh(self->pref_dot);
+    if (self->settings_fragment != NULL) {
+        update_dot_refresh(((settings_controller_t *) self->settings_fragment)->about_dot);
     }
 }

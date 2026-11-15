@@ -10,6 +10,7 @@
  * naming a dead process, which the hook ignores.
  */
 #include "local_host_win.h"
+#include "local_pane_win.h"
 #include "platform/this_pc.h"
 
 #include <winsock2.h>
@@ -126,6 +127,19 @@ bool local_host_session_begin(const char *address) {
     local_host_log("session: host %s is this machine -> input to it BLOCKED, local-host-session %s", address,
                    written ? "written" : "WRITE FAILED");
     return true;
+}
+
+bool local_host_pane_session_begin(void) {
+    /* Input is NOT blocked: the one stream of such a session goes to the other PC. */
+    wchar_t path[MAX_PATH];
+    FILE *f = session_file_path(path, MAX_PATH, true) ? _wfopen(path, L"wb") : NULL;
+    if (f != NULL) {
+        fprintf(f, "%lu\r\n", (unsigned long) GetCurrentProcessId());
+        written = fclose(f) == 0;
+    }
+    local_host_log("session: this PC's side is local (no stream to this machine), local-host-session %s",
+                   written ? "written" : "WRITE FAILED");
+    return written;
 }
 
 void local_host_session_end(void) {
@@ -251,12 +265,38 @@ static bool local_session_active(void) {
 
 static LONG min_long(LONG a, LONG b) { return a < b ? a : b; }
 
+/* Is @p dev the display this client made for this PC's own co-op pane (local_pane_win.c)? */
+static bool is_pane_display(const wchar_t *dev) {
+    char name[64];
+    if (!local_pane_display_name(name, sizeof(name))) {
+        return false;
+    }
+    wchar_t w[64];
+    return MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 64) > 0 && _wcsicmp(w, dev) == 0;
+}
+
 static void move_home(SDL_Window *window, HWND hwnd, const RECT *work, const RECT *mon) {
     const Uint32 flags = SDL_GetWindowFlags(window);
     const Uint32 fullscreen = flags & SDL_WINDOW_FULLSCREEN_DESKTOP;
     const bool maximized = (flags & SDL_WINDOW_MAXIMIZED) != 0 || win_home.maximized;
     if (fullscreen) {
-        SDL_SetWindowFullscreen(window, 0);
+        /* A FULLSCREEN-DESKTOP WINDOW IS PUT OVER ITS MONITOR IN ONE MOVE, never taken out of fullscreen.
+         * MEASURED 2026-11-13 11:07 on SKYNET (ffmpeg capture of the stream's half at a session start): leaving
+         * fullscreen, moving and re-entering left the client as an ordinary ~1920-wide window on the monitor for a
+         * while -- its right edge (x = 3/4 of the monitor) was "the line in the stream's half" users saw at every
+         * start -- and re-entering put it back on the primary display, the pane's ("move home did NOT hold"). It
+         * is a borderless window the size of its monitor: moving it there keeps it fullscreen. */
+        SetWindowPos(hwnd, NULL, mon->left, mon->top, mon->right - mon->left, mon->bottom - mon->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SDL_PumpEvents();
+        win_home.restored_exact = true;
+        HMONITOR fnow = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO fmi = {.cbSize = sizeof(fmi)};
+        if (GetMonitorInfoW(fnow, &fmi) && !EqualRect(&fmi.rcMonitor, mon)) {
+            local_host_log("window: fullscreen move home did NOT hold -- on the monitor at (%ld,%ld)",
+                           (long) fmi.rcMonitor.left, (long) fmi.rcMonitor.top);
+        }
+        return;
     }
     if (maximized) {
         SDL_RestoreWindow(window);
@@ -283,11 +323,26 @@ static void move_home(SDL_Window *window, HWND hwnd, const RECT *work, const REC
         SetWindowPos(hwnd, NULL, work->left + (work->right - work->left - ww) / 2,
                      work->top + (work->bottom - work->top - wh) / 2, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    /* LET SDL SEE THE MOVE before it maximizes or goes fullscreen again: both act on the display SDL THINKS the
+     * window is on, which it learns from the move's window message. MEASURED 2026-11-13 10:08 on SKYNET: a
+     * fullscreen client "returned to DISPLAY1" every half second for minutes and never left the pane's display --
+     * SDL re-entered fullscreen on the display it still had, the primary one (the pane's). */
+    SDL_PumpEvents();
     if (maximized) {
         SDL_MaximizeWindow(window);
     }
     if (fullscreen) {
         SDL_SetWindowFullscreen(window, fullscreen);
+    }
+    HMONITOR now = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO nmi = {.cbSize = sizeof(nmi)};
+    if (GetMonitorInfoW(now, &nmi) && !EqualRect(&nmi.rcMonitor, mon)) {
+        static unsigned misses = 0;
+        if (++misses <= 5 || misses % 100 == 0) {
+            local_host_log("window: move home did NOT hold -- still on the monitor at (%ld,%ld) (sdl flags 0x%x, #%u)",
+                           (long) nmi.rcMonitor.left, (long) nmi.rcMonitor.top, (unsigned) SDL_GetWindowFlags(window),
+                           misses);
+        }
     }
 }
 
@@ -316,7 +371,42 @@ void local_host_window_tick(SDL_Window *window) {
     win_home.layout = layout;
     win_home.calm = layout_changed ? 0 : (win_home.calm < LAYOUT_SETTLE_TICKS ? win_home.calm + 1 : win_home.calm);
 
+    /* NEVER AT HOME ON THIS PC'S PANE DISPLAY. MEASURED 2026-11-12 22:43 on SKYNET: as the pane's display came up,
+     * Windows moved the client onto it four times in 1.5 s; each was undone, then the layout went calm and the
+     * next move was taken for the user's own ("adopted as home") -- the whole client, both panes, sat on the
+     * invisible display and the user saw only their desktop. Nobody shows the client there on purpose (it is
+     * captured INTO the client), so it always goes straight back, however calm the layout is. */
+    if (win_home.home[0] != L'\0' && is_pane_display(mi.szDevice)) {
+        find_monitor_t home = {.dev = win_home.home, .found = false};
+        EnumDisplayMonitors(NULL, NULL, find_cb, (LPARAM) &home);
+        if (!home.found) {
+            return;   /* home is dark for now; try again next tick */
+        }
+        move_home(window, hwnd, &home.work, &home.mon);
+        win_home.displaced = false;
+        static unsigned pane_returns = 0;
+        if (++pane_returns <= 20 || pane_returns % 100 == 0) {
+            local_host_log("window: on this PC's pane display %ls -> returned to %ls (#%u)", mi.szDevice,
+                           win_home.home, pane_returns);
+        }
+        return;
+    }
+
     if (win_home.home[0] == L'\0' || wcscmp(mi.szDevice, win_home.home) == 0) {
+        /* ITS MONITOR MOVED UNDER IT. MEASURED 2026-11-12 22:54: a game changed this PC's pane display, Windows
+         * moved the monitor in the desktop, and the window -- still counted as on it -- stayed at its old desktop
+         * position, half off the screen. In a local-host session, put it back where it was on that monitor. */
+        RECT now;
+        if (layout_changed && win_home.have_rel && local_session_active() && !(flags & SDL_WINDOW_FULLSCREEN) &&
+            GetWindowRect(hwnd, &now) &&
+            (now.left != mi.rcMonitor.left + win_home.rel.left || now.top != mi.rcMonitor.top + win_home.rel.top)) {
+            SetWindowPos(hwnd, NULL, mi.rcMonitor.left + win_home.rel.left, mi.rcMonitor.top + win_home.rel.top,
+                         win_home.rel.right - win_home.rel.left, win_home.rel.bottom - win_home.rel.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            local_host_log("window: %ls moved in the desktop -> window re-fitted to it at (%ld,%ld)", mi.szDevice,
+                           (long) (mi.rcMonitor.left + win_home.rel.left), (long) (mi.rcMonitor.top + win_home.rel.top));
+            return;
+        }
         if (win_home.displaced) {
             local_host_log("window: back on %ls without being moved here (Windows restored it)", win_home.home);
         }

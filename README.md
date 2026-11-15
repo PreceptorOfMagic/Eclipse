@@ -14,7 +14,7 @@ Open [Eclipse releases](https://github.com/PreceptorOfMagic/Eclipse/releases), c
 |---|---|---|
 | LG webOS TV | Standard `com.aurora.gamestream_<version>_arm.ipk` (not beta) | [LG TV steps](#lg-webos) |
 | Windows x64 | Installer `eclipse-windows-x64-setup-unsigned.exe` (or portable `eclipse-windows-x64-unsigned.zip`) + checksum | [Windows steps](#windows-x64) |
-| Linux x86_64 | Flatpak `Eclipse-<version>-linux-x86_64.flatpak` + checksum (the older tarball `eclipse-linux-x86_64.tar.gz` is still attached) | [Linux steps](#linux-x86_64) |
+| Linux x86_64 | Flatpak `Eclipse-<version>-linux-x86_64.flatpak` + checksum | [Linux steps](#linux-x86_64) |
 | NVIDIA SHIELD TV | `eclipse-android.apk` + checksum | [SHIELD steps](#nvidia-shield-tv) |
 
 ### LG webOS
@@ -49,7 +49,7 @@ The Flatpak uses the tarball's settings folder (`~/.local/share/com.limelight/mo
 
 Tested on Ubuntu 26.04 with an AMD Radeon RX Vega (VA-API; GNOME, and KDE Plasma on Wayland and X11) and an NVIDIA RTX 2060 SUPER (NVDEC; GNOME), and installed and streamed on Ubuntu 26.04, Fedora 44, openSUSE Tumbleweed, Arch Linux and Debian 13 under WSL. Intel graphics are untested.
 
-**Older package:** the Ubuntu-built tarball `eclipse-linux-x86_64.tar.gz` stays on each release. Extract it, enter `eclipse-linux-x86_64` and run `./install.sh` (or `./eclipse` in place). It needs glibc 2.35+ (Ubuntu 22.04 baseline).
+**Older package:** the Ubuntu-built tarball `eclipse-linux-x86_64.tar.gz` was published up to 1.3.6 and stays on those releases; from 1.3.7 the Flatpak is the only Linux package.
 
 [Full Linux installation](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub/blob/main/docs/installation.md#eclipse-linux).
 
@@ -82,6 +82,7 @@ Other Android TV and Google TV devices (Android 9 or newer) may run the same APK
 2. Launch a normal game or desktop and verify picture, audio and input.
 3. For co-op, install a compatible Umbra release on a second PC and test it individually.
 4. Choose **Co-op** in Eclipse, select both PCs and layout, assign players/controllers and start. Matching host/client releases negotiate the encoder path; no manual Co-op Pane application or hidden encoder settings are part of setup.
+5. One of the two PCs can be the PC Eclipse runs on (Windows, or Linux with GNOME or KDE Plasma on Wayland): its half then runs locally on a display of its own and only the other PC is streamed, and that PC needs no pairing. The mouse crosses between the halves at the divider; controllers given to the other PC are kept away from this PC's games (on Windows through HidHide, which Umbra 0.5.1 installs).
 
 Each PC runs its own game session. See the [Project Hub](https://github.com/PreceptorOfMagic/Eclipse-Umbra-Project-Hub) for the full system map and current hardware matrix.
 

@@ -257,7 +257,7 @@ static void pin_seq_timer_cb(lv_timer_t *timer) {
      * A co-op launch negotiates its own half-height mode anyway, so the HDR renegotiation
      * this step buys is worth strictly less here than the sign-in it destroys. */
     if (!app_configuration->hdr || !app_configuration->pin_hdr_relaunch ||
-        app_launch_coop_requested()) {
+        app_launch_coop_requested() || app_launch_local_pane()) {
         lv_timer_del(timer);
         free(ctx);
         return;

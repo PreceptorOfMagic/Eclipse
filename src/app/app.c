@@ -20,13 +20,14 @@
 #include "logging_ext_sdl.h"
 #include "logging_ext_ss4s.h"
 #include "backend/backend_root.h"
-#if TARGET_ANDROID
+#include "backend/update_check.h"
 #include "backend/pcmanager/discovery/discovery.h"
-#endif
 #include "platform/local_input.h"
+#include "platform/local_pane_session.h"
 #include "platform/input_names.h"
 #include "stream/session.h"
 #include "stream/input/coop_input.h"
+#include "input/steam_triton.h"
 #include "stream/video/coop_tunables.h"
 #include "stream/video/coop_session.h"
 #include "stream/video/coop_secondary.h"
@@ -42,6 +43,7 @@
 #include "ui/fatal_error.h"
 #include "app_error.h"
 #include "app_session.h"
+#include "platform/taskbar_menu.h"
 #include "stream/embed_wrapper.h"
 #include "platform/webos/vendor_diag.h"
 
@@ -54,12 +56,31 @@ bool app_launch_coop_requested(void) { return coop_requested_at_launch; }
 
 void app_launch_set_coop_requested(bool requested) { coop_requested_at_launch = requested; }
 
+/* Co-op with this PC's side run locally (app_launch.h). Per launch, like the flag above. */
+static bool local_pane_at_launch = false, local_pane_is_vertical = false, local_pane_is_first = false;
+
+bool app_launch_local_pane(void) { return local_pane_at_launch; }
+
+bool app_launch_local_pane_vertical(void) { return local_pane_is_vertical; }
+
+bool app_launch_local_pane_first(void) { return local_pane_is_first; }
+
+void app_launch_set_local_pane(bool active, bool vertical, bool local_first) {
+    local_pane_at_launch = active;
+    local_pane_is_vertical = active && vertical;
+    local_pane_is_first = active && local_first;
+}
+
 #define HOST_MONITOR_OFF_ENV "ECLIPSE_HOST_MONITOR_OFF"
 
 void app_launch_choose_host_monitor(bool chose_off) {
     const int mode = app_configuration != NULL ? app_configuration->host_monitor_mode : HOST_MONITOR_CHOOSE;
     const bool off = mode == HOST_MONITOR_OFF || (mode == HOST_MONITOR_CHOOSE && chose_off);
     setenv(HOST_MONITOR_OFF_ENV, off ? "1" : "0", 1);
+}
+
+void app_launch_keep_host_monitors_on(void) {
+    setenv(HOST_MONITOR_OFF_ENV, "0", 1);
 }
 
 bool app_launch_host_monitor_off(void) {
@@ -257,12 +278,16 @@ int app_init(app_t *app, app_settings_loader *settings_loader, int argc, char *a
 
     if (!headless_secondary) {
         app_input_init(&app->input, app);
+        update_check_init(app);   /* after input: it borrows the input module's CA bundle path */
         /* Only for the co-op mouse/keyboard routing: a process-wide keyboard listener is not
          * started for users who never assign them (the dialog starts it too, for a live toggle). */
         if (app->settings.coop_kbm_assign) {
             input_names_start();
         }
         app_ui_init(&app->ui, app);
+        /* The taskbar icon's right-click menu (Windows only): "Resume last co-op session" is offered
+         * once a co-op pair has been used. */
+        taskbar_menu_init(app->settings.coop_primary_uuid != NULL && app->settings.coop_primary_uuid[0] != '\0');
 #if !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID)
         /* Ask the display which actually owns the restored window. Display 0 is not
          * necessarily the monitor the user selected, especially when Eclipse starts
@@ -332,8 +357,13 @@ void app_deinit(app_t *app) {
     crash_log_ui_shutdown();   /* the main loop has stopped on purpose; a close that hangs is still recorded */
     diag_logs_share_stop();   /* window close need not go through the share dialog's button */
     app_bus_drain();
+    /* The window is closing with a co-op session up whose own side is local: stop its view here, because the
+     * join below is what the stream thread would otherwise wait out (local_pane_session_win.c). */
+    local_pane_session_ui_close();
     app_session_destroy(app);
     if (!headless_secondary) {
+        taskbar_menu_deinit();
+        update_check_deinit();
         app_ui_close(&app->ui);
         app_ui_deinit(&app->ui);
         app_set_keep_awake(app, false);
@@ -382,6 +412,9 @@ void app_run_loop(app_t *app) {
      * returned rumble, and POLLOUT progress even when no new SDL input arrives,
      * so the final release packet cannot remain buffered indefinitely. */
     coop_input_coord_pump();
+    /* Attach/detach Steam Controller slots BEFORE the events are processed, so the device-added
+     * event SDL queues for a new virtual controller is handled in this same loop. */
+    steam_triton_pump();
     app_process_events(app);
     const uint32_t pumped = input_trace_enabled ? SDL_GetTicks() : 0;
     lv_task_handler();
@@ -396,7 +429,7 @@ void app_run_loop(app_t *app) {
      * an SDL texture to its UI-thread retirement queue during worker cleanup. Its pending
      * hook stays alive until SS4S_Quit and must get one final main-thread draw to destroy
      * that texture safely. */
-    if (ui_stream_frame_pending()) {
+    if (ui_stream_frame_pending() || local_pane_session_frame_pending()) {
         lv_disp_t *disp = lv_disp_get_default();
         if (disp != NULL) {
             lv_app_redraw_now(disp->driver);
@@ -453,6 +486,29 @@ static int app_event_filter(void *userdata, SDL_Event *event) {
         }
         case SDL_APP_DIDENTERFOREGROUND: {
             lv_obj_invalidate(lv_scr_act());
+            break;
+        }
+        /* THE RENDERER LOST ITS TEXTURES' CONTENTS. LVGL redraws only the areas it marked dirty into the screen
+         * texture, so after a reset the rest of the screen kept whatever the GPU left there until the next input
+         * repainted it: user photo 2026-11-14 (SKYNET, launcher with VEGA selected while VEGA's displays changed):
+         * two tile layouts drawn over each other, "not frozen but static". Reproduced on VEGA the same day: after
+         * the display went 1920x544 -> 1920x1080 the launcher stayed half drawn, bottom bar missing, until a click.
+         * A display-mode change can make SDL's Direct3D renderer reset its targets. Repaint everything. */
+        case SDL_RENDER_TARGETS_RESET:
+        case SDL_RENDER_DEVICE_RESET: {
+            lv_disp_t *disp = lv_disp_get_default();
+            commons_log_info("UI", "Renderer %s reset -- repainting the whole screen",
+                             event->type == SDL_RENDER_DEVICE_RESET ? "device" : "targets");
+            /* Recreate AND re-bind the screen texture. A targets reset also leaves the WINDOW as the render target
+             * (MEASURED 2026-11-14, VEGA, direct3d renderer: "targets reset" 226 ms after the display went back to
+             * 1920x1080, and with only a repaint the launcher went BLACK -- LVGL drew to the window and the present
+             * copied the emptied texture over it). lv_app_display_resize() makes a new one and sets it as target. */
+            if (disp != NULL) {
+                lv_app_display_resize(disp, disp->driver->hor_res, disp->driver->ver_res);
+            }
+            lv_obj_invalidate(lv_scr_act());
+            lv_obj_invalidate(lv_layer_top());
+            lv_obj_invalidate(lv_layer_sys());
             break;
         }
         case SDL_WINDOWEVENT: {
@@ -619,13 +675,9 @@ static int app_event_filter(void *userdata, SDL_Event *event) {
 
 void app_process_events(app_t *app) {
     SDL_PumpEvents();
-#if TARGET_ANDROID
-    discovery_events_dispatching(true);
-#endif
+    discovery_events_dispatching(true);     /* no discovery join inside the pass (discovery.c) */
     SDL_FilterEvents(app_event_filter, app);
-#if TARGET_ANDROID
     discovery_events_dispatching(false);
-#endif
 }
 
 void app_quit_confirm() {

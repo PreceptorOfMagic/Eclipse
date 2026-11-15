@@ -60,13 +60,14 @@ fi
 VARIANT="${AURORA_VARIANT:-live}"
 case "$VARIANT" in
     beta) APP_ID="com.aurora.gamestream.beta"; APP_TITLE="Eclipse Beta" ;;
+    beta2) APP_ID="com.aurora.gamestream.beta2"; APP_TITLE="Eclipse Beta 2" ;;  # spare side-by-side copy of the beta
     live) APP_ID="com.aurora.gamestream";      APP_TITLE="Eclipse" ;;
-    *) echo "Error: AURORA_VARIANT must be 'live' or 'beta' (got '$VARIANT')"; exit 1 ;;
+    *) echo "Error: AURORA_VARIANT must be live, beta or beta2 (got '$VARIANT')"; exit 1 ;;
 esac
 # The env var easy_build.sh reads is CMAKE_BINARY_DIR. LIVE keeps the historic default so its
 # incremental cache -- and therefore everything already tested against it -- is untouched.
-if [ "$VARIANT" = "beta" ]; then
-    export CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build/webos-beta}"
+if [ "$VARIANT" != "live" ]; then
+    export CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build/webos-${VARIANT}}"
 fi
 echo ""
 echo "Variant: ${VARIANT}   app id: ${APP_ID}   title: ${APP_TITLE}"

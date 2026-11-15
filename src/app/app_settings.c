@@ -174,6 +174,7 @@ void settings_initialize(app_settings_t *config, char *conf_dir) {
 
     config->debug_level = 0;
     config->diag_logging = false;
+    config->check_updates = true;
     set_string(&config->language, "auto");
     set_string(&config->audio_backend, "auto");
     set_string(&config->decoder, "auto");
@@ -210,6 +211,8 @@ void settings_initialize(app_settings_t *config, char *conf_dir) {
     config->rotate = 0;
     config->absmouse = true;
     config->virtual_mouse = false;
+    config->steam_controller = true;
+    config->pad_apps_policy = 0;   /* ask */
     config->hdr = false;
     config->force_full_color_range = false;
     config->hevc = true;
@@ -223,7 +226,7 @@ void settings_initialize(app_settings_t *config, char *conf_dir) {
     config->coop_orientation = COOP_ORIENTATION_HORIZONTAL;
     /* Controller 1 -> player 1, controller 2 -> player 2, then repeat. A 2-player split
      * with 4 pads attached should still do something sensible without being configured. */
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < APP_GAMEPAD_SLOTS; ++i) {
         config->coop_pad_pane[i] = (i % 2) ? COOP_PAD_SECONDARY : COOP_PAD_PRIMARY;
     }
     config->coop_audio_mode = COOP_AUDIO_MIX;
@@ -247,6 +250,8 @@ void settings_initialize(app_settings_t *config, char *conf_dir) {
     settings_coop_advanced_defaults(config);
     config->coop_split_orientations = false;
     config->coop_kbm_assign = false;
+    config->coop_local_pane = true;
+    config->coop_game_mouse_lock = false;
 
 #if defined(TARGET_WEBOS)
     settings_apply_ntsc_preset_refresh(config, config->stream.fps);
@@ -340,6 +345,7 @@ bool settings_save(app_settings_t *config) {
     ini_write_bool(fp, "fullscreen", config->fullscreen);
     ini_write_int(fp, "debug_level", config->debug_level);
     ini_write_bool(fp, "diag_logging", config->diag_logging);
+    ini_write_bool(fp, "check_updates", config->check_updates);
 
     ini_write_section(fp, "streaming");
     /* Only persist a size the USER chose. The default is derived from the panel/monitor at
@@ -389,6 +395,8 @@ bool settings_save(app_settings_t *config) {
     ini_write_bool(fp, "hardware_mouse", config->hardware_mouse);
 #endif
     ini_write_bool(fp, "swap_abxy", config->swap_abxy);
+    ini_write_bool(fp, "steam_controller", config->steam_controller);
+    ini_write_int(fp, "pad_apps_policy", config->pad_apps_policy);
     ini_write_int(fp, "nintendo_layout", config->nintendo_layout);
     ini_write_int(fp, "controller_shortcuts", config->controller_shortcuts);
     ini_write_int(fp, "stick_deadzone", config->stick_deadzone);
@@ -415,6 +423,8 @@ bool settings_save(app_settings_t *config) {
      * conf is still read, into BOTH columns -- see the parser. */
     ini_write_bool(fp, "coop_split_orientations", config->coop_split_orientations);
     ini_write_bool(fp, "coop_kbm_assign", config->coop_kbm_assign);
+    ini_write_bool(fp, "coop_local_pane", config->coop_local_pane);
+    ini_write_bool(fp, "coop_game_mouse_lock", config->coop_game_mouse_lock);
     for (int o = 0; o < 2; ++o) {
         const char *sfx = o == COOP_ORIENTATION_VERTICAL ? "_v" : "_h";
         char key[64];
@@ -901,6 +911,11 @@ static int settings_parse(app_settings_t *config, const char *section, const cha
         }
     } else if (INI_NAME_MATCH("swap_abxy")) {
         config->swap_abxy = INI_IS_TRUE(value);
+    } else if (INI_NAME_MATCH("steam_controller")) {
+        config->steam_controller = INI_IS_TRUE(value);
+    } else if (INI_NAME_MATCH("pad_apps_policy")) {
+        const int policy = atoi(value);
+        config->pad_apps_policy = policy >= 0 && policy <= 2 ? policy : 0;
     } else if (INI_NAME_MATCH("nintendo_layout")) {
         const int layout = atoi(value);
         config->nintendo_layout = layout >= NINTENDO_LAYOUT_OFF && layout <= NINTENDO_LAYOUT_XBOX
@@ -981,6 +996,10 @@ static int settings_parse(app_settings_t *config, const char *section, const cha
         config->coop_split_orientations = INI_IS_TRUE(value);
     } else if (INI_NAME_MATCH("coop_kbm_assign")) {
         config->coop_kbm_assign = INI_IS_TRUE(value);
+    } else if (INI_NAME_MATCH("coop_local_pane")) {
+        config->coop_local_pane = INI_IS_TRUE(value);
+    } else if (INI_NAME_MATCH("coop_game_mouse_lock")) {
+        config->coop_game_mouse_lock = INI_IS_TRUE(value);
     } else if (coop_advanced_parse(config, name, value)) {
         /* handled: one of the per-orientation dials */
     } else if (INI_NAME_MATCH("coop_app_id")) {
@@ -1008,6 +1027,8 @@ static int settings_parse(app_settings_t *config, const char *section, const cha
         set_int(&config->debug_level, value);
     } else if (INI_NAME_MATCH("diag_logging")) {
         config->diag_logging = INI_IS_TRUE(value);
+    } else if (INI_NAME_MATCH("check_updates")) {
+        config->check_updates = INI_IS_TRUE(value);
     } else if (INI_FULL_MATCH("window", "x")) {
         set_int(&config->window_state.x, value);
     } else if (INI_FULL_MATCH("window", "y")) {

@@ -36,6 +36,12 @@
 #include "fatal_error.h"
 #include "app_error.h"
 #include "util/i18n.h"
+#include "platform/pad_ownership.h"
+#include "platform/taskbar_menu.h"
+#include "platform/local_input.h"
+#include "platform/local_pane_session.h"
+#include "app_launch.h"
+#include "ui/launcher/coop.dialog.h"
 #include "lvgl/util/lv_app_utils.h"
 
 #if FEATURE_WINDOW_FULLSCREEN_DESKTOP
@@ -66,6 +72,7 @@ static void session_error_dialog_cb(lv_event_t *event);
 static void local_host_window_timer_cb(lv_timer_t *timer) {
     app_ui_t *ui = timer->user_data;
     local_host_window_tick(ui->window);
+    local_pane_session_ui_tick(ui->app);
 }
 #endif
 
@@ -242,6 +249,7 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
     if (!handled) {
         switch (which) {
             case USER_STREAM_OPEN: {
+                taskbar_menu_set_streaming(true);    /* right-click menu: Disconnect / Quit / mouse */
 #ifdef TARGET_WEBOS
                 /* Display stabilization: webOS compositor may need time to switch to
                  * 120Hz. Multiple pump+delay cycles help avoid intermittent <60fps
@@ -270,10 +278,15 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
                 }
                 app_set_keep_awake(app, true);
                 streaming_enter_fullscreen(app->session);
+                if (app_launch_local_pane()) {
+                    /* Co-op with this PC's side run locally: its display goes in its half of the window now. */
+                    local_pane_session_ui_open(app);
+                }
                 last_pts = 0;
                 return true;
             }
             case USER_STREAM_CLOSE: {
+                local_pane_session_ui_close();   /* no-op unless this PC's side of a co-op session is local */
                 if (app->ss4s.video_cap.transform & SS4S_VIDEO_CAP_TRANSFORM_UI_EXCLUSIVE) {
                     SDL_ShowCursor(SDL_TRUE);
                 } else {
@@ -298,6 +311,14 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
                 return true;
             }
             case USER_STREAM_FINISHED: {
+                taskbar_menu_set_streaming(false);   /* right-click menu: back to Resume */
+                local_pane_session_ui_close();   /* again: a stream that never opened sends no CLOSE */
+                /* Controllers hidden for a co-op session where this PC was a host come back now --
+                 * unless the session is about to be relaunched (HDR/PIN retry), which keeps them
+                 * hidden for the retry. No-op when nothing is hidden. */
+                if (!apps_controller_hdr_relaunch_will_retry()) {
+                    pad_own_session_end();
+                }
                 if (streaming_errno != 0) {
                     /* A PIN HDR-reconnect launch that will be retried (e.g. Apollo's
                      * transient 503 during display/encoder reinit) — stay silent and
@@ -316,6 +337,39 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
                 }
                 return false;
             }
+            case USER_TASKBAR_COMMAND: {
+                /* The taskbar icon's right-click menu (platform/taskbar_menu.h): the same calls as the
+                 * stream menu's Disconnect / Quit, the Ctrl+Alt+Shift+Z mouse return, and the
+                 * launcher's resume of the last co-op pair. */
+                switch ((taskbar_cmd_t) (intptr_t) data1) {
+                    case TASKBAR_CMD_DISCONNECT:
+                    case TASKBAR_CMD_QUIT:
+                        if (app->session != NULL) {
+                            session_interrupt(app->session, (taskbar_cmd_t) (intptr_t) data1 == TASKBAR_CMD_QUIT,
+                                              STREAMING_INTERRUPT_USER);
+                        }
+                        break;
+                    case TASKBAR_CMD_GIVE_BACK_MOUSE:
+                        if (local_input_handed_off()) {
+                            local_input_give_back();          /* host-and-client co-op */
+                        }
+#if !defined(TARGET_WEBOS)
+                        /* webOS has no mouse capture (app_input_set_capture is not built there). */
+                        else if (app->session != NULL) {
+                            app_input_set_capture(&app->input, false);
+                        }
+#endif
+                        break;
+                    case TASKBAR_CMD_RESUME_COOP:
+                        if (app->session == NULL) {
+                            coop_dialog_relaunch_last(app);
+                        }
+                        break;
+                    default:
+                        break;
+                }
+                return true;
+            }
             default:
                 break;
         }
@@ -324,7 +378,7 @@ bool ui_dispatch_userevent(app_t *app, int which, void *data1, void *data2) {
 }
 
 bool ui_should_block_input() {
-    return streaming_overlay_shown() || streaming_soft_keyboard_shown();
+    return streaming_overlay_shown() || streaming_soft_keyboard_shown() || streaming_coop_slow_prompt_shown();
 }
 
 void ui_display_size(app_ui_t *ui, int width, int height) {

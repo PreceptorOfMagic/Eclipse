@@ -4,6 +4,7 @@
 #include "util/i18n.h"
 #include "util/font.h"
 #include "hints.h"
+#include "app_launch.h"
 
 #include "lvgl/ext/lv_child_group.h"
 #include "lvgl/theme/lv_theme_moonlight.h"
@@ -22,8 +23,17 @@ lv_obj_t *streaming_scene_create(lv_fragment_t *self, lv_obj_t *parent) {
 
     lv_obj_t *hint = lv_label_create(obj);
     lv_obj_set_style_pad_all(hint, LV_DPX(20), 0);
+    /* Tips run up to ~120 characters: wrap inside the right part of the screen instead of running off the left. */
+    lv_obj_set_width(hint, LV_PCT(60));
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    lv_label_set_text_fmt(hint, locstr("Hint: %s"), hints_obtain());
+    const char *tip = hints_obtain(app_launch_coop_requested(), app_configuration->hdr);
+    if (tip != NULL) {
+        lv_label_set_text_fmt(hint, locstr("Hint: %s"), tip);
+    } else {
+        lv_label_set_text(hint, "");
+    }
     controller->hint = hint;
 
     lv_obj_t *overlay = lv_obj_create(obj);

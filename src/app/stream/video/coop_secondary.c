@@ -27,6 +27,12 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#endif
+#include "app_settings.h"
+#include "platform/pad_ownership.h"
 
 /* Consecutive reconnects with ZERO frames forwarded before the secondary gives
  * up. 3 is ~ a few seconds of proving it is dead, short enough that a closed app
@@ -516,12 +522,84 @@ static bool coop_secondary_apply_stream_geometry(struct app_t *app, FILE *log) {
     return true;
 }
 
+/* ---------------------------------------------------- the primary was killed
+ *
+ * FORCE-CLOSING ECLIPSE (user, 2026-11-04: "End task" left the stream running and SKYNET's virtual
+ * display up). A killed primary can tell nobody, and each host takes the silence for a disconnect,
+ * which PAUSES a co-op pane -- resumable by design (user rule 2026-10-02: Disconnect = pause, Quit =
+ * end both) -- so the pane's virtual display stays. This process outlives the primary by a moment
+ * (its link breaks) and can tell the cases apart: an orderly end sends COOP_IPC_CTL_SHUTDOWN, a
+ * network drop leaves the primary RUNNING. A primary that is GONE without saying so was killed or
+ * crashed, and then this process does what its Quit would have done: ends BOTH panes (the hosts then
+ * remove their virtual displays) and undoes the controller hiding (pad_ownership_win.c). */
+#ifdef _WIN32
+static HANDLE primary_process;   /* SYNCHRONIZE handle; COOP_PRIMARY_PID from coop_proc_win.c */
+
+static void primary_watch_begin(void) {
+    const char *v = getenv("COOP_PRIMARY_PID");
+    const DWORD pid = v != NULL ? (DWORD) strtoul(v, NULL, 10) : 0;
+    primary_process = pid != 0 ? OpenProcess(SYNCHRONIZE, FALSE, pid) : NULL;
+}
+
+static bool primary_gone(void) {
+    return primary_process != NULL && WaitForSingleObject(primary_process, 0) == WAIT_OBJECT_0;
+}
+#else
+/* WINDOWS ONLY for now. On the TV the primary's process can end for reasons that must stay a PAUSE
+ * (the comment at the teardown below: the TV going to its Home screen), and nothing here has measured
+ * how webOS ends it -- so elsewhere a lost link keeps today's behaviour. */
+static void primary_watch_begin(void) {
+}
+
+static bool primary_gone(void) {
+    return false;
+}
+#endif
+
+/* Once the primary is found killed, this process has this long to end both panes and exit; past it,
+ * it exits regardless. Replaces the job object's kill-on-close as the guarantee that no secondary
+ * outlives its primary for good (coop_proc_win.c). */
+#define SECONDARY_ORPHAN_DEADLINE_MS 15000
+
+#ifdef _WIN32
+static DWORD WINAPI orphan_deadline(LPVOID arg) {
+    (void) arg;
+    Sleep(SECONDARY_ORPHAN_DEADLINE_MS);
+    ExitProcess(3);
+}
+#endif
+
+/* The primary's host pane: what session_worker.c's "CO-OP: QUIT ENDS BOTH PANES" does, from this side. */
+static void quit_primary_pane(FILE *log) {
+    const char *id = app_configuration != NULL ? app_configuration->coop_primary_uuid : NULL;
+    if (id == NULL || id[0] == '\0') {
+        return;
+    }
+    uuidstr_t primary_id;
+    uuidstr_fromstr(&primary_id, id);
+    const pclist_t *node = pcmanager_node(pcmanager, &primary_id);
+    int rc = -1;
+    if (node != NULL && node->server != NULL) {
+        GS_CLIENT client = gs_new(app_configuration->key_dir);
+        if (client != NULL) {
+            rc = gs_quit_app(client, (PSERVER_DATA) node->server);
+            gs_destroy(client);
+        }
+    }
+    if (log != NULL) {
+        fprintf(log, "primary killed: quit the primary's pane on %s rc=%d%s\n", id, rc,
+                node == NULL || node->server == NULL ? " (host not known)" : "");
+        fflush(log);
+    }
+}
+
 int coop_secondary_run_headless(struct app_t *app) {
     FILE *log = fopen(AURORA_SECONDARY_LOG, "a");
     if (log != NULL) {
         fprintf(log, "=== secondary headless start (pid=%d) ===\n", (int) getpid());
         fflush(log);
     }
+    primary_watch_begin();
 
     if (!coop_secondary_apply_stream_geometry(app, log)) {
         if (log != NULL) { fclose(log); }
@@ -654,6 +732,7 @@ int coop_secondary_run_headless(struct app_t *app) {
     /* Watchdog state for the dead-cycle check at the reconnect site below. */
     unsigned fwd_at_last_loss = 0;
     int dead_cycles = 0;
+    bool primary_killed = false;
     for (;;) {
         uint32_t ctl_frame = 0;
         pthread_mutex_lock(&coop_send_lock);
@@ -678,6 +757,21 @@ int coop_secondary_run_headless(struct app_t *app) {
                     fflush(log);
                 }
             }
+        }
+        if (n < 0 && primary_gone()) {
+            primary_killed = true;          /* no SHUTDOWN came first: killed or crashed */
+#ifdef _WIN32
+            HANDLE deadline = CreateThread(NULL, 0, orphan_deadline, NULL, 0, NULL);
+            if (deadline != NULL) {
+                CloseHandle(deadline);
+            }
+#endif
+            if (log != NULL) {
+                fprintf(log, "link lost and the primary process is gone without an orderly shutdown -- "
+                             "ending both panes\n");
+                fflush(log);
+            }
+            break;
         }
         if (n < 0) {
             /* RECONNECT rather than exit. The link has been observed dropping
@@ -768,10 +862,21 @@ int coop_secondary_run_headless(struct app_t *app) {
     {
         app_t *a = (app_t *) app;
         if (a->session != NULL) {
-            if (log != NULL) { fprintf(log, "destroying secondary session (pause; Quit is the primary's)\n"); fflush(log); }
-            session_interrupt(a->session, false, STREAMING_INTERRUPT_USER);
+            if (log != NULL) {
+                fprintf(log, primary_killed ? "destroying secondary session (QUIT: the primary was killed)\n"
+                                            : "destroying secondary session (pause; Quit is the primary's)\n");
+                fflush(log);
+            }
+            /* quitapp=true ends THIS host's pane; the primary would have ended it on Quit. */
+            session_interrupt(a->session, primary_killed, STREAMING_INTERRUPT_USER);
             session_destroy(a->session);
             a->session = NULL;
+        }
+        if (primary_killed) {
+            quit_primary_pane(log);
+            /* The controllers it hid stay hidden from every other program until someone undoes
+             * it; the state file names the dead primary, so this is the crash recovery. */
+            pad_own_startup_recover();
         }
     }
     if (log != NULL) {

@@ -1224,10 +1224,10 @@ index 0000000000000000000000000000000000000000..c9b2b760ecf9273fa2fb2f7abf57f9fa
 +endif ()
 diff --git a/modules/ffmpeg/ffmpegvid.c b/modules/ffmpeg/ffmpegvid.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..da87fda51edb0e5fbb7e8449b4c49af69d0d6a70
+index 0000000000000000000000000000000000000000..ad3f0185aa697b0877797f7ff39df59719f89e80
 --- /dev/null
 +++ b/modules/ffmpeg/ffmpegvid.c
-@@ -0,0 +1,1839 @@
+@@ -0,0 +1,1881 @@
 +/*
 + * SS4S video module: FFmpeg decode + SDL presentation, for desktop platforms.
 + *
@@ -1408,6 +1408,11 @@ index 0000000000000000000000000000000000000000..da87fda51edb0e5fbb7e8449b4c49af6
 +#endif
 +    Uint32 tex_format;              /* SDL_PIXELFORMAT_IYUV, or NV12 for an imported VA-API surface */
 +    int pic_w, pic_h;              /* the picture inside the texture; a VA-API surface can be taller */
++
++    /* Where in the window the picture goes, in renderer output pixels; has_area false = the whole
++     * window. Written by SetDisplayArea() and read by host_draw(), both under the proxy's lock. */
++    bool has_area;
++    SDL_Rect area;
 +};
 +
 +/* A player context only so Open() learns its SS4S_Player: the stats API is per player, and
@@ -2662,17 +2667,28 @@ index 0000000000000000000000000000000000000000..da87fda51edb0e5fbb7e8449b4c49af6
 +    }
 +    /* The picture, not the texture: an imported VA-API surface can be taller than the frame. */
 +    const SDL_Rect src = {0, 0, inst->pic_w > 0 ? inst->pic_w : inst->tex_w, inst->pic_h > 0 ? inst->pic_h : inst->tex_h};
++    /* The box the picture is fitted into: the whole window, or the part of it the app asked for
++     * (SetDisplayArea) when it shows something of its own beside the stream. Clipped to the window,
++     * and ignored if nothing of it is inside. */
++    SDL_Rect box = {0, 0, win_w, win_h};
++    if (inst->has_area) {
++        const SDL_Rect window = {0, 0, win_w, win_h};
++        SDL_Rect clipped;
++        if (SDL_IntersectRect(&inst->area, &window, &clipped) == SDL_TRUE) {
++            box = clipped;
++        }
++    }
 +    SDL_Rect dst;
-+    const int scaled_h = src.h * win_w / src.w;
-+    if (scaled_h <= win_h) {
-+        dst.w = win_w;
++    const int scaled_h = src.h * box.w / src.w;
++    if (scaled_h <= box.h) {
++        dst.w = box.w;
 +        dst.h = scaled_h;
 +    } else {
-+        dst.w = src.w * win_h / src.h;
-+        dst.h = win_h;
++        dst.w = src.w * box.h / src.h;
++        dst.h = box.h;
 +    }
-+    dst.x = (win_w - dst.w) / 2;
-+    dst.y = (win_h - dst.h) / 2;
++    dst.x = box.x + (box.w - dst.w) / 2;
++    dst.y = box.y + (box.h - dst.h) / 2;
 +
 +    SDL_SetRenderDrawColor(inst->renderer, 0, 0, 0, 0xFF);
 +    SDL_RenderClear(inst->renderer);
@@ -3041,6 +3057,32 @@ index 0000000000000000000000000000000000000000..da87fda51edb0e5fbb7e8449b4c49af6
 +    free(context);
 +}
 +
++/* The app shows the stream in PART of its window (dst, in renderer output pixels) or, with dst NULL,
++ * in all of it again. src is not supported: the whole picture is always shown. This module still
++ * claims UI_COMPOSITING, so the app never calls this to follow its window or its overlay; it is for
++ * the one case where the app puts something else beside the picture (a co-op session whose other
++ * half is this PC's own display). Runs on the app's thread while Close() may run on the stream's:
++ * the proxy's lock and its instance pointer are what make the instance safe to touch here. */
++static bool SetDisplayArea(SS4S_VideoInstance *instance, const SS4S_VideoRect *src, const SS4S_VideoRect *dst) {
++    (void) src;
++    FFmpegHostRenderProxy *proxy = HostRenderProxy;
++    if (proxy == NULL || instance == NULL || SDL_LockMutex(proxy->lock) != 0) {
++        return false;
++    }
++    bool ok = false;
++    if (proxy->instance == instance) {
++        if (dst != NULL && dst->width > 0 && dst->height > 0) {
++            instance->area = (SDL_Rect) {dst->x, dst->y, dst->width, dst->height};
++            instance->has_area = true;
++        } else {
++            instance->has_area = false;
++        }
++        ok = true;
++    }
++    SDL_UnlockMutex(proxy->lock);
++    return ok;
++}
++
 +static const SS4S_PlayerDriver FFmpegPlayerDriver = {
 +        .Create = PlayerCreate,
 +        .Destroy = PlayerDestroy,
@@ -3055,7 +3097,7 @@ index 0000000000000000000000000000000000000000..da87fda51edb0e5fbb7e8449b4c49af6
 +        .Open = Open,
 +        .Feed = Feed,
 +        .SizeChanged = SizeChanged,
-+        /* No SetDisplayArea: claiming UI_COMPOSITING means the app never calls it. */
++        .SetDisplayArea = SetDisplayArea,
 +        .SetHDRInfo = SetHDRInfo,
 +        .Close = Close,
 +};

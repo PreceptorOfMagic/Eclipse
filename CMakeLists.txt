@@ -4,7 +4,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 # Keep configuration deterministic and offline. The previous tag/API lookup was
 # discarded immediately by this same version, but still made an untagged source
 # checkout depend on git, curl and GitHub being available.
-project(moonlight VERSION 1.3.6 LANGUAGES C CXX)
+project(moonlight VERSION 1.3.7 LANGUAGES C CXX)
 
 # To suppress warnings for MbedTLS
 if (POLICY CMP0048)
@@ -116,7 +116,9 @@ if (TARGET_WEBOS)
     # contains a space, and it was silently word-split crossing the shell into cmake, producing a
     # beta package titled "Eclipse" -- two identically-named tiles on the TV launcher, which is
     # exactly the confusion a separate beta install exists to prevent.
-    if (WEBOS_APPINFO_ID MATCHES "\\.beta$")
+    if (WEBOS_APPINFO_ID MATCHES "\\.beta2$")
+        set(WEBOS_APPINFO_TITLE "Eclipse Beta 2")
+    elseif (WEBOS_APPINFO_ID MATCHES "\\.beta$")
         set(WEBOS_APPINFO_TITLE "Eclipse Beta")
     else ()
         set(WEBOS_APPINFO_TITLE "Eclipse")
@@ -460,6 +462,8 @@ elseif (TARGET_WEBOS)
         set(AURORA_TMP_SUFFIX "-beta")
         # Test-only launch hooks (platform/webos/app_webos.c: aurora_test_crash) -- the BETA app id only.
         target_compile_definitions(moonlight-lib PRIVATE AURORA_TEST_HOOKS=1)
+    elseif (WEBOS_APPINFO_ID MATCHES "\\.beta2$")
+        set(AURORA_TMP_SUFFIX "-beta2")
     else ()
         set(AURORA_TMP_SUFFIX "")
     endif ()
@@ -549,6 +553,51 @@ else ()
         endif ()
         target_compile_definitions(moonlight-lib PUBLIC OS_LINUX _GNU_SOURCE)
         target_compile_definitions(moonlight-lib PUBLIC GAMECONTROLLERDB_PLATFORM="Linux")
+        # "Is this host address this PC?" for host-and-client co-op on Linux (src/app/platform/this_pc.h).
+        if (NOT TARGET_ANDROID)
+            target_sources(moonlight-lib PRIVATE src/app/platform/posix/this_pc_posix.c)
+            # Controllers given to the other PC are grabbed away from this PC (src/app/platform/pad_ownership.h).
+            # Desktop Linux only: the legacy appliance builds' SDL is older than SDL_JoystickPathForIndex.
+            if (NOT TARGET_RASPI AND NOT TARGET_STEAMLINK)
+                target_sources(moonlight-lib PRIVATE src/app/platform/linux/pad_ownership_linux.c)
+                target_compile_definitions(moonlight-lib PUBLIC ECLIPSE_PAD_OWN_LINUX=1)
+            endif ()
+            # Host-and-client co-op with this PC's side run locally (GNOME): a Mutter virtual output read over
+            # PipeWire (src/app/platform/linux/local_pane_linux.h). Built only when both libraries are there.
+            pkg_check_modules(LOCAL_PANE_GIO gio-2.0)
+            pkg_check_modules(LOCAL_PANE_PW libpipewire-0.3)
+            # ...and its mouse/keyboard hand-over: InputCapture portal + libei (local_input_linux.c).
+            pkg_check_modules(LOCAL_PANE_GIOUNIX gio-unix-2.0)
+            pkg_check_modules(LOCAL_PANE_EI libei-1.0)
+            # ...and on KDE Plasma: KWin's own virtual outputs, output management and fake input (local_pane_kde.c),
+            # client code generated from third_party/kde-wayland-protocols by wayland-scanner.
+            pkg_check_modules(LOCAL_PANE_WL wayland-client)
+            find_program(WAYLAND_SCANNER wayland-scanner)
+            if (LOCAL_PANE_GIO_FOUND AND LOCAL_PANE_PW_FOUND AND LOCAL_PANE_GIOUNIX_FOUND AND LOCAL_PANE_EI_FOUND
+                    AND LOCAL_PANE_WL_FOUND AND WAYLAND_SCANNER)
+                set(KDE_PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/kde-wayland-protocols)
+                set(KDE_PROTO_OUT ${CMAKE_CURRENT_BINARY_DIR}/kde-wayland-protocols)
+                file(MAKE_DIRECTORY ${KDE_PROTO_OUT})
+                set(KDE_PROTO_SOURCES)
+                foreach (proto zkde-screencast-unstable-v1 kde-output-device-v2 kde-output-management-v2 fake-input)
+                    add_custom_command(OUTPUT ${KDE_PROTO_OUT}/${proto}-client-protocol.h ${KDE_PROTO_OUT}/${proto}-protocol.c
+                            COMMAND ${WAYLAND_SCANNER} client-header ${KDE_PROTO_DIR}/${proto}.xml ${KDE_PROTO_OUT}/${proto}-client-protocol.h
+                            COMMAND ${WAYLAND_SCANNER} private-code ${KDE_PROTO_DIR}/${proto}.xml ${KDE_PROTO_OUT}/${proto}-protocol.c
+                            DEPENDS ${KDE_PROTO_DIR}/${proto}.xml VERBATIM)
+                    list(APPEND KDE_PROTO_SOURCES ${KDE_PROTO_OUT}/${proto}-client-protocol.h ${KDE_PROTO_OUT}/${proto}-protocol.c)
+                endforeach ()
+                target_sources(moonlight-lib PRIVATE src/app/platform/linux/local_pane_linux.c
+                        src/app/platform/linux/local_pane_kde.c ${KDE_PROTO_SOURCES}
+                        src/app/platform/linux/local_pane_session_linux.c src/app/platform/linux/local_input_linux.c)
+                target_include_directories(moonlight-lib PRIVATE ${LOCAL_PANE_GIO_INCLUDE_DIRS} ${LOCAL_PANE_PW_INCLUDE_DIRS}
+                        ${LOCAL_PANE_GIOUNIX_INCLUDE_DIRS} ${LOCAL_PANE_EI_INCLUDE_DIRS} ${LOCAL_PANE_WL_INCLUDE_DIRS}
+                        ${KDE_PROTO_OUT})
+                target_link_libraries(moonlight-lib PRIVATE ${LOCAL_PANE_GIO_LIBRARIES} ${LOCAL_PANE_PW_LIBRARIES}
+                        ${LOCAL_PANE_GIOUNIX_LIBRARIES} ${LOCAL_PANE_EI_LIBRARIES} ${LOCAL_PANE_WL_LIBRARIES})
+            else ()
+                target_compile_definitions(moonlight-lib PUBLIC ECLIPSE_NO_LOCAL_PANE=1)
+            endif ()
+        endif ()
         # Co-op diagnostics go to the user's preference directory, as on Windows (see the header).
         target_compile_options(moonlight-lib PUBLIC
                 "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/src/app/platform/sdl/desktop_log_paths.h")
@@ -578,9 +627,23 @@ else ()
         target_sources(moonlight-lib PRIVATE src/app/platform/windows/local_host_win.c)
         # ...and the mouse/keyboard hand-over to that host's own pane (see the file's header).
         target_sources(moonlight-lib PRIVATE src/app/platform/windows/local_input_win.c)
+        # Co-op with this PC's side run locally, not streamed to itself: its own virtual display, shown in the
+        # client window (src/app/platform/local_pane_session.h). SetupAPI finds the display driver's control
+        # device; Direct3D 11 and DWM present the captured display.
+        target_sources(moonlight-lib PRIVATE src/app/platform/windows/local_pane_win.c
+                src/app/platform/windows/local_pane_session_win.c)
+        target_link_libraries(moonlight-lib PUBLIC setupapi d3d11 dwmapi gdi32)
         # The mouse and keyboard's own names for the co-op controller routing (HidD_* = hid.dll).
         target_sources(moonlight-lib PRIVATE src/app/platform/windows/input_names_win.c)
         target_link_libraries(moonlight-lib PUBLIC hid)
+        # Controller ownership when this PC is a co-op host: HidHide + holder scan + close/reopen
+        # (src/app/platform/pad_ownership.h). CM_* = cfgmgr32.
+        target_sources(moonlight-lib PRIVATE src/app/platform/windows/pad_ownership_win.c)
+        target_link_libraries(moonlight-lib PUBLIC cfgmgr32)
+        # The taskbar icon's right-click menu (src/app/platform/taskbar_menu.h): a jump list built with
+        # the shell's COM objects (ole32 + the uuid library for their CLSIDs/IIDs).
+        target_sources(moonlight-lib PRIVATE src/app/platform/windows/taskbar_menu_win.c)
+        target_link_libraries(moonlight-lib PUBLIC ole32 uuid shell32)
         # The SAFE additions (setenv, inet_aton) go everywhere; the socket remapping does
         # not -- see the header's own note for why those are separate.
         target_compile_options(moonlight-lib PUBLIC -include win_posix_bits.h)

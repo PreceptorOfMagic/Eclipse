@@ -40,6 +40,9 @@ typedef struct {
     lv_obj_t *nav;
     lv_group_t *nav_group;
 
+    /** The update notice's dot on the About entry (ui/common/update_dot.h); NULL when not shown. */
+    lv_obj_t *about_dot;
+
     lv_obj_t *detail;
     lv_group_t *detail_group;
 

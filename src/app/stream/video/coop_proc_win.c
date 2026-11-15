@@ -40,16 +40,18 @@ static wchar_t *coop_utf8_to_wide(const char *src) {
 }
 
 /**
- * THE JOB OBJECT IS THIS PLATFORM'S PR_SET_PDEATHSIG.
+ * THE SECONDARY OUTLIVES A KILLED PRIMARY -- BRIEFLY, AND ON PURPOSE (changed 2026-11-04).
  *
- * On Linux the child sets PR_SET_PDEATHSIG so an abnormal primary exit -- where normal
- * session cleanup never runs -- still takes the secondary with it. Windows has no such
- * per-process flag, but a job object with KILL_ON_JOB_CLOSE is stronger: the kernel
- * terminates every process in the job when the last handle to it closes, and the primary's
- * handle closes however the primary dies, including a crash. The handle is deliberately
- * never closed while we run.
+ * This job used to carry KILL_ON_JOB_CLOSE, Windows' PR_SET_PDEATHSIG: when the primary died
+ * however it died, the kernel killed the secondary with it. That made "End task" on Eclipse leave
+ * both co-op panes PAUSED on their hosts (a host takes a silent client for a disconnect, and the
+ * co-op pane is resumable), with this PC's virtual display still up (user report 2026-11-04).
+ * Nothing could clean up, because the only process that could was killed too.
  *
- * This is also why coop_coord_reap_orphan_secondaries() has nothing to do here.
+ * Now the secondary is left alive: it notices the primary is gone without an orderly shutdown,
+ * ends BOTH panes and undoes the controller hiding, then exits -- with a hard 15 s deadline of its
+ * own, so it still cannot linger (coop_secondary.c, primary_gone / SECONDARY_ORPHAN_DEADLINE_MS).
+ * The job object stays as the container the secondary is created in, without the kill limit.
  */
 static HANDLE coord_job(void) {
     static HANDLE job = NULL;
@@ -62,7 +64,7 @@ static HANDLE coord_job(void) {
     }
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION li;
     memset(&li, 0, sizeof(li));
-    li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    li.BasicLimitInformation.LimitFlags = 0;   /* no KILL_ON_JOB_CLOSE: see above */
     if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof(li))) {
         CloseHandle(job);
         job = NULL;
@@ -71,8 +73,8 @@ static HANDLE coord_job(void) {
 }
 
 /**
- * Nothing to sweep: the job object above makes an orphaned secondary impossible, so there
- * is no equivalent of the /proc walk the POSIX side does. Returning 0 is the truthful
+ * Nothing to sweep: a secondary whose primary is gone ends itself within its 15 s deadline
+ * (coop_secondary.c), so there is no equivalent of the /proc walk the POSIX side does. Returning 0 is the truthful
  * answer ("none were killed"), not a stub standing in for unwritten code.
  *
  * If that ever stops being true -- someone removes the job object, or a secondary is
@@ -121,7 +123,13 @@ int coop_coord_spawn_secondary_for(const char *exe_path, const char *socket_path
         unsetenv("COOP_STREAM_HEIGHT");
         return -1;
     }
+    /* Who to watch: if this process dies without an orderly shutdown (End task, a crash), the
+     * secondary ends both panes instead of leaving them paused (coop_secondary.c, primary_gone). */
+    char primary_pid_buf[32];
+    snprintf(primary_pid_buf, sizeof(primary_pid_buf), "%lu", (unsigned long) GetCurrentProcessId());
+    setenv("COOP_PRIMARY_PID", primary_pid_buf, 1);
     const int pid = coop_coord_spawn_secondary(exe_path, socket_path);
+    unsetenv("COOP_PRIMARY_PID");
     unsetenv("COOP_HOST_UUID");
     unsetenv("COOP_APP_ID");
     unsetenv("COOP_STREAM_WIDTH");

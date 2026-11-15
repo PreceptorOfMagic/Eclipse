@@ -233,6 +233,13 @@ static void on_filter_changed(lv_event_t *e) {
 static void on_filter_ahead_changed(lv_event_t *e) {
     filter_ahead_refresh((coop_pane_t *) lv_event_get_user_data(e), COOP_AUDIO_FILTER_ACCURATE);
 }
+#ifdef _WIN32
+static const pref_dropdown_int_entry_t pad_apps_entries[] = {
+        {.name = "Ask every time", .value = 0},
+        {.name = "Close and reopen them", .value = 1},
+        {.name = "Leave them", .value = 2},
+};
+#endif
 
 static const pref_dropdown_int_entry_t audio_entries[] = {
         {.name = "Mix both", .value = COOP_AUDIO_MIX},
@@ -821,6 +828,32 @@ static void build_controllers(coop_pane_t *pane, lv_obj_t *view) {
                                  "the co-op launch screen, and each stays with the PC it is given "
                                  "to for the whole session. When this PC is one of the two, "
                                  "Ctrl+Alt+Shift+Z brings a mouse given to it back to Eclipse."), false);
+
+    pref_checkbox(view, locstr("Let a game lock the mouse in its half"),
+                  &app_configuration->coop_game_mouse_lock, false);
+    pref_desc_label(view, locstr("Off: the pointer can always move to the other PC's half, even while a game holds "
+                                 "the mouse. On: a game that holds the mouse keeps it in its half until it lets go "
+                                 "(Alt+Tab or the game's own menu). Works for the half of a PC running its side "
+                                 "locally; streamed halves follow later."), false);
+
+#ifdef _WIN32
+    pref_checkbox(view, locstr("Run this PC's side of a co-op session locally"),
+                  &app_configuration->coop_local_pane, false);
+    pref_desc_label(view, locstr("When this PC is one of the two co-op PCs. On: its half is shown straight from "
+                                 "this PC and only the other PC is streamed, so this PC does not need to be "
+                                 "paired with itself. Off: this PC streams its own half to itself, as before. "
+                                 "Turn it off if a session will not start with it on."), false);
+
+    pref_title_label(view, locstr("Apps using a controller given to the other PC"));
+    lv_obj_t *pad_apps = pref_dropdown_int(view, pad_apps_entries,
+                                           sizeof(pad_apps_entries) / sizeof(pad_apps_entries[0]),
+                                           &app_configuration->pad_apps_policy, NULL);
+    lv_obj_set_width(pad_apps, LV_PCT(100));
+    pref_desc_label(view, locstr("When this PC is one of the two co-op PCs, the controllers you give to the other PC "
+                                 "are hidden from this PC (HidHide). Apps that already had them open, like Steam, "
+                                 "still see them until they are closed and reopened. \"Ask every time\" shows which "
+                                 "apps at the start of the session."), false);
+#endif
 }
 
 /* ------------------------------------------------------------------- advanced */

@@ -1,6 +1,6 @@
 # Code signing policy
 
-**Status:** signing through SignPath Foundation is being set up. Every package of every release up to and including Eclipse 1.3.6 is **unsigned**, except the Android APK (below). Until signing is approved, check each download against its published SHA-256.
+**Status:** signing through SignPath Foundation is being set up. Every package of every release up to and including Eclipse 1.3.7 is **unsigned**, except the Android APK (below). Until signing is approved, check each download against its published SHA-256.
 
 **Android:** Android installs only signed APKs, and an update only over an install signed with the same key. From its first release (1.3.5), Eclipse for Android is signed with the project's own release key, kept by the maintainer, and every update will be signed with it. Its certificate SHA-256 is `8C:31:18:05:69:36:39:EF:2A:F8:28:63:9A:31:DE:9B:F4:DB:CC:28:AA:2A:5B:98:89:F3:E6:04:75:26:EF:AC`; check a download with `apksigner verify --print-certs eclipse-android.apk`.
 
@@ -27,15 +27,22 @@ Once approved: free code signing provided by [SignPath.io](https://about.signpat
 
 ## Privacy
 
-This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+Eclipse collects no personal data and has no telemetry or analytics. It makes these network connections, and no
+others:
 
-In practice, Eclipse:
+- to the game-streaming PCs you add or pair, and to PCs it discovers on your local network (mDNS);
+- a Wake-on-LAN packet when you ask it to wake a PC, or when you start co-op with a PC that is asleep;
+- a support-log download page on your local network, only while you use **Share logs**;
+- at most once a day, when its main screen opens, a download of the Project Hub's list of releases
+  (`https://preceptorofmagic.github.io/Eclipse-Umbra-Project-Hub/updates.json`), to show a dot when a newer version
+  is out. **Settings > About > Check for updates** turns it off;
+- at start, a download of the community controller database (SDL_GameControllerDB) from GitHub, so that newly
+  released controllers are recognised.
 
-- connects only to the game-streaming PCs you add or pair, and to PCs it discovers on your local network (mDNS);
-- sends a Wake-on-LAN packet when you ask it to wake a PC, or when you start co-op with a PC that is asleep;
-- serves a support-log download page on your local network only while you use **Share logs**.
-
-It has no telemetry, no analytics and no update check, and makes no other internet connections.
+The two downloads send nothing about you, your device or your PCs beyond what any web request carries: your IP
+address and the program's name and version. Both are served by GitHub, whose
+[privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement) applies to
+them.
 
 ## Reporting
 

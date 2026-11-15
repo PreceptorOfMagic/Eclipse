@@ -56,6 +56,14 @@ typedef struct {
        picture, so the horizontal startup gap is not a blank black panel. */
     lv_timer_t *coop_wait_timer;
     unsigned coop_wait_ms;
+    /* Host-and-client co-op only: how to leave, shown for a few seconds when the stream opens. */
+    lv_obj_t *exit_hint;
+    lv_timer_t *exit_hint_timer;
+    /* Co-op only: "<PC> is taking longer than expected" with Wait / End, while the second PC is awaited. */
+    lv_obj_t *slow_prompt;
+    lv_group_t *slow_group;
+    bool slow_answered;            /* the user chose Wait: do not ask again for this start */
+    long slow_shown_left_s;        /* the countdown last written into the prompt */
 } streaming_controller_t;
 
 /* Usually references to SERVER_DATA and APP_LIST should not be kept, but in this struct, they will only be used once */
@@ -80,6 +88,9 @@ void streaming_overlay_resized(streaming_controller_t *controller);
 bool streaming_overlay_shown();
 
 bool streaming_soft_keyboard_shown();
+
+/** The co-op "second PC is taking longer than expected" prompt is up (it owns keyboard, mouse and controllers). */
+bool streaming_coop_slow_prompt_shown();
 
 #if defined(TARGET_WEBOS)
 #endif

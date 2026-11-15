@@ -3,6 +3,7 @@ target_sources(moonlight-lib PRIVATE
         ui_input.c
         ui_hover.c
         ui_scroll.c
+        ui_stick_scroll.c
         fatal_error.c
         launcher/launcher.view.c
         launcher/launcher.controller.c
@@ -14,6 +15,8 @@ target_sources(moonlight-lib PRIVATE
         launcher/server.context_menu.c
         launcher/server.popup.c
         launcher/coop.dialog.c
+        launcher/pad_own_gate.c
+        launcher/admin_gate.c
         launcher/coverloader.c
         streaming/streaming.view.c
         streaming/streaming.controller.c
@@ -21,7 +24,9 @@ target_sources(moonlight-lib PRIVATE
         streaming/soft_keyboard.c
         streaming/pin_autoentry.c
         streaming/hints.c
+        streaming/hints_core.c
         help/help.dialog.c
         common/progress_dialog.c
+        common/update_dot.c
         )
 add_subdirectory(settings)

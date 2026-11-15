@@ -45,6 +45,8 @@ static bool logged_peer = false, logged_primary = false;
  *  the session, latched at start so it cannot change under a live split. */
 static int local_pane_request = -1;
 static int local_pane = -1;
+/* coop_pointer_start_local: the "peer" pane is this PC's own display, there is no peer link to wait for. */
+static bool peer_virtual = false;
 /** An ASSIGNED mouse / keyboard (coop_pointer_set_pins), or -1 when it follows the pointer. */
 static int mouse_pin_request = -1, keys_pin_request = -1;
 static int mouse_pin = -1, keys_pin = -1;
@@ -167,6 +169,34 @@ void coop_pointer_start(void) {
     }
 }
 
+void coop_pointer_start_local(bool vertical, bool local_first) {
+    split_vertical = vertical;
+    peer_first = local_first;   /* PANE_PEER is this PC's pane here */
+    peer_virtual = true;
+    cur_pane = PANE_PRIMARY;
+    held = 0;
+    crossings = 0;
+    peer_scroll_hires = 0;
+    logged_peer = logged_primary = false;
+    local_pane = PANE_PEER;
+    mouse_pin = mouse_pin_request;
+    keys_pin = keys_pin_request;
+    split_active = true;
+    coop_pointer_log("[COOP-PTR] pointer split armed (this PC's side is local): %s divider, this PC's pane %s, "
+                     "the stream %s",
+                     split_vertical ? "vertical" : "horizontal",
+                     local_first ? (split_vertical ? "LEFT" : "TOP") : (split_vertical ? "RIGHT" : "BOTTOM"),
+                     local_first ? (split_vertical ? "RIGHT" : "BOTTOM") : (split_vertical ? "LEFT" : "TOP"));
+    if (mouse_pin >= 0 || keys_pin >= 0) {
+        coop_pointer_log("[COOP-PTR] assigned: mouse %s, keyboard %s",
+                         mouse_pin == PANE_PRIMARY ? "the stream" : (mouse_pin == PANE_PEER ? "this PC" : "follows the pointer"),
+                         keys_pin == PANE_PRIMARY ? "the stream" : (keys_pin == PANE_PEER ? "this PC" : "follows the pointer"));
+    }
+    const int keys = keys_pin < 0 ? LOCAL_INPUT_KEYS_FOLLOW
+                                  : (keys_pin == local_pane ? LOCAL_INPUT_KEYS_HERE : LOCAL_INPUT_KEYS_ELSEWHERE);
+    local_input_arm(split_vertical, local_first, mouse_pin == local_pane, keys);
+}
+
 void coop_pointer_set_local_pane(int pane) {
     local_pane_request = (pane == PANE_PRIMARY || pane == PANE_PEER) ? pane : -1;
 }
@@ -187,6 +217,7 @@ void coop_pointer_stop(void) {
         local_input_disarm();
     }
     local_pane = -1;
+    peer_virtual = false;
 }
 
 bool coop_pointer_active(void) { return split_active; }
@@ -252,7 +283,7 @@ static void send_scroll_local(int vertical, int horizontal) {
  * to the primary instead, which is visibly wrong for a moment and self-corrects -- far
  * better than input that does nothing. */
 static bool peer_reachable(void) {
-    return coop_input_peer_attached();
+    return peer_virtual || coop_input_peer_attached();
 }
 
 void coop_pointer_position(int x, int y, int ref_w, int ref_h) {

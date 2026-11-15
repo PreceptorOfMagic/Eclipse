@@ -20,7 +20,7 @@ enum {
     LOCAL_INPUT_KEYS_ELSEWHERE = 2,  /**< assigned to the other PC: the client keeps the keyboard */
 };
 
-#ifdef _WIN32
+#if defined(_WIN32) || (defined(OS_LINUX) && !defined(TARGET_WEBOS) && !defined(TARGET_ANDROID) && !defined(ECLIPSE_NO_LOCAL_PANE))
 /** A co-op session in which one pane is this PC. @p vertical: the panes are side by side;
  *  @p local_first: this PC's pane is the left (vertical) or top (horizontal) one;
  *  @p mouse_here: the mouse is ASSIGNED to this PC, so the divider does not bring it back (only
@@ -30,6 +30,15 @@ void local_input_arm(bool vertical, bool local_first, bool mouse_here, int keys)
 /** The session is over: the cursor comes back if it is still away, and everything is undone. */
 void local_input_disarm(void);
 
+/** THE display this PC's side is on, by its GDI name ("\\\\.\\DISPLAY7"), when the client made it itself
+ *  (platform/local_pane_session.h): the hand-over then goes there and nowhere else. NULL = search for the
+ *  host's virtual display again, the default. Survives arm/disarm; set before arming, clear after disarming. */
+void local_input_pin_display(const char *gdi_name);
+
+/** The client's own menu (or keyboard, or wheel) is up over the session: the keyboard goes to the client the ordinary
+ *  way instead of through the hook to the stream, and the client may take the foreground. */
+void local_input_set_ui_overlay(bool showing);
+
 /** The pointer is in this PC's pane at pane-local (@p x, @p y) of a @p w x @p h pane: put the
  *  real cursor on the same spot of the virtual display and give that window the keyboard.
  *  Does nothing while the cursor is already there. @return true when the cursor is there. */
@@ -37,6 +46,8 @@ bool local_input_hand_off(int x, int y, int w, int h);
 
 /** True while the real cursor is on this PC's virtual display. */
 bool local_input_handed_off(void);
+/** Bring a handed-over mouse back to the client, as the Ctrl+Alt+Shift+Z hotkey does (taskbar menu). */
+void local_input_give_back(void);
 
 /** A pointer event reached the client window outside this PC's pane: if the cursor has just
  *  come back and the keyboard has not, take the keyboard back now. */
@@ -62,6 +73,14 @@ static inline void local_input_arm(bool vertical, bool local_first, bool mouse_h
 
 static inline void local_input_disarm(void) {}
 
+static inline void local_input_pin_display(const char *gdi_name) {
+    (void) gdi_name;
+}
+
+static inline void local_input_set_ui_overlay(bool showing) {
+    (void) showing;
+}
+
 static inline bool local_input_hand_off(int x, int y, int w, int h) {
     (void) x;
     (void) y;
@@ -73,6 +92,8 @@ static inline bool local_input_hand_off(int x, int y, int w, int h) {
 static inline bool local_input_handed_off(void) {
     return false;
 }
+
+static inline void local_input_give_back(void) {}
 
 static inline void local_input_pointer_seen(void) {}
 
